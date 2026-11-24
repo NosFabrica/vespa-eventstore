@@ -82,6 +82,32 @@ class EngineResources internal constructor(
         val memory: Double,
         val disk: Double,
         val feedBlocked: Boolean,
+        /**
+         * What each document type holds on this node, summed over its search processes (a host running
+         * several author-shard clusters runs one each). `reputation` here is the trust-assertion copy
+         * every node of a cluster carries: the number that says when author sharding is needed
+         * (`docs/author-shards.md`). Empty where the engine reports no per-type metrics.
+         */
+        val documentTypes: Map<String, DocumentTypeUsage> = emptyMap(),
+    ) {
+        /** The share of this node's document memory that is `reputation`; null when the node reports none. */
+        val trustMemoryShare: Double?
+            get() {
+                val total = documentTypes.values.sumOf { it.memoryBytes }
+                val trust = documentTypes[REPUTATION]?.memoryBytes ?: return null
+                return if (total > 0) trust.toDouble() / total else null
+            }
+    }
+
+    /** One document type on one node, as proton reports it. */
+    class DocumentTypeUsage(
+        val documents: Long,
+        /** Allocated memory: attributes, the in-memory index, caches. */
+        val memoryBytes: Long,
+        /** Disk: the index, attributes' snapshots and the document store. */
+        val diskBytes: Long,
+        /** Disk the transaction log holds for this type, which `diskBytes` does not include. */
+        val transactionLogBytes: Long,
     )
 
     /** Every node's usage plus when it was read, so a page can say how stale it is. */
@@ -95,6 +121,12 @@ class EngineResources internal constructor(
         val peakDisk: Double get() = nodes.maxOfOrNull { it.disk } ?: 0.0
 
         val anyFeedBlocked: Boolean get() = nodes.any { it.feedBlocked }
+
+        /** The largest `reputation` memory on any node, bytes; null when no node reports per-type memory. */
+        val peakTrustMemoryBytes: Long? get() = nodes.mapNotNull { it.documentTypes[REPUTATION]?.memoryBytes }.maxOrNull()
+
+        /** The largest share of a node's document memory held by `reputation`; null when none reports it. */
+        val peakTrustMemoryShare: Double? get() = nodes.mapNotNull { it.trustMemoryShare }.maxOrNull()
     }
 
     private val cached = AtomicReference<Usage?>(null)
@@ -182,20 +214,60 @@ class EngineResources internal constructor(
                     var memory = 0.0
                     var disk = 0.0
                     var blocked = false
+                    // type -> [documents, memory, disk, transaction log], summed over the node's search processes
+                    val types = HashMap<String, LongArray>()
                     for (service in o["services"]?.jsonArray.orEmpty()) {
                         for (metric in service.jsonObject["metrics"]?.jsonArray.orEmpty()) {
                             val values = metric.jsonObject["values"]?.jsonObject ?: continue
+                            val type =
+                                metric.jsonObject["dimensions"]
+                                    ?.jsonObject
+                                    ?.get("documenttype")
+                                    ?.jsonPrimitive
+                                    ?.contentOrNull
                             for ((name, raw) in values) {
                                 val v = raw.jsonPrimitive.doubleOrNull ?: continue
                                 when {
-                                    MEMORY in name -> memory = maxOf(memory, v)
-                                    DISK in name -> disk = maxOf(disk, v)
-                                    FEED_BLOCK in name && v > 0.0 -> blocked = true
+                                    MEMORY in name -> {
+                                        memory = maxOf(memory, v)
+                                    }
+
+                                    DISK in name -> {
+                                        disk = maxOf(disk, v)
+                                    }
+
+                                    FEED_BLOCK in name && v > 0.0 -> {
+                                        blocked = true
+                                    }
+
+                                    type == null -> {}
+
+                                    name == DOC_DOCUMENTS -> {
+                                        types.getOrPut(type) { LongArray(4) }[0] += v.toLong()
+                                    }
+
+                                    name == DOC_MEMORY -> {
+                                        types.getOrPut(type) { LongArray(4) }[1] += v.toLong()
+                                    }
+
+                                    name == DOC_DISK -> {
+                                        types.getOrPut(type) { LongArray(4) }[2] += v.toLong()
+                                    }
+
+                                    name == DOC_TLOG -> {
+                                        types.getOrPut(type) { LongArray(4) }[3] += v.toLong()
+                                    }
                                 }
                             }
                         }
                     }
-                    NodeUsage(host = host.substringBefore('.'), memory = memory, disk = disk, feedBlocked = blocked)
+                    NodeUsage(
+                        host = host.substringBefore('.'),
+                        memory = memory,
+                        disk = disk,
+                        feedBlocked = blocked,
+                        documentTypes = types.mapValues { (_, a) -> DocumentTypeUsage(a[0], a[1], a[2], a[3]) },
+                    )
                 }
             require(nodes.isNotEmpty()) { "vespa metrics carried no nodes" }
             return Usage(nodes, nowMillis)
@@ -224,5 +296,14 @@ class EngineResources internal constructor(
         // controller's `max_memory_utilization` / `max_disk_utilization`,
         // which are a different measurement on a different scale.
         private const val FEED_BLOCK = "resource_usage.feeding_blocked"
+
+        // Per document type (dimension `documenttype`), read off a Vespa 8 node's /metrics/v2/values.
+        private const val DOC_DOCUMENTS = "content.proton.documentdb.documents.total.last"
+        private const val DOC_MEMORY = "content.proton.documentdb.memory_usage.allocated_bytes.last"
+        private const val DOC_DISK = "content.proton.documentdb.disk_usage.last"
+        private const val DOC_TLOG = "content.proton.transactionlog.disk_usage.last"
+
+        /** The trust projection's document type. */
+        const val REPUTATION = "reputation"
     }
 }

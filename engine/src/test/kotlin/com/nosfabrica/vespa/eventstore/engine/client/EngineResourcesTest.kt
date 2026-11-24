@@ -163,4 +163,42 @@ class EngineResourcesTest {
         assertTrue(tookMillis < 2 * EngineResources.DEADLINE_MILLIS, "the probe returned after $tookMillis ms")
         assertEquals(1, mock.metricsRequests)
     }
+
+    /**
+     * Per document type, as a Vespa 8 node serves it (measured; values shaped like production's:
+     * ~77.5 GiB of events and ~4.4 GiB of reputation on one node). Two search processes on one
+     * host — two author-shard clusters — add up.
+     */
+    @Test
+    fun `each node's documents, memory and disk by document type, and the trust share`() {
+        fun metric(
+            type: String,
+            docs: Long,
+            mem: Long,
+            disk: Long,
+            tlog: Long,
+        ) = """{"values":{"content.proton.documentdb.documents.total.last":$docs,"content.proton.documentdb.memory_usage.allocated_bytes.last":$mem,""" +
+            """"content.proton.documentdb.disk_usage.last":$disk,"content.proton.transactionlog.disk_usage.last":$tlog},""" +
+            """"dimensions":{"documenttype":"$type","serviceId":"searchnode","hostname":"n0"}}"""
+        val gib = 1L shl 30
+        val body =
+            """{"nodes":[{"hostname":"n0.cluster","services":[
+                 {"name":"vespa.searchnode","metrics":[{"values":{"content.proton.resource_usage.memory.average":0.6}},
+                   ${metric("event", 189_000_000, 77 * gib + gib / 2, 370 * gib, 2 * gib)},
+                   ${metric("reputation", 767_983, 4 * gib + 2 * gib / 5, 38 * gib, 3 * gib)}]}]},
+               {"hostname":"n1.cluster","services":[
+                 {"name":"vespa.searchnode","metrics":[${metric("event", 50, 600, 10, 1)},${metric("reputation", 5, 200, 10, 1)}]},
+                 {"name":"vespa.searchnode","metrics":[${metric("event", 50, 600, 10, 1)},${metric("reputation", 5, 200, 10, 1)}]}]}]}"""
+        val usage = EngineResources.parse(body, nowMillis = 1)
+        val n0 = usage.nodes.first { it.host == "n0" }
+        assertEquals(767_983, n0.documentTypes.getValue("reputation").documents)
+        assertEquals(3 * gib, n0.documentTypes.getValue("reputation").transactionLogBytes)
+        assertEquals(0.054, n0.trustMemoryShare!!, 0.001)
+        val n1 = usage.nodes.first { it.host == "n1" }
+        assertEquals(400, n1.documentTypes.getValue("reputation").memoryBytes, "two search processes on one host add up")
+        assertEquals(0.25, n1.trustMemoryShare!!, 1e-9)
+        assertEquals(0.25, usage.peakTrustMemoryShare!!, 1e-9)
+        assertEquals(4 * gib + 2 * gib / 5, usage.peakTrustMemoryBytes)
+        assertEquals(null, EngineResources.parse(realShape, nowMillis = 1).peakTrustMemoryShare, "no per-type metrics, no share")
+    }
 }
