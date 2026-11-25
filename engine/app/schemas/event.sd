@@ -592,6 +592,25 @@ schema event {
         summary id {}
     }
 
+    # The served event, whole: the NIP-01 fields and the owner, exactly what a
+    # page is rebuilt from (EventDoc.fromSummary). Reads used to name these in
+    # every query's YQL (`select id, pubkey, … from`), which cost the query
+    # container twice, measured under 200-client REQ load (benchmark/README.md,
+    # "The query container's own cost"): ~11% of its CPU parsing the field list,
+    # and ~19% in FieldFilter, which decodes every field of every hit to a Java
+    # string to apply it. `select *` on this class does neither, and the renderer
+    # writes the fields from their stored bytes. A deploy-only change.
+    document-summary nip01 {
+        summary id {}
+        summary pubkey {}
+        summary created_at {}
+        summary kind {}
+        summary tags {}
+        summary content {}
+        summary sig {}
+        summary owner {}
+    }
+
     # The negentropy/sync snapshot projection. Attributes only, so a walk of
     # millions of matches never touches the document store or disk summaries —
     # the id comes from the attribute, not the docid, and created_at is what

@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore.benchmark
 
 import com.nosfabrica.vespa.eventstore.engine.app.SchemaDeployer
+import com.nosfabrica.vespa.eventstore.engine.client.ClientTuning
 import com.nosfabrica.vespa.eventstore.engine.client.RecencyStrategy
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.nosfabrica.vespa.eventstore.engine.client.VespaReputationIndex
@@ -62,6 +63,12 @@ import kotlin.test.assertTrue
  * so a window that proved itself on UNGATED matches would serve a short or
  * wrong gated page, and fail here.
  *
+ * Every strategy runs in BOTH page modes too ([VespaEventIndex]'s one query or
+ * id-first rule): always id-first (threshold 0), always one full-summary query
+ * (no threshold), and the default rule, which splits the shapes below between
+ * them — on a real Vespa, whose tie order within a second is its own, a direct
+ * read's `[t,t]` resolution must land on the same page as the id-first one.
+ *
  * Tagged `integration`, excluded from the default `:benchmark:test`; run with
  * `-Pintegration` where Docker is available. Skips cleanly without a daemon.
  */
@@ -79,7 +86,10 @@ class RecencyStrategyIT {
                 vespa.start()
                 val queryUrl = "http://${vespa.host}:${vespa.getMappedPort(QUERY_PORT)}"
                 SchemaDeployer("http://${vespa.host}:${vespa.getMappedPort(CONFIG_PORT)}").deployIfAbsent(queryUrl)
-                val clients = RecencyStrategy.entries.associateWith { VespaEventIndex(queryUrl, recencyStrategy = it) }
+                val clients =
+                    RecencyStrategy.entries
+                        .flatMap { strategy -> PAGE_MODES.map { (mode, threshold) -> "$strategy/$mode" to VespaEventIndex(queryUrl, recencyStrategy = strategy, idFirstMaxDirectHits = threshold) } }
+                        .toMap()
                 try {
                     runBlocking {
                         val now = System.currentTimeMillis() / 1000
@@ -90,8 +100,12 @@ class RecencyStrategyIT {
                         val ancient = (1..8).map { note(n++, tiers[it % 4], at = 1_000L + it) }
                         // A tie group straddling a page boundary: four notes on ONE second.
                         val tied = (0 until 4).map { note(n++, tiers[it], at = now - 45 * 30L) }
-                        val corpus = busy + weekly + ancient + tied
-                        val any = clients.getValue(RecencyStrategy.MATCH_PHASE)
+                        // A tie group WIDER than a small selective page's slack (8): its read
+                        // goes direct by default and its `[t,t]` query resolves the boundary.
+                        val wideTieAt = now - 47 * 30L + 5
+                        val wideTie = (0 until 12).map { note(n++, tiers[it % 4], at = wideTieAt) }
+                        val corpus = busy + weekly + ancient + tied + wideTie
+                        val any = clients.getValue("${RecencyStrategy.MATCH_PHASE}/default")
                         any.putAll(corpus)
                         VespaReputationIndex(queryUrl).use { reputation ->
                             reputation.putAll(
@@ -111,6 +125,9 @@ class RecencyStrategyIT {
                                 EventQuery(kinds = listOf(1), limit = 75),
                                 EventQuery(authors = listOf(TRUSTED, LOW), limit = 12),
                                 EventQuery(authors = listOf(UNRANKED), limit = 20),
+                                // Small selective pages (the default serves them directly), one cutting the wide tie.
+                                EventQuery(authors = listOf(TRUSTED, MARGINAL), limit = 5),
+                                EventQuery(authors = listOf(TRUSTED, MARGINAL, LOW, UNRANKED), until = wideTieAt, limit = 3),
                                 EventQuery(kinds = listOf(1), until = now - 2 * 86_400L, limit = 6),
                                 EventQuery(kinds = listOf(1), since = now - 600, limit = 50),
                                 EventQuery(kinds = listOf(1), limit = 500),
@@ -125,8 +142,11 @@ class RecencyStrategyIT {
                             // rightly serve nothing (the unranked author's feed), and
                             // every strategy must then agree on the empty page too.
                             assertTrue(expected.isNotEmpty() || q.ranking == EventYql.RANK_RECENCY_GATED, "the shape must match something: $q")
-                            for ((strategy, client) in clients) {
-                                assertEquals(expected, client.search(q).map { it.id }, "$strategy: $q")
+                            // Twice: the second read meets the slack (and so the mode) the first taught.
+                            repeat(2) { read ->
+                                for ((name, client) in clients) {
+                                    assertEquals(expected, client.search(q).map { it.id }, "$name read $read: $q")
+                                }
                             }
                         }
 
@@ -192,6 +212,9 @@ class RecencyStrategyIT {
     private companion object {
         const val QUERY_PORT = 8080
         const val CONFIG_PORT = 19071
+
+        /** The page modes every strategy runs in: always id-first, always one query, and the default rule. */
+        val PAGE_MODES = listOf("id-first" to 0, "direct" to Int.MAX_VALUE, "default" to ClientTuning.DEFAULT_ID_FIRST_MAX_DIRECT_HITS)
         const val OBSERVER = "460c25e682fda7832b52d1f22d3d22b3176d972f60dcdc3212ed8c92ef85065c"
         val TRUSTED = "11".repeat(32)
         val MARGINAL = "22".repeat(32)

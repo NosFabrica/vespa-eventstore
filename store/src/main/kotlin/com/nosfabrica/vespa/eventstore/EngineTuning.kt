@@ -120,12 +120,23 @@ class EngineTuning(
     // ---- per process, added later: LAST so no positional argument shifts ----
     /** `VESPA_EXPIRY_SWEEP_PAGE` — ids the NIP-40 expiry sweep removes per writer-lock hold, at least 1. Default 1000 (`NostrSemanticsStore.deleteExpiredEvents`). */
     val expirySweepPage: Int? = null,
+    // ---- per store, added later: LAST so no positional argument shifts ------
+    /**
+     * `VESPA_ID_FIRST_MAX_DIRECT_HITS` — the most hits a recency read eligible for id-first
+     * reads as documents in one query, at least 0. A read whose first query plans more (`limit`
+     * plus the read shape's tie slack) is id-first; any other is served in one query, its tie
+     * reads and over-cap queries as ids. 0 keeps every such read id-first. `VESPA_ID_FIRST=0` still turns
+     * id-first off. Default [DEFAULT_ID_FIRST_MAX_DIRECT_HITS]
+     * (`VespaEventIndex.idFirstMaxDirectHits`, which holds the measured reasons).
+     */
+    val idFirstMaxDirectHits: Int? = null,
 ) {
     init {
         feedBatch?.let { require(it in 0..MAX_FEED_BATCH) { "feedBatch $it is outside 0..$MAX_FEED_BATCH" } }
         accessLog?.let { require(it.trim().lowercase() in VespaApp.ACCESS_LOG_VALUES) { "accessLog '$it' is not one of ${VespaApp.ACCESS_LOG_VALUES.sorted()}" } }
         for ((name, v) in positives()) v?.let { require(it >= 1) { "$name $it is below 1" } }
         visitConcurrency?.let { require(it in 1..100) { "visitConcurrency $it is outside 1..100" } }
+        idFirstMaxDirectHits?.let { require(it >= 0) { "idFirstMaxDirectHits $it is below 0" } }
     }
 
     private fun positives() =
@@ -162,6 +173,7 @@ class EngineTuning(
             bodyEdgeFeed = bodyEdgeFeed,
             addressKeyed = addressKeyed,
             unboundedHits = unboundedHits,
+            idFirstMaxDirectHits = idFirstMaxDirectHits,
         )
 
     /**
@@ -199,6 +211,7 @@ class EngineTuning(
             "queryPlanning" to queryPlanning,
             "recencyStrategy" to recencyStrategy,
             "idFirst" to idFirst,
+            "idFirstMaxDirectHits" to idFirstMaxDirectHits,
             "recencyMemory" to recencyMemory,
             "bodyEdgeFeed" to bodyEdgeFeed,
             "addressKeyed" to addressKeyed,
@@ -225,6 +238,12 @@ class EngineTuning(
         /** `VESPA_DEDUP_CHUNK`'s default: the width the REQ-latency A/B was measured at. */
         const val DEFAULT_DEDUP_CHUNK = STORE_DEFAULT_DEDUP_CHUNK
 
+        /**
+         * `VESPA_ID_FIRST_MAX_DIRECT_HITS`'s default: every measured limit-10 and limit-100 page
+         * goes direct (up to 200 planned hits); larger ones stay id-first.
+         */
+        const val DEFAULT_ID_FIRST_MAX_DIRECT_HITS = ClientTuning.DEFAULT_ID_FIRST_MAX_DIRECT_HITS
+
         /** `VESPA_QUERY_FANOUT`'s default: past it proton's summary stage times out on bulk-stage queries. */
         const val DEFAULT_QUERY_FANOUT = 4
 
@@ -242,6 +261,7 @@ class EngineTuning(
                 ClientTuning.QUERY_PLANNER,
                 ClientTuning.RECENCY_STRATEGY,
                 ClientTuning.ID_FIRST,
+                ClientTuning.ID_FIRST_MAX_DIRECT_HITS,
                 ClientTuning.RECENCY_MEMORY,
                 ClientTuning.BODY_EDGE,
                 ClientTuning.ADDRESS_KEYED,
@@ -330,6 +350,7 @@ class EngineTuning(
                     accessLog =
                         choice(VespaApp.ACCESS_LOG_ENV, { v -> v.lowercase().takeIf { it in VespaApp.ACCESS_LOG_VALUES } }, VespaApp.ACCESS_LOG_VALUES.sorted().joinToString()),
                     expirySweepPage = int(StoreKnobs.expirySweepPage.env, atLeastOne),
+                    idFirstMaxDirectHits = int(ClientTuning.ID_FIRST_MAX_DIRECT_HITS, 0..Int.MAX_VALUE),
                 )
             require(problems.isEmpty()) { "the store's environment has ${problems.size} bad setting(s): ${problems.joinToString("; ")}" }
             return tuning
