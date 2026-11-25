@@ -78,7 +78,7 @@ class ReadShape private constructor(
 
     override fun hashCode(): Int = ((observer.hashCode() * 31 + includeSpam.hashCode()) * 31 + ranked.hashCode()) * 31 + floored.hashCode()
 
-    override fun toString(): String = "ReadShape(observer=${observer?.take(16)}, includeSpam=$includeSpam, ranked=$ranked)"
+    override fun toString(): String = "ReadShape(observer=${observer?.take(16)}, includeSpam=$includeSpam, ranked=$ranked, floored=$floored)"
 
     companion object {
         /** [filter]'s shape, as the store will read it. */

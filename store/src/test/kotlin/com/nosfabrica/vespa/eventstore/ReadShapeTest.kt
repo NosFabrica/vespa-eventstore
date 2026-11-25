@@ -112,6 +112,14 @@ class ReadShapeTest {
         assertFalse(ReadShape.of(null).declaresLens)
     }
 
+    /** Two shapes `equals` tells apart print apart, or a log line reads two different verdicts as one. */
+    @Test
+    fun `toString names every field equals compares`() {
+        val shapes = (battery + listOf("include:spam filter:rank:gte:50", "filter:rank:gte:50")).map(ReadShape::of).distinct()
+        assertEquals(shapes.size, shapes.map { it.toString() }.distinct().size, "$shapes")
+        assertTrue("floored=true" in ReadShape.of("include:spam filter:rank:gte:50").toString())
+    }
+
     @Test
     fun `a filter that matches nothing still has a shape`() {
         assertEquals(ReadShape.of("observer:$hex sort:rank"), ReadShape.of(Filter(ids = emptyList(), search = "observer:$hex sort:rank")))
