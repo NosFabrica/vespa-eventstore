@@ -515,32 +515,45 @@ builds it:
 
 ```
 APP_DIR=path/to/your/app  OUT_DIR=path/to/split-app \
-VESPA_AUTHOR_SHARDS=2  SHARD_NODES="0,1,2;3,4" \
+VESPA_AUTHOR_BUCKETS=00-b5=0,b6-ff=1  SHARD_NODES="0,1,2,3,4;5@node-5,6@node-6" \
 VESPA_CONFIG_URL=http://config:19071  VESPA_URL=http://query:8080 \
 ./gradlew :benchmark:shardPackage
 ```
 
 - It splits the one `content` cluster with `VespaApp.shardServices`. Each cluster gets the
-  store's document selections and only the nodes `SHARD_NODES` names for it, by
-  `distribution-key`: cluster `content` gets the first list, `content1` the second, and so on.
+  store's document selections and the nodes `SHARD_NODES` lists for it: cluster `content` gets
+  the first list, `content1` the second, and so on. An entry is a node of the package, by
+  `distribution-key`, or a NEW host, `key@hostalias` (which `hosts.xml` must name too).
   Everything else in the cluster (`<redundancy>`, `<engine>`, `<config>`, the expiry selection)
-  is copied to every cluster as written, and the containers, `hosts.xml` and the rest of the
-  package are left alone.
+  is copied to every cluster as written, and the containers and the rest of the package are left
+  alone.
+- **A node holding data stays in `content`.** At `redundancy 1` (production's) a content node is
+  the only copy of what it holds, so taking it out of its cluster in one deploy deletes that
+  share of the corpus. The first cut allowed exactly that. On production's real package (five
+  nodes, rendered from brainstorm-k8s' `vespa-relay` chart), a 3 + 2 split would have dropped
+  nodes 3 and 4, about 40% of the events. The new cluster gets new hosts, or nodes the package
+  already marks `retired="true"`. That is Vespa's way out of a cluster: retire, wait until the
+  node holds nothing, then reassign. Production has no room to retire nodes (its five pods run at
+  ~0.8 of a 100 GiB limit; three could not hold all five's documents), so its split is the
+  add-hosts one in the example above. `docs/author-shards-production.md` walks it through.
 - It records the bucket map as the comment the deploy guard reads, so the store judges this
   package exactly as it judges the bundled one.
 - It refuses a split that could lose or misplace data:
-  - a node left out, or named for two clusters;
-  - a cluster with fewer nodes than its `<redundancy>` or `<min-redundancy>`;
-  - groups for another cluster count;
+  - a live node not in the first list;
+  - a node named twice, or a new node reusing a key;
+  - a cluster with fewer serving nodes than its `<redundancy>` or `<min-redundancy>`;
+  - lists for another cluster count;
   - `<group>` (grouped distribution, which it does not split);
   - a package of several nodes with no `SHARD_NODES`. Every node would then hold every
     cluster, and none would hold fewer reputation documents, which is the whole point.
 - With `VESPA_CONFIG_URL` set it runs the deploy guard against the LIVE deployment for the
-  package it wrote, read-only. A deploy by hand never passes through the store, so this is
-  where a package that would make a cluster keep fewer buckets over data gets refused (exit
-  code 2) before anyone deploys it. Checked on a real Vespa: over the bundled one-cluster
-  package holding 42,000 documents, the two-cluster split was refused (`'content' would drop 128
-  bucket(s)`); over an empty Vespa, and for the unsplit package, it passed.
+  package it wrote, read-only. A deploy by hand never passes through the store, so this is where
+  a bad package is refused (exit code 2) before anyone deploys it. The guard refuses a package
+  that makes a cluster keep fewer buckets over data, and one that drops a content node the live
+  package does not mark retired, whatever the buckets say (`allowNarrowing` does not excuse it).
+  Checked on a real Vespa: over the bundled one-cluster package holding 42,000 documents, the
+  two-cluster split was refused (`'content' would drop 128 bucket(s)`); over an empty Vespa, and
+  for the unsplit package, it passed.
 
 Then set the same `VESPA_AUTHOR_SHARDS` (or `VESPA_AUTHOR_BUCKETS`) on every store that opens
 the deployment (in vespa-relay, the relay and the sync), so each client knows the clusters. A

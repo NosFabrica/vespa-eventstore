@@ -426,19 +426,29 @@ class VespaAppTest {
         </services>
         """.trimIndent()
 
+    /** The hostaliases of each content cluster in [xml], in order, `*` marking a retired node. */
+    private fun nodesByCluster(xml: String): Map<String, List<String>> {
+        val contents = parse(xml).getElementsByTagName("content")
+        return (0 until contents.length).associate { c ->
+            val cluster = contents.item(c) as Element
+            val nodes = cluster.getElementsByTagName("node")
+            cluster.getAttribute("id") to
+                (0 until nodes.length).map { (nodes.item(it) as Element).let { n -> n.getAttribute("hostalias") + if (n.getAttribute("retired") == "true") "*" else "" } }
+        }
+    }
+
+    /**
+     * Production's path (`docs/author-shards.md`, "A multi-node package"): new hosts form the new
+     * cluster, and every node holding data stays in `content`. With `redundancy 1` a node is the
+     * only copy of what it holds, so it cannot leave its cluster in one deploy.
+     */
     @Test
-    fun `an operator's multi-node package splits into clusters that each keep only their nodes`() {
-        val map = AuthorShards.BucketMap.even(2)
-        val out = VespaApp.shardServices(multiNode, map, VespaApp.parseNodeGroups("0,1;2,3"))
-        assertEquals(listOf("content", "content1"), VespaApp.contentClusters(out))
+    fun `new hosts join a new cluster while every live node stays in content`() {
+        val map = AuthorShards.BucketMap.parse("00-b5=0,b6-ff=1")
+        val out = VespaApp.shardServices(multiNode, map, VespaApp.parseNodeGroups("0,1,2,3;4@content-4,5@content-5"))
+        assertEquals(mapOf("content" to listOf("content-0", "content-1", "content-2", "content-3"), "content1" to listOf("content-4", "content-5")), nodesByCluster(out))
         assertEquals(map, VespaApp.bucketMapOf(out), "the map the deploy guard reads back")
         val contents = parse(out).getElementsByTagName("content")
-        val nodesOf =
-            (0 until 2).map { c ->
-                val nodes = (contents.item(c) as Element).getElementsByTagName("node")
-                (0 until nodes.length).map { (nodes.item(it) as Element).getAttribute("hostalias") }
-            }
-        assertEquals(listOf(listOf("content-0", "content-1"), listOf("content-2", "content-3")), nodesOf)
         for (c in 0 until 2) {
             val cluster = contents.item(c) as Element
             assertEquals(
@@ -456,10 +466,19 @@ class VespaAppTest {
             assertTrue(event.startsWith("(event.expires_at > now()) and ") && event.endsWith(map.selection("event.pubkey", c)), event)
         }
         assertEquals(1, parse(out).getElementsByTagName("container").length, "the containers are left alone")
-        // Uneven, as 5 production nodes split 3 + 2 with a map to match.
-        val uneven = AuthorShards.BucketMap.parse("00-99=0,9a-ff=1")
-        val five = multiNode.replace("""<node distribution-key="3" hostalias="content-3" />""", """<node distribution-key="3" hostalias="content-3" /><node distribution-key="4" hostalias="content-4" />""")
-        assertEquals(uneven, VespaApp.bucketMapOf(VespaApp.shardServices(five, uneven, VespaApp.parseNodeGroups("0,1,2;3,4"))))
+    }
+
+    /** Vespa's way out of a cluster: retire first (its documents move to the others), then reassign. */
+    @Test
+    fun `a node the package retired may move to a new cluster or leave`() {
+        val retiring =
+            multiNode
+                .replace("""<node distribution-key="2" hostalias="content-2" />""", """<node distribution-key="2" hostalias="content-2" retired="true" />""")
+                .replace("""<node distribution-key="3" hostalias="content-3" />""", """<node distribution-key="3" hostalias="content-3" retired="true" />""")
+        val out = VespaApp.shardServices(retiring, AuthorShards.BucketMap.even(2), VespaApp.parseNodeGroups("0,1;2,3"))
+        assertEquals(mapOf("content" to listOf("content-0", "content-1"), "content1" to listOf("content-2", "content-3")), nodesByCluster(out), "serving, not retired, in their new cluster")
+        val dropped = VespaApp.shardServices(retiring, AuthorShards.BucketMap.even(2), VespaApp.parseNodeGroups("0,1;3,9@content-9"))
+        assertEquals(mapOf("content" to listOf("content-0", "content-1"), "content1" to listOf("content-3", "content-9")), nodesByCluster(dropped), "a retired node left out is removed")
     }
 
     @Test
@@ -470,13 +489,25 @@ class VespaAppTest {
             groups: String?,
             xml: String = multiNode,
         ) = assertFailsWith<IllegalArgumentException> { VespaApp.shardServices(xml, two, groups?.let(VespaApp::parseNodeGroups)) }.message.orEmpty()
+        // The split production's own nodes would have taken: 40% of a redundancy-1 corpus gone.
+        assertTrue("retired" in refused("0,1;2,3"), "live nodes moved to the new cluster")
+        assertTrue("retired" in refused("0,1,2;4@content-4,5@content-5"), "a live node left out")
         assertTrue("every node would hold every cluster" in refused(null), "no groups over four nodes")
-        assertTrue("exactly one cluster" in refused("0,1;2"), "a node left out")
-        assertTrue("two groups" in refused("0,1,2;2,3"), "a node in two clusters")
-        assertTrue("<redundancy> of 2" in refused("0,1,2;3"), "fewer nodes than copies")
-        assertTrue("3 node groups" in refused("0;1,2;3"), "groups for another cluster count")
-        assertTrue("<group>" in refused("0,1;2,3", multiNode.replace("<nodes>", "<group name=\"g\" distribution-key=\"0\"><nodes>").replace("</nodes>", "</nodes></group>")))
-        assertFailsWith<IllegalArgumentException> { VespaApp.parseNodeGroups("0,x;1") }
+        assertTrue("two groups" in refused("0,1,2,3;3,4@content-4"), "a node in two clusters")
+        val retiring = multiNode.replace("""<node distribution-key="3" hostalias="content-3" />""", """<node distribution-key="3" hostalias="content-3" retired="true" />""")
+        assertTrue("already" in refused("0,1,2;3@content-9,4@content-4", retiring), "a new node reusing a node's key")
+        assertTrue("<redundancy> of 2" in refused("0,1,2,3;4@content-4"), "fewer nodes than copies")
+        assertTrue("3 node groups" in refused("0,1,2,3;4@content-4;5@content-5"), "groups for another cluster count")
+        assertTrue("<group>" in refused("0,1,2,3;4@c,5@d", multiNode.replace("<nodes>", "<group name=\"g\" distribution-key=\"0\"><nodes>").replace("</nodes>", "</nodes></group>")))
         assertEquals(multiNode, VespaApp.shardServices(multiNode, AuthorShards.BucketMap.even(1), null), "one cluster: the package as written")
+    }
+
+    @Test
+    fun `node groups name live nodes by key and new ones by key and host`() {
+        assertEquals(
+            listOf(listOf(VespaApp.ShardNode(0), VespaApp.ShardNode(1)), listOf(VespaApp.ShardNode(5, "node-5"))),
+            VespaApp.parseNodeGroups(" 0, 1 ; 5@node-5 "),
+        )
+        for (bad in listOf("0,x;1", "0;5@", "0;@node-5")) assertFailsWith<IllegalArgumentException>(bad) { VespaApp.parseNodeGroups(bad) }
     }
 }

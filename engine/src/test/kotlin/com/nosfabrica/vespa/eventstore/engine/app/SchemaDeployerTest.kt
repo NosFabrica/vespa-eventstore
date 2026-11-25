@@ -233,6 +233,51 @@ class SchemaDeployerTest {
         kotlin.test.assertFailsWith<IllegalStateException>("but not a sharded one over it") { deployer.checkShardChange(base, VespaApp.zipBytes(null, 2)) }
     }
 
+    /** The bundled package with its services.xml replaced by [servicesXml]. */
+    private fun packageWith(servicesXml: String): ByteArray {
+        val out = java.io.ByteArrayOutputStream()
+        java.util.zip.ZipOutputStream(out).use { z ->
+            for ((path, bytes) in SchemaDeployer.files(pkg) + ("services.xml" to servicesXml.toByteArray())) {
+                z.putNextEntry(java.util.zip.ZipEntry(path))
+                z.write(bytes)
+                z.closeEntry()
+            }
+        }
+        return out.toByteArray()
+    }
+
+    /** A one-cluster package over content nodes [keys]; [retired] of them marked retired. */
+    private fun nodesPackage(
+        keys: List<Int>,
+        retired: Set<Int> = emptySet(),
+    ): String {
+        val bundled = SchemaDeployer.files(pkg).getValue("services.xml").decodeToString()
+        val nodes = keys.joinToString("\n") { k -> """      <node distribution-key="$k" hostalias="node$k"${if (k in retired) " retired=\"true\"" else ""} />""" }
+        return bundled.replace(Regex("""(<content[^>]*>.*?<nodes>).*?(</nodes>)""", RegexOption.DOT_MATCHES_ALL)) { m -> m.groupValues[1] + "\n" + nodes + "\n    " + m.groupValues[2] }
+    }
+
+    /**
+     * With redundancy 1 a content node is the only copy of what it holds: a package that drops one
+     * deletes that share of the corpus, whatever the author buckets say. Vespa's way is to retire it
+     * first, wait for its documents to move, then remove it; the guard holds a package to that.
+     */
+    @Test
+    fun aNodeHoldingDataCannotLeaveItsClusterUnlessItWasRetired() {
+        active = SchemaDeployer.files(packageWith(nodesPackage(listOf(0, 1, 2, 3, 4))))
+        storedTotal = 1_000
+        val e = kotlin.test.assertFailsWith<IllegalStateException> { deployer.checkShardChange(base, packageWith(nodesPackage(listOf(0, 1, 2)))) }
+        assertTrue("'content' would drop node(s) [3, 4]" in e.message.orEmpty(), e.message)
+        deployer.checkShardChange(base, packageWith(nodesPackage(listOf(0, 1, 2, 3, 4, 5))))
+        kotlin.test.assertFailsWith<IllegalStateException>("allowNarrowing is about buckets, not nodes") {
+            deployer.checkShardChange(base, packageWith(nodesPackage(listOf(0, 1, 2))), allowNarrowing = true)
+        }
+        active = SchemaDeployer.files(packageWith(nodesPackage(listOf(0, 1, 2, 3, 4), retired = setOf(3, 4))))
+        deployer.checkShardChange(base, packageWith(nodesPackage(listOf(0, 1, 2))))
+        active = SchemaDeployer.files(packageWith(nodesPackage(listOf(0, 1, 2, 3, 4))))
+        storedTotal = 0
+        deployer.checkShardChange(base, packageWith(nodesPackage(listOf(0, 1, 2))))
+    }
+
     private companion object {
         const val INSTANCE = "/application/v2/tenant/default/application/default/environment/prod/region/default/instance/default"
     }

@@ -123,7 +123,9 @@ class SchemaDeployer(
      * [allowNarrowing] is the move tool's cut-over, made only after it verified that the buckets'
      * new owner holds every document ([com.nosfabrica.vespa.eventstore.engine.app.AuthorShards.BucketMap]).
      * A package whose clusters are not this store's (`content`, `content1`, …) is compared by
-     * cluster ids. With no application deployed it passes; with an active one that cannot be read
+     * cluster ids. A content node the active package has and does not mark `retired="true"`,
+     * dropped by [zip], is refused the same way and never excused by [allowNarrowing]: at
+     * redundancy 1 it is the only copy of what it holds. With no application deployed it passes; with an active one that cannot be read
      * it is judged by the document count alone, so it passes only over an empty deployment.
      * Throws [IllegalStateException]; deploys nothing either way.
      */
@@ -163,9 +165,27 @@ class SchemaDeployer(
                     else -> null
                 }
             }
-        if (lost != null && (lost.isEmpty() || allowNarrowing)) return
+        // A content node the active package has, not retired, that the new one drops: with
+        // redundancy 1 it is the only copy of what it holds, whatever the buckets say. Not excused
+        // by allowNarrowing, which is about buckets: Vespa's way is to retire it first.
+        val dropped: Map<String, List<Int>> =
+            activeXml
+                ?.let(VespaApp::contentNodes)
+                ?.mapValues { (cluster, nodes) ->
+                    val kept = VespaApp.contentNodes(wantedXml)[cluster]?.keys.orEmpty()
+                    nodes.filter { (key, retired) -> !retired && key !in kept }.keys.sorted()
+                }?.filterValues { it.isNotEmpty() }
+                .orEmpty()
+        if (dropped.isEmpty() && lost != null && (lost.isEmpty() || allowNarrowing)) return
         val stored = storedDocuments(queryUrl)
         if (stored == 0L) return
+        if (dropped.isNotEmpty()) {
+            error(
+                "refusing to deploy: " + dropped.entries.joinToString("; ") { (c, k) -> "'$c' would drop node(s) $k" } +
+                    " while the deployment holds ${stored ?: "an unknown number of"} documents. A content node holding data is the only copy of " +
+                    "what it holds at redundancy 1: mark it retired=\"true\" and deploy, wait until it holds nothing, then remove it",
+            )
+        }
         val what =
             lost?.entries?.joinToString("; ") { (c, b) -> "'$c' would drop ${b.size} bucket(s)" }
                 ?: "content clusters ${VespaApp.contentClusters(wantedXml)} over ${activeXml?.let(VespaApp::contentClusters) ?: "an unreadable package"}"
