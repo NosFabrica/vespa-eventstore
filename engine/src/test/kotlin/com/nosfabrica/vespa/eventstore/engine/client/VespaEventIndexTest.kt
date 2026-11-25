@@ -1997,7 +1997,7 @@ class VespaEventIndexTest {
      */
     @Test
     fun `a transient partial is retried on the index, never handed to the scan`() =
-        runBlocking {
+        runBlocking<Unit> {
             IngestStats.reset()
             val ann = "a7".repeat(32)
             seed(*(1..40).map { doc(kind = 30382, pubkey = ann, at = 1_700_000_000L + it) }.toTypedArray())
