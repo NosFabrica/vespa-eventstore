@@ -99,7 +99,9 @@ the set its filter's REQ serves on the same connection — the `observer:` token
 else the connection's NIP-42 identity, `include:spam` waiving the floor of either
 (quartz's relay takes the NEG-OPEN snapshot under the caller's `StoreQueryContext`
 and caches it per caller; a mirror that signs in and wants the whole corpus puts
-`include:spam` on its NEG-OPENs and REQs alike) — and `liveGate()` holds a
+`include:spam` on its NEG-OPENs and REQs alike; a snapshot is never served partial,
+so on a degraded cluster a signed-in NEG-OPEN fails where its REQ is served from what
+the cluster can still search) — and `liveGate()` holds a
 subscription's live events to the same floor its stored page was served through. The
 live gate looks the observer's lens up per event, not once at the REQ, so a
 subscription that outlives a 10040 (a list published after it opened, or moved to

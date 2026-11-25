@@ -1125,7 +1125,13 @@ class NostrSemanticsStore(
      * either. So a NEG-OPEN and a REQ of one filter on one connection answer
      * one set; when they did not, an authenticated peer reconciled every
      * below-floor id as missing and its by-id REQ was then gated to nothing,
-     * every pass. A limit'd walk is the
+     * every pass.
+     *
+     * STRICT, never under [AcceptPartial]: a reconcile acts on absence, so a
+     * set read from part of a degraded cluster, or a lens resolved from part of
+     * the provider lists, would have a peer delete or re-push what it was not
+     * shown. On a degraded cluster with a cold provider map a signed-in NEG-OPEN
+     * therefore fails (the relay answers NEG-ERR) where its REQ is served partial. A limit'd walk is the
      * newest N with NIP-01's id tiebreak, the page a recency read serves; a
      * limit'd TRUST SORT's first N are its most trusted, so the engine answers
      * it with the same ranked search its REQ runs (VespaEventIndex.visitIds).

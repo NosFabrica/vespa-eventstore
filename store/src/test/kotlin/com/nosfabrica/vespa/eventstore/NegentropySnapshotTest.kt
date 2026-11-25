@@ -84,9 +84,18 @@ class NegentropySnapshotTest {
         return rank >= floor
     }
 
+    /** A degraded cluster on which the provider lists cannot be read. */
+    @Volatile
+    private var providerListsDown = false
+
+    private fun failIfDown(query: EventQuery) {
+        if (providerListsDown && TrustProviderListEvent.KIND in query.kinds) throw IllegalStateException("content node down")
+    }
+
     private val recording =
         object : EventIndex by inner {
             override suspend fun search(query: EventQuery): List<EventDoc> {
+                failIfDown(query)
                 searched += query
                 return inner.search(query).filter { gated(query, it.pubkey) }
             }
@@ -102,6 +111,7 @@ class NegentropySnapshotTest {
                 withDTag: Boolean,
                 onPage: suspend (List<DocRef>) -> Boolean,
             ) {
+                failIfDown(query)
                 walked += query
                 inner.visitIds(query, withDTag) { page -> onPage(page.filter { ref -> inner.get(ref.id)?.let { gated(query, it.pubkey) } ?: false }) }
             }
@@ -110,7 +120,9 @@ class NegentropySnapshotTest {
     /** The store's clock; a test moves it to let an event expire after it was stored. */
     private var clock = System.currentTimeMillis() / 1000
 
-    private val store = NostrSemanticsStore(TrustProjection(recording, InMemoryReputationIndex()), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"), nowSecs = { clock })
+    private val trust = TrustProjection(recording, InMemoryReputationIndex())
+
+    private val store = NostrSemanticsStore(trust, relay = RelayUrlNormalizer.normalize("ws://localhost:7777"), nowSecs = { clock })
 
     private var seq = 0
 
@@ -414,5 +426,24 @@ class NegentropySnapshotTest {
             }
         assertEquals(servedTo(observer, Filter()), whole)
         assertTrue(whole!!.containsAll(notesBy(minRank = 2)) && (notesBy(minRank = 0) - notesBy(minRank = 2)).none { it in whole })
+    }
+
+    /**
+     * A reconcile is answered strictly: where a REQ under AcceptPartial would rank from what a
+     * degraded cluster can still search, a signed-in NEG-OPEN whose lens cannot be resolved fails
+     * (a NEG-ERR) rather than answer a partial or ungated set a peer would act on.
+     */
+    @Test
+    fun `a signed-in snapshot fails rather than answer ungated when the lens cannot be read`() {
+        seed()
+        // Cold, as after a 10040 write or a restart: the next lensed read must build the pass.
+        trust.recompute.invalidateProviders()
+        providerListsDown = true
+        val notes = Filter(kinds = listOf(1))
+        val down = runCatching { snapshotOf(observer, notes) }
+        assertTrue(down.isFailure, "no set at all, not an ungated one: got ${down.getOrNull()?.size} ids, searched=${searched.count { TrustProviderListEvent.KIND in it.kinds }}")
+        assertEquals(notesBy(minRank = 0), snapshotOf(null, notes), "an anonymous walk needs no lens")
+        providerListsDown = false
+        assertEquals(servedTo(observer, notes), snapshotOf(observer, notes))
     }
 }
