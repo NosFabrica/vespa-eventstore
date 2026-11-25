@@ -158,13 +158,20 @@ internal class VespaBatchFeed(
     ): List<Pair<T, String?>> {
         if (!available || items.isEmpty()) return items.map { it to null }
         val gate = Semaphore(concurrency)
-        return coroutineScope {
-            items
-                .chunked(batchSize)
-                .map { batch -> async { gate.withPermit { send(batch, request) } } }
-                .awaitAll()
-                .flatten()
-        }
+        val answered =
+            coroutineScope {
+                items
+                    .chunked(batchSize)
+                    .map { batch -> async { gate.withPermit { send(batch, request) } } }
+                    .awaitAll()
+                    .flatten()
+            }
+        // A document refused for want of space is the CLUSTER refusing every write (a feed block is
+        // cluster-wide): re-putting it through the feed client cannot succeed, and its retries held a
+        // refused batch of 100 for 5 s, 1,000 for 11 s, so a relay under a block left most publishes
+        // unanswered. Said at once instead, so the caller answers them all now.
+        answered.firstOrNull { it.second == INSUFFICIENT_STORAGE }?.let { throw EngineRefusesWrites("the engine is refusing writes ($INSUFFICIENT_STORAGE): its feed is blocked for disk or memory") }
+        return answered
     }
 
     private suspend fun <T> send(
@@ -294,5 +301,8 @@ internal class VespaBatchFeed(
          * interval, one batch re-put through the feed client.
          */
         const val RETRY_AFTER_MS = 300_000L
+
+        /** The handler's outcome for an operation refused because a content node is out of disk or memory. */
+        const val INSUFFICIENT_STORAGE = "INSUFFICIENT_STORAGE"
     }
 }

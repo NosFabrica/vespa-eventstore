@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore.engine.client
 
 import ai.vespa.feed.client.FeedClientBuilder
+import com.nosfabrica.vespa.eventstore.engine.app.AuthorShards
 
 /**
  * The Vespa client's PER-INSTANCE settings, as values rather than environment
@@ -61,6 +62,8 @@ class ClientTuning(
     val idFirst: Boolean? = null,
     /** `VESPA_RECENCY_MEMORY`: remember per read shape where the last page was found. */
     val recencyMemory: Boolean? = null,
+    /** `VESPA_SELECT_QUERIES`: send a text-free read as Vespa's JSON `select` instead of YQL. */
+    val selectQueries: Boolean? = null,
     /** `VESPA_BODY_EDGE`: PROTOTYPE, feed the body's edge n-grams. */
     val bodyEdgeFeed: Boolean? = null,
     /** `VESPA_ADDRESS_KEYED`: store replaceables under their NIP-01 address (engine-atomic supersession). */
@@ -74,6 +77,10 @@ class ClientTuning(
      * every eligible read id-first. At least 0. Added last, so no positional argument shifts.
      */
     val idFirstMaxDirectHits: Int? = null,
+    /** `VESPA_AUTHOR_SHARDS`: PROTOTYPE, the content clusters the authors are split across ([AuthorShards]). 1..256. */
+    val authorShards: Int? = null,
+    /** `VESPA_AUTHOR_BUCKETS`: PROTOTYPE, an explicit bucket map ([AuthorShards.BucketMap.spec]); wins over an even [authorShards]. */
+    val authorBuckets: String? = null,
 ) {
     // ---- resolution: the field, else the historical lenient read ------------
     //
@@ -113,6 +120,8 @@ class ClientTuning(
 
     internal fun recencyMemoryOrEnv(): Boolean = recencyMemory ?: envOn(RECENCY_MEMORY) ?: true
 
+    internal fun selectQueriesOrEnv(): Boolean = selectQueries ?: envOn(SELECT_QUERIES) ?: true
+
     /** Opt-IN, so only an explicit yes turns it on — the old parse, kept. */
     internal fun bodyEdgeFeedOrEnv(): Boolean = bodyEdgeFeed ?: env(BODY_EDGE)?.let { it == "1" || it.equals("true", ignoreCase = true) } ?: false
 
@@ -120,6 +129,18 @@ class ClientTuning(
     internal fun addressKeyedOrEnv(): Boolean = addressKeyed ?: env(ADDRESS_KEYED).let { it == "1" || it?.toBooleanStrictOrNull() == true }
 
     internal fun unboundedHitsOrEnv(): Int = unboundedHits ?: env(UNBOUNDED_HITS)?.toIntOrNull() ?: Int.MAX_VALUE
+
+    /** The author bucket map: [authorBuckets] read, else an even split of [authorShards], else one cluster. Refused when the two disagree. */
+    internal fun bucketMap(): AuthorShards.BucketMap {
+        val explicit = authorBuckets?.let(AuthorShards.BucketMap::parse)
+        if (explicit != null) {
+            require(authorShards == null || authorShards == explicit.clusters) {
+                "authorShards $authorShards disagrees with authorBuckets, which names ${explicit.clusters} clusters"
+            }
+            return explicit
+        }
+        return AuthorShards.BucketMap.even(authorShards ?: 1)
+    }
 
     companion object {
         const val FEED_BATCH = "VESPA_FEED_BATCH"
@@ -135,6 +156,7 @@ class ClientTuning(
         const val ID_FIRST = "VESPA_ID_FIRST"
         const val ID_FIRST_MAX_DIRECT_HITS = "VESPA_ID_FIRST_MAX_DIRECT_HITS"
         const val RECENCY_MEMORY = "VESPA_RECENCY_MEMORY"
+        const val SELECT_QUERIES = "VESPA_SELECT_QUERIES"
         const val BODY_EDGE = "VESPA_BODY_EDGE"
         const val ADDRESS_KEYED = "VESPA_ADDRESS_KEYED"
         const val UNBOUNDED_HITS = "VESPA_UNBOUNDED_HITS"

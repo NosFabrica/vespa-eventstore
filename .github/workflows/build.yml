@@ -62,3 +62,10 @@ jobs:
           cache-read-only: ${{ github.ref != 'refs/heads/main' }}
       - name: Vespa ↔ SQLite parity (real Vespa)
         run: ./gradlew :benchmark:test -Pintegration
+      # The PROTOTYPE author shards (docs/author-shards.md): the parity battery and the filter
+      # matrix again with the corpus split across two content clusters. AuthorShardsIT and
+      # AuthorShardsMoveIT already ran above (they deploy their own clusters); this holds the
+      # rest of the store to the same answers when sharded, so the off-by-default path cannot
+      # rot while nothing in production turns it on.
+      - name: The same gates on two author-shard clusters
+        run: ./gradlew :benchmark:test -Pintegration -DitAuthorShards=2 --tests '*VespaParityIT' --tests '*FilterMatrixIT'

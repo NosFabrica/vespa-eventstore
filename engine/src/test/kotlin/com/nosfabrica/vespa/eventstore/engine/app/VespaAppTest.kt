@@ -363,4 +363,151 @@ class VespaAppTest {
             )
         }
     }
+
+    @Test
+    fun `one author shard ships the package as built`() {
+        assertContentEquals(shipped, VespaApp.zipBytes(null, authorShards = 1))
+        assertEquals(1, VespaApp.authorShardsOf(null))
+        assertEquals(1, VespaApp.authorShardsOf("  "))
+        assertEquals(4, VespaApp.authorShardsOf("4"))
+        assertFailsWith<IllegalArgumentException> { VespaApp.authorShardsOf("0") }
+        assertFailsWith<IllegalArgumentException> { VespaApp.authorShardsOf("257") }
+        assertFailsWith<IllegalArgumentException> { VespaApp.authorShardsOf("two") }
+    }
+
+    /**
+     * Two shards: the bundled cluster stays `content` as shard 0, a copy becomes `content1`, and in
+     * each the event selection keeps the NIP-40 expiry test (garbage collection reads it) ANDed with
+     * the shard's pubkey test, while the reputation type stays global and is selected by its id.
+     */
+    @Test
+    fun `author shards split the content cluster by pubkey, keeping expiry and the global parent`() {
+        val xml = parse(entry("services.xml", VespaApp.zipBytes(null, authorShards = 2)))
+        val contents = xml.getElementsByTagName("content")
+        assertEquals(2, contents.length)
+        for (i in 0 until 2) {
+            val cluster = contents.item(i) as Element
+            assertEquals(AuthorShards.clusterName(i), cluster.getAttribute("id"))
+            val docs = cluster.getElementsByTagName("document")
+            val byType = (0 until docs.length).map { docs.item(it) as Element }.associateBy { it.getAttribute("type") }
+            val event = byType.getValue("event").getAttribute("selection")
+            assertTrue(event.startsWith("(event.expires_at > now()) and "), event)
+            assertTrue(event.endsWith(AuthorShards.selection("event.pubkey", i, 2)), event)
+            val reputation = byType.getValue("reputation")
+            assertEquals("true", reputation.getAttribute("global"))
+            assertEquals(AuthorShards.selection("id.specific", i, 2), reputation.getAttribute("selection"))
+        }
+        // Composes with the access-log rewrite rather than replacing it.
+        val both = parse(entry("services.xml", VespaApp.zipBytes("disabled", authorShards = 2)))
+        assertEquals(2, both.getElementsByTagName("content").length)
+        assertEquals(1, both.getElementsByTagName("accesslog").length)
+    }
+
+    /** An operator's own four-node package, the shape of `docs/services-multinode-example.xml`. */
+    private val multiNode =
+        """
+        <?xml version="1.0" encoding="utf-8" ?>
+        <services version="1.0">
+          <container id="query" version="1.0"><search /><nodes><node hostalias="query-0" /></nodes></container>
+          <content id="content" version="1.0">
+            <redundancy>2</redundancy>
+            <documents garbage-collection="true">
+              <document type="event" mode="index" selection="event.expires_at &gt; now()" />
+              <document type="reputation" mode="index" global="true" />
+            </documents>
+            <nodes>
+              <node distribution-key="0" hostalias="content-0" />
+              <node distribution-key="1" hostalias="content-1" />
+              <node distribution-key="2" hostalias="content-2" />
+              <node distribution-key="3" hostalias="content-3" />
+            </nodes>
+            <config name="vespa.config.search.core.proton"><numthreadspersearch>1</numthreadspersearch></config>
+          </content>
+        </services>
+        """.trimIndent()
+
+    /** The hostaliases of each content cluster in [xml], in order, `*` marking a retired node. */
+    private fun nodesByCluster(xml: String): Map<String, List<String>> {
+        val contents = parse(xml).getElementsByTagName("content")
+        return (0 until contents.length).associate { c ->
+            val cluster = contents.item(c) as Element
+            val nodes = cluster.getElementsByTagName("node")
+            cluster.getAttribute("id") to
+                (0 until nodes.length).map { (nodes.item(it) as Element).let { n -> n.getAttribute("hostalias") + if (n.getAttribute("retired") == "true") "*" else "" } }
+        }
+    }
+
+    /**
+     * Production's path (`docs/author-shards.md`, "A multi-node package"): new hosts form the new
+     * cluster, and every node holding data stays in `content`. With `redundancy 1` a node is the
+     * only copy of what it holds, so it cannot leave its cluster in one deploy.
+     */
+    @Test
+    fun `new hosts join a new cluster while every live node stays in content`() {
+        val map = AuthorShards.BucketMap.parse("00-b5=0,b6-ff=1")
+        val out = VespaApp.shardServices(multiNode, map, VespaApp.parseNodeGroups("0,1,2,3;4@content-4,5@content-5"))
+        assertEquals(mapOf("content" to listOf("content-0", "content-1", "content-2", "content-3"), "content1" to listOf("content-4", "content-5")), nodesByCluster(out))
+        assertEquals(map, VespaApp.bucketMapOf(out), "the map the deploy guard reads back")
+        val contents = parse(out).getElementsByTagName("content")
+        for (c in 0 until 2) {
+            val cluster = contents.item(c) as Element
+            assertEquals(
+                "2",
+                cluster
+                    .getElementsByTagName("redundancy")
+                    .item(0)
+                    .textContent
+                    .trim(),
+                "tuning copied to every cluster",
+            )
+            assertEquals(1, cluster.getElementsByTagName("numthreadspersearch").length)
+            val docs = cluster.getElementsByTagName("document")
+            val event = (0 until docs.length).map { docs.item(it) as Element }.single { it.getAttribute("type") == "event" }.getAttribute("selection")
+            assertTrue(event.startsWith("(event.expires_at > now()) and ") && event.endsWith(map.selection("event.pubkey", c)), event)
+        }
+        assertEquals(1, parse(out).getElementsByTagName("container").length, "the containers are left alone")
+    }
+
+    /** Vespa's way out of a cluster: retire first (its documents move to the others), then reassign. */
+    @Test
+    fun `a node the package retired may move to a new cluster or leave`() {
+        val retiring =
+            multiNode
+                .replace("""<node distribution-key="2" hostalias="content-2" />""", """<node distribution-key="2" hostalias="content-2" retired="true" />""")
+                .replace("""<node distribution-key="3" hostalias="content-3" />""", """<node distribution-key="3" hostalias="content-3" retired="true" />""")
+        val out = VespaApp.shardServices(retiring, AuthorShards.BucketMap.even(2), VespaApp.parseNodeGroups("0,1;2,3"))
+        assertEquals(mapOf("content" to listOf("content-0", "content-1"), "content1" to listOf("content-2", "content-3")), nodesByCluster(out), "serving, not retired, in their new cluster")
+        val dropped = VespaApp.shardServices(retiring, AuthorShards.BucketMap.even(2), VespaApp.parseNodeGroups("0,1;3,9@content-9"))
+        assertEquals(mapOf("content" to listOf("content-0", "content-1"), "content1" to listOf("content-3", "content-9")), nodesByCluster(dropped), "a retired node left out is removed")
+    }
+
+    @Test
+    fun `a node split that could lose or misplace data is refused`() {
+        val two = AuthorShards.BucketMap.even(2)
+
+        fun refused(
+            groups: String?,
+            xml: String = multiNode,
+        ) = assertFailsWith<IllegalArgumentException> { VespaApp.shardServices(xml, two, groups?.let(VespaApp::parseNodeGroups)) }.message.orEmpty()
+        // The split production's own nodes would have taken: 40% of a redundancy-1 corpus gone.
+        assertTrue("retired" in refused("0,1;2,3"), "live nodes moved to the new cluster")
+        assertTrue("retired" in refused("0,1,2;4@content-4,5@content-5"), "a live node left out")
+        assertTrue("every node would hold every cluster" in refused(null), "no groups over four nodes")
+        assertTrue("two groups" in refused("0,1,2,3;3,4@content-4"), "a node in two clusters")
+        val retiring = multiNode.replace("""<node distribution-key="3" hostalias="content-3" />""", """<node distribution-key="3" hostalias="content-3" retired="true" />""")
+        assertTrue("already" in refused("0,1,2;3@content-9,4@content-4", retiring), "a new node reusing a node's key")
+        assertTrue("<redundancy> of 2" in refused("0,1,2,3;4@content-4"), "fewer nodes than copies")
+        assertTrue("3 node groups" in refused("0,1,2,3;4@content-4;5@content-5"), "groups for another cluster count")
+        assertTrue("<group>" in refused("0,1,2,3;4@c,5@d", multiNode.replace("<nodes>", "<group name=\"g\" distribution-key=\"0\"><nodes>").replace("</nodes>", "</nodes></group>")))
+        assertEquals(multiNode, VespaApp.shardServices(multiNode, AuthorShards.BucketMap.even(1), null), "one cluster: the package as written")
+    }
+
+    @Test
+    fun `node groups name live nodes by key and new ones by key and host`() {
+        assertEquals(
+            listOf(listOf(VespaApp.ShardNode(0), VespaApp.ShardNode(1)), listOf(VespaApp.ShardNode(5, "node-5"))),
+            VespaApp.parseNodeGroups(" 0, 1 ; 5@node-5 "),
+        )
+        for (bad in listOf("0,x;1", "0;5@", "0;@node-5")) assertFailsWith<IllegalArgumentException>(bad) { VespaApp.parseNodeGroups(bad) }
+    }
 }

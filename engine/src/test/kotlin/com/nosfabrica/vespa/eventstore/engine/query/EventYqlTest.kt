@@ -21,6 +21,12 @@
 package com.nosfabrica.vespa.eventstore.engine.query
 import com.nosfabrica.vespa.eventstore.engine.app.VespaApp
 import com.nosfabrica.vespa.eventstore.engine.text.StemText
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.io.ByteArrayInputStream
 import java.util.zip.ZipInputStream
 import kotlin.test.Test
@@ -32,6 +38,140 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class EventYqlTest {
+    /**
+     * THE TWO FORMS ARE ONE QUERY. Every text-free shape's JSON `select` where-node, rendered back
+     * to YQL in [EventYql]'s own spelling, is exactly the where clause [EventYql.build] writes, so
+     * a clause added to one and not the other fails here; SelectQueryIT reads the same shapes both
+     * ways against a real Vespa. A read with free text, weights or an id prefix has no `select` form.
+     */
+    @Test
+    fun `a text-free read's select form is its yql where clause`() {
+        val a = "a1".repeat(32)
+        val b = "B2".repeat(32)
+        val shapes =
+            listOf(
+                EventQuery(limit = 10),
+                EventQuery(kinds = listOf(1), limit = 10),
+                EventQuery(kinds = listOf(1, 7, 30023), authors = listOf(a, b, a), limit = 50),
+                EventQuery(ids = listOf(a, "not-hex", b)),
+                EventQuery(owners = listOf(a), kinds = listOf(1059), limit = 20),
+                EventQuery(kinds = listOf(1), tags = mapOf("t" to listOf("bitcoin")), limit = 10),
+                EventQuery(kinds = listOf(1), tags = mapOf("t" to listOf("bitcoin", "nostr"), "p" to listOf(a)), limit = 10),
+                EventQuery(tagsAll = mapOf("t" to listOf("a", "b")), tags = mapOf("e" to listOf(b)), limit = 10),
+                EventQuery(tagsAll = mapOf("t" to listOf("only")), limit = 10),
+                EventQuery(tags = mapOf("t" to listOf("x\u0001y", "z")), limit = 10),
+                EventQuery(kinds = listOf(1), since = 100, until = 200, notExpiredAt = 150, limit = 10),
+                EventQuery(kinds = listOf(1), expiresBefore = 300),
+                EventQuery(kinds = listOf(1), ranking = EventYql.RANK_RECENCY_GATED, observer = a, rankKey = a, minRank = 2.0, limit = 10),
+            )
+        for (q in shapes) {
+            val vq = EventYql.build(q)!!
+            val form = assertNotNull(vq.select, "text-free: $q")
+            val where =
+                vq.yql
+                    .substringAfter(" from event where ")
+                    .substringBefore(" order by ")
+                    .substringBefore(" limit ")
+            assertEquals(where, renderWhere(Json.parseToJsonElement(assertNotNull(form.where, "rendered: $q"))), "where: $q")
+            assertEquals(vq.yql.contains(" order by created_at desc"), form.newestFirst, "order: $q")
+            assertEquals(q.limit, form.limit, "limit: $q")
+            assertEquals(EventYql.SUMMARY_FIELD_LIST, form.fields)
+        }
+        assertNull(EventYql.build(EventQuery(kinds = listOf(1), search = "bitcoin", limit = 10))!!.select)
+        assertNull(EventYql.build(EventQuery(kinds = listOf(1), notSearch = listOf("spam"), limit = 10))!!.select)
+        assertNull(EventYql.build(EventQuery(authorWeights = mapOf(a to 5), limit = 10))!!.select)
+        assertNull(EventYql.build(EventQuery(idPrefix = "ab", limit = 10))!!.select)
+        // A tag value's quote, backslash, tab, LF and CR are escaped, so the engine reads the value typed.
+        val awkward = "a\"b\\c\td\ne\rf"
+        val node = Json.parseToJsonElement(assertNotNull(EventYql.build(EventQuery(tags = mapOf("t" to listOf(awkward)), limit = 1))!!.select!!.where))
+        assertEquals(
+            "t:$awkward",
+            node.jsonObject["contains"]!!
+                .jsonArray[1]
+                .jsonPrimitive.content,
+        )
+        // The summary rewrites carry the form along: every field of `nip01`, or the two attributes.
+        val read = EventYql.build(EventQuery(kinds = listOf(1), limit = 10))!!
+        assertNull(EventYql.onSummaryClass(read, eventSummary = true).select!!.fields)
+        assertEquals(EventYql.ID_TIME_FIELDS, EventYql.idTimeOnly(read).select!!.fields)
+    }
+
+    /**
+     * [EventYql]'s YQL spelling of a `select` where-node: the root's `and` is the clause list
+     * (joined bare), a clause that is itself an `and` (tagsAll) is parenthesized, and a tag term
+     * standing as a clause is parenthesized, as tagClause writes it; inside a group it is not.
+     */
+    private fun renderWhere(node: JsonElement): String {
+        if (node is JsonPrimitive) return node.content
+        val (op, arg) = node.jsonObject.entries.single()
+        return if (op == "and") arg.jsonArray.joinToString(" and ") { renderClause(it, inGroup = false) } else renderClause(node, inGroup = false)
+    }
+
+    private fun renderClause(
+        node: JsonElement,
+        inGroup: Boolean,
+    ): String {
+        val (op, arg) = node.jsonObject.entries.single()
+        val args = arg.jsonArray
+
+        fun lit(e: JsonElement) = (e as JsonPrimitive).let { if (it.isString) "\"${it.content}\"" else it.content }
+        return when (op) {
+            "and" -> {
+                "(" + args.joinToString(" and ") { renderClause(it, inGroup = true) } + ")"
+            }
+
+            "in" -> {
+                "${args[0].jsonPrimitive.content} in (${args.drop(1).joinToString(", ", transform = ::lit)})"
+            }
+
+            "contains" -> {
+                "${args[0].jsonPrimitive.content} contains ${lit(args[1])}".let { if (inGroup) it else "($it)" }
+            }
+
+            "range" -> {
+                args[1]
+                    .jsonObject.entries
+                    .single()
+                    .let { (cmp, v) -> "${args[0].jsonPrimitive.content} $cmp ${v.jsonPrimitive.content}" }
+            }
+
+            else -> {
+                error("unknown select operator $op")
+            }
+        }
+    }
+
+    /**
+     * A read with no free text names its language, so the query container skips detecting it; one
+     * with search terms, phrases or exclusions does not, because there the language picks the
+     * stemming. Every builder that writes filter clauses follows the same rule.
+     */
+    @Test
+    fun `only a text-free read names its language`() {
+        val key = "a1".repeat(32)
+        val textFree =
+            listOf(
+                EventQuery(kinds = listOf(1), tags = mapOf("t" to listOf("bitcoin")), limit = 10),
+                EventQuery(authors = listOf(key), limit = 10),
+                EventQuery(ids = listOf(key)),
+            )
+        for (q in textFree) {
+            assertEquals(EventYql.TEXT_FREE_LANGUAGE, EventYql.build(q)!!.params[EventYql.LANGUAGE], "read: $q")
+            assertEquals(EventYql.TEXT_FREE_LANGUAGE, EventYql.buildCount(q)!!.params[EventYql.LANGUAGE], "count: $q")
+        }
+        assertEquals(EventYql.TEXT_FREE_LANGUAGE, EventYql.buildExistence(listOf(key))!!.params[EventYql.LANGUAGE])
+        val withText =
+            listOf(
+                EventQuery(kinds = listOf(1), search = "bitcoin", limit = 10),
+                EventQuery(kinds = listOf(1), phrases = listOf("proof of work"), limit = 10),
+                EventQuery(kinds = listOf(1), notSearch = listOf("spam"), limit = 10),
+            )
+        for (q in withText) {
+            assertNull(EventYql.build(q)!!.params[EventYql.LANGUAGE], "read: $q")
+            assertNull(EventYql.buildCount(q)!!.params[EventYql.LANGUAGE], "count: $q")
+        }
+    }
+
     @Test
     fun `a multi-word search carries the typed words as a rank-only body phrase`() {
         // event.sd's body_phrase() needs the typed words ADJACENT in the query
@@ -362,9 +502,10 @@ class EventYqlTest {
         val q = EventYql.build(EventQuery())!!
         assertEquals("select ${EventYql.SUMMARY_FIELDS} from event where true order by created_at desc", q.yql)
         assertEquals(EventYql.RANK_UNRANKED, q.ranking)
-        // Nothing but the match-thread opt-out: plain recall is the shape the
-        // cluster's thread ceiling is NOT meant for (EventYql.MATCH_THREADS).
-        assertEquals(mapOf(EventYql.MATCH_THREADS to EventYql.SINGLE_MATCH_THREAD), q.params)
+        // Nothing but the match-thread opt-out (plain recall is the shape the
+        // cluster's thread ceiling is NOT meant for, EventYql.MATCH_THREADS) and
+        // the named language of a read with no text (EventYql.LANGUAGE).
+        assertEquals(mapOf(EventYql.LANGUAGE to EventYql.TEXT_FREE_LANGUAGE, EventYql.MATCH_THREADS to EventYql.SINGLE_MATCH_THREAD), q.params)
     }
 
     @Test
@@ -1354,7 +1495,7 @@ class EventYqlTest {
     fun `observer is ranking context only — never emitted for unranked recall`() {
         val unranked = EventYql.build(EventQuery(kinds = listOf(1), observer = hexA))!!
         assertEquals(
-            mapOf(EventYql.MATCH_THREADS to EventYql.SINGLE_MATCH_THREAD),
+            mapOf(EventYql.LANGUAGE to EventYql.TEXT_FREE_LANGUAGE, EventYql.MATCH_THREADS to EventYql.SINGLE_MATCH_THREAD),
             unranked.params,
             "no term, no profile: pure NIP-01 recall, and no ranking context at all",
         )

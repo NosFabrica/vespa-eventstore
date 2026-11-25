@@ -245,6 +245,24 @@ object EventYql {
     const val SINGLE_MATCH_THREAD = "1"
 
     /**
+     * The query's language, named so the container does not DETECT it. With no language set, the
+     * query container runs OpenNLP language detection over the query's terms on every request,
+     * and for a read with no free text those terms are pubkeys, ids and tag values: measured on
+     * replayed `#t` reads (32 clients, the same 1,000 reads, identical answers), naming it cut the
+     * container's CPU 5% per YQL query. Sent only by [isTextFree] reads, whose every term is on a
+     * `cased` attribute (id, pubkey, kind, created_at, tag_index, owner, expires_at, event.sd),
+     * where no language processing applies, so the value cannot change what matches. A read with
+     * search terms, phrases or exclusions keeps detection: there the language picks the stemming.
+     */
+    const val LANGUAGE = "model.language"
+
+    /** [LANGUAGE]'s value for a text-free read. Any code would do; none reaches an attribute. */
+    const val TEXT_FREE_LANGUAGE = "en"
+
+    /** Whether [q] carries no free text: no search terms, phrases or exclusions ([LANGUAGE]). */
+    fun isTextFree(q: EventQuery): Boolean = q.search.isNullOrBlank() && q.phrases.isEmpty() && q.notSearch.isEmpty()
+
+    /**
      * Vespa's query-time SORTING DEGRADER. When a query's primary sort key is a
      * single-value numeric fast-search attribute — `created_at` here — Vespa
      * activates match-phase degradation BY DEFAULT, on EVERY rank profile
@@ -329,6 +347,12 @@ object EventYql {
      */
     const val SUMMARY_EVENT = "nip01"
 
+    /** [SUMMARY_FIELDS] as a list, the `fields` of a [SelectForm] that names them. */
+    val SUMMARY_FIELD_LIST: List<String> = SUMMARY_FIELDS.split(", ")
+
+    /** The two attributes an [idTimeOnly] read names. */
+    val ID_TIME_FIELDS: List<String> = listOf("id", "created_at")
+
     /** The `select …` a read built here starts with, naming [SUMMARY_FIELDS]. */
     private const val SELECT_EVENT = "select $SUMMARY_FIELDS from "
 
@@ -345,7 +369,11 @@ object EventYql {
         eventSummary: Boolean,
     ): VespaQuery {
         if (!eventSummary || "presentation.summary" in vq.params || !vq.yql.startsWith(SELECT_EVENT)) return vq
-        return vq.copy(yql = "select * from " + vq.yql.substring(SELECT_EVENT.length), params = vq.params + ("presentation.summary" to SUMMARY_EVENT))
+        return vq.copy(
+            yql = "select * from " + vq.yql.substring(SELECT_EVENT.length),
+            params = vq.params + ("presentation.summary" to SUMMARY_EVENT),
+            select = vq.select?.withFields(null),
+        )
     }
 
     /**
@@ -365,6 +393,7 @@ object EventYql {
         vq.copy(
             yql = vq.yql.replaceFirst("select $SUMMARY_FIELDS from ", "select id, created_at from "),
             params = vq.params + ("presentation.summary" to SUMMARY_IDTIME),
+            select = vq.select?.withFields(ID_TIME_FIELDS),
         )
 
     // Attribute-only projections for snapshot walks — see buildIdTime.
@@ -421,6 +450,7 @@ object EventYql {
             completeCoverage = q.complete,
             sampled = q.sampled,
             shape = clauseShape(q),
+            authorFilter = authorFilterOf(q),
         )
     }
 
@@ -436,7 +466,7 @@ object EventYql {
         val clause = hexIn("id", ids) ?: return null
         return VespaQuery(
             yql = "select id from event where $clause",
-            params = mapOf("presentation.summary" to SUMMARY_DEDUP, MATCH_THREADS to SINGLE_MATCH_THREAD),
+            params = mapOf("presentation.summary" to SUMMARY_DEDUP, MATCH_THREADS to SINGLE_MATCH_THREAD, LANGUAGE to TEXT_FREE_LANGUAGE),
             ranking = RANK_UNRANKED,
             shape = "ids",
         )
@@ -689,7 +719,8 @@ object EventYql {
         // This sort also invites Vespa's own match-phase cut on `unranked`,
         // which the client refuses; only the id walk opts out — see
         // [SORT_DEGRADING] for the measurement and why the scope stops there.
-        val order = if (ranking == RANK_UNRANKED || ranking == RANK_RECENCY) " order by created_at desc" else ""
+        val newestFirst = ranking == RANK_UNRANKED || ranking == RANK_RECENCY
+        val order = if (newestFirst) " order by created_at desc" else ""
         val limit = q.limit?.let { if (it <= 0) return null else " limit $it" } ?: ""
         return VespaQuery(
             yql = "select $SUMMARY_FIELDS from event where $where$order$limit",
@@ -699,6 +730,8 @@ object EventYql {
             sampled = q.sampled,
             acceptsPartial = q.acceptsPartial,
             shape = clauseShape(q),
+            authorFilter = authorFilterOf(q),
+            select = if (selectable(q)) SelectForm(q, SUMMARY_FIELD_LIST, newestFirst, q.limit) else null,
         )
     }
 
@@ -872,6 +905,7 @@ object EventYql {
             ranking = ranking,
             acceptsPartial = q.acceptsPartial,
             shape = clauseShape(q),
+            authorFilter = authorFilterOf(q),
         )
     }
 
@@ -970,6 +1004,7 @@ object EventYql {
             ranking = ranking,
             acceptsPartial = q.acceptsPartial,
             shape = clauseShape(q),
+            authorFilter = if (source == EVENT_SOURCE) authorFilterOf(q) else null,
         )
     }
 
@@ -1182,6 +1217,159 @@ object EventYql {
     }
 
     /**
+     * The author clauses of [q], carried UNPROCESSED to the client ([AuthorFilter]): null, and no
+     * allocation, when the query names no author. Normalizing them costs a pass over the list, and
+     * only a sharded client reads them, so the work is deferred to [AuthorFilter.scope].
+     */
+    internal fun authorFilterOf(q: EventQuery): AuthorFilter? = if (q.authors.isEmpty() && q.authorWeights.isEmpty()) null else AuthorFilter(q.authors, q.authorWeights.keys)
+
+    /** [authorFilterOf]'s scope, computed: what a sharded client restricts the query to. */
+    internal fun authorScopeOf(q: EventQuery): Set<String>? = authorFilterOf(q)?.scope()
+
+    /**
+     * Whether [q] has a `select` form ([SelectForm]): a text-free read with no weighted key set and
+     * no id prefix. Cheap, so [build] decides with it and leaves [selectWhere]'s rendering until a
+     * read is really sent that way. For a query [build] writes, [selectWhere] then renders.
+     */
+    internal fun selectable(q: EventQuery): Boolean = isTextFree(q) && q.idWeights.isEmpty() && q.authorWeights.isEmpty() && q.idPrefix == null
+
+    /**
+     * [q]'s WHERE as the JSON text of a Vespa `select` where-node ([SelectForm]), or null when it
+     * has no such form here: a read that is not [selectable], or one [filterClauses] proves matches
+     * nothing.
+     *
+     * MIRRORS [filterClauses]' text-free branches clause for clause, with the same value rules
+     * ([hexIn]'s lowercase-validate-dedupe, [tagClause]'s unquotable-value rule), so the two forms
+     * match the same documents: `EventYqlTest` renders this back to YQL and compares it with
+     * [build]'s, and `SelectQueryIT` reads every shape both ways against a real Vespa. A clause
+     * added there wants its form here, or reads with it silently stay YQL (never a wrong answer).
+     *
+     * Written straight into one buffer sized up front, as [hexIn] writes its clause: an author
+     * recall's node runs to tens of kilobytes, and a tree of JSON elements per key cost an object
+     * per key and a second copy of the text.
+     */
+    internal fun selectWhere(q: EventQuery): String? {
+        if (!selectable(q)) return null
+        // One clause per constraint present (each either writes one or makes the query null), so the
+        // `and` wrapper is known before the first is written.
+        var clauses = q.tags.size + q.tagsAll.size
+        if (q.ids.isNotEmpty()) clauses++
+        if (q.kinds.isNotEmpty()) clauses++
+        if (q.authors.isNotEmpty()) clauses++
+        if (q.owners.isNotEmpty()) clauses++
+        if (q.since != null) clauses++
+        if (q.until != null) clauses++
+        if (q.expiresBefore != null) clauses++
+        if (q.notExpiredAt != null) clauses++
+        if (clauses == 0) return "true"
+        val out = StringBuilder(64 + 68 * (q.ids.size + q.authors.size + q.owners.size) + 8 * q.kinds.size + 32 * (q.tags.size + q.tagsAll.size))
+        var written = 0
+
+        fun next(): StringBuilder = if (written++ > 0) out.append(',') else out
+
+        if (clauses > 1) out.append("{\"and\":[")
+        if (q.ids.isNotEmpty() && !appendHexIn(next(), "id", q.ids)) return null
+        if (q.kinds.isNotEmpty()) {
+            next().append("{\"in\":[\"kind\"")
+            q.kinds.forEach { out.append(',').append(it) }
+            out.append("]}")
+        }
+        if (q.authors.isNotEmpty() && !appendHexIn(next(), "pubkey", q.authors)) return null
+        if (q.owners.isNotEmpty() && !appendHexIn(next(), "owner", q.owners)) return null
+        for ((name, values) in q.tags) {
+            if (!isIndexableTagName(name) || values.isEmpty()) return null
+            val usable = values.filter(::isQuotable)
+            if (usable.isEmpty()) return null
+            if (usable.size > 1) {
+                next().append("{\"in\":[\"tag_index\"")
+                usable.forEach { appendTagTerm(out.append(','), name, it) }
+                out.append("]}")
+            } else {
+                appendContains(next(), name, usable[0])
+            }
+        }
+        for ((name, values) in q.tagsAll) {
+            if (!isIndexableTagName(name) || values.isEmpty() || !values.all(::isQuotable)) return null
+            if (values.size == 1) {
+                appendContains(next(), name, values[0])
+            } else {
+                next().append("{\"and\":[")
+                values.forEachIndexed { i, v -> appendContains(if (i > 0) out.append(',') else out, name, v) }
+                out.append("]}")
+            }
+        }
+        q.since?.let { appendRange(next(), "created_at", ">=", it) }
+        q.until?.let { appendRange(next(), "created_at", "<=", it) }
+        q.expiresBefore?.let { appendRange(next(), "expires_at", "<", it) }
+        q.notExpiredAt?.let { appendRange(next(), "expires_at", ">", it) }
+        if (clauses > 1) out.append("]}")
+        return out.toString()
+    }
+
+    /** `{"in":["<field>","<hex>",…]}` over [values] as [hexIn] keeps them; false when none is valid hex (no match). */
+    private fun appendHexIn(
+        out: StringBuilder,
+        field: String,
+        values: List<String>,
+    ): Boolean {
+        val hexes = LinkedHashSet<String>(values.size * 2)
+        values.forEach { v -> v.lowercase().let { if (Hex.isHexKey(it)) hexes += it } }
+        if (hexes.isEmpty()) return false
+        out.append("{\"in\":[\"").append(field).append('"')
+        hexes.forEach { out.append(",\"").append(it).append('"') }
+        out.append("]}")
+        return true
+    }
+
+    private fun appendContains(
+        out: StringBuilder,
+        name: String,
+        value: String,
+    ) {
+        appendTagTerm(out.append("{\"contains\":[\"tag_index\","), name, value).append("]}")
+    }
+
+    private fun appendRange(
+        out: StringBuilder,
+        field: String,
+        op: String,
+        value: Long,
+    ) {
+        out
+            .append("{\"range\":[\"")
+            .append(field)
+            .append("\",{\"")
+            .append(op)
+            .append("\":")
+            .append(value)
+            .append("}]}")
+    }
+
+    /**
+     * `"<name>:<value>"` as a JSON string. [isQuotable] already holds every value here to tab, LF, CR
+     * and the characters from space up, so those three, the quote and the backslash are all that
+     * need escaping.
+     */
+    private fun appendTagTerm(
+        out: StringBuilder,
+        name: String,
+        value: String,
+    ): StringBuilder {
+        out.append('"').append(name).append(':')
+        for (c in value) {
+            when (c) {
+                '"' -> out.append("\\\"")
+                '\\' -> out.append("\\\\")
+                '\t' -> out.append("\\t")
+                '\n' -> out.append("\\n")
+                '\r' -> out.append("\\r")
+                else -> out.append(c)
+            }
+        }
+        return out.append('"')
+    }
+
+    /**
      * The shared WHERE clauses (filters + optional search term + exclusions); null when the filter provably matches nothing.
      * [bodyPhrase] adds the rank-only body phrase, which only [RANK_SEARCH]'s second phase reads — see the clause.
      */
@@ -1191,6 +1379,7 @@ object EventYql {
         bodyPhrase: Boolean = false,
     ): List<String>? {
         val clauses = ArrayList<String>()
+        if (isTextFree(q)) params[LANGUAGE] = TEXT_FREE_LANGUAGE
 
         if (q.ids.isNotEmpty()) clauses += hexIn("id", q.ids) ?: return null
         if (q.idWeights.isNotEmpty()) clauses += hexDotProduct("id", q.idWeights) ?: return null
