@@ -140,9 +140,9 @@ object VespaApp {
      * (the subject; a cell update carries no `pubkey` to route by).
      *
      * The copies share the original's `<nodes>`, which on the bundled single-host package is
-     * one host running one search node per cluster. A real multi-host deployment writes its own
-     * services.xml anyway (`docs/services-multinode-example.xml`) and takes the selections from
-     * [AuthorShards.selection].
+     * one host running one search node per cluster. A multi-host deployment that writes its own
+     * services.xml (`docs/services-multinode-example.xml`) splits it with [shardServices], which
+     * also gives each cluster its own nodes.
      *
      * NOT A MIGRATION. With `garbage-collection="true"` a cluster's selection is also what its
      * content nodes KEEP: deploying a new shard count over a corpus fed under another one makes
@@ -203,6 +203,124 @@ object VespaApp {
         }
         return serialize(doc, servicesXml.length * shards)
     }
+
+    /**
+     * An OPERATOR'S OWN multi-host [servicesXml] split into the store's author-shard clusters by
+     * [buckets], for a deployment that deploys its own package (`AUTO_DEPLOY=false` in
+     * vespa-relay) rather than the bundled single-host one (`docs/author-shards.md`, "A
+     * multi-node package"). The package must have exactly one content cluster, `content`, holding
+     * `event` and `reputation`, with its nodes listed flat (no `<group>`).
+     *
+     * [nodeGroups] names, by `distribution-key`, the nodes each cluster gets: cluster i keeps only
+     * the nodes in `nodeGroups[i]`, so each node holds 1/K of the reputation documents, which is
+     * the point. Every node must be in exactly one group, and each group must hold at least the
+     * cluster's `<redundancy>` (and `<min-redundancy>`) nodes, or Vespa could not place every copy.
+     * Null keeps every node in every cluster, which is only right for one host (the bundled package:
+     * one search node per cluster on it), and is refused for a package listing more than one node.
+     *
+     * Everything else in the cluster (tuning, `<config>`, `<engine>`, expiry selection) is copied to
+     * every cluster as written, and the bucket map is recorded as the comment the deploy guard
+     * reads ([bucketMapOf]), so `SchemaDeployer.checkShardChange` judges this package as it judges
+     * the bundled one. A one-cluster map returns [servicesXml] unchanged.
+     */
+    fun shardServices(
+        servicesXml: String,
+        buckets: AuthorShards.BucketMap,
+        nodeGroups: List<Set<Int>>?,
+    ): String {
+        if (buckets.clusters == 1) {
+            require(nodeGroups == null || nodeGroups.size == 1) { "a one-cluster map takes one node group, not ${nodeGroups?.size}" }
+            return servicesXml
+        }
+        val source = parse(servicesXml)
+        val contents = source.getElementsByTagName(CONTENT)
+        require(contents.length == 1) { "$SERVICES declares ${contents.length} <$CONTENT> elements; author sharding splits exactly one" }
+        val base = contents.item(0) as Element
+        require(base.getElementsByTagName("group").length == 0) {
+            "$SERVICES' content cluster uses <group> (grouped distribution); split it by hand: shardServices handles a flat <nodes> list"
+        }
+        val keys = nodeKeys(base)
+        if (nodeGroups == null) {
+            require(keys.size <= 1) {
+                "$SERVICES' content cluster lists ${keys.size} nodes: name which go to each of the ${buckets.clusters} clusters " +
+                    "(otherwise every node would hold every cluster, and none would hold fewer reputation documents)"
+            }
+            return shardContent(servicesXml, buckets)
+        }
+        require(nodeGroups.size == buckets.clusters) { "${nodeGroups.size} node groups for ${buckets.clusters} clusters" }
+        nodeGroups.forEachIndexed { i, g -> require(g.isNotEmpty()) { "cluster ${AuthorShards.clusterName(i)} has no nodes" } }
+        val all = nodeGroups.flatten()
+        require(all.size == all.toSet().size) { "a node is in two groups: ${all.groupingBy { it }.eachCount().filterValues { it > 1 }.keys.sorted()}" }
+        require(all.toSet() == keys.toSet()) {
+            "the groups name distribution keys ${all.toSet().sorted()}, the content cluster lists ${keys.sorted()}: every node goes to exactly one cluster"
+        }
+        val copies = listOf("redundancy", "min-redundancy").mapNotNull { tag -> firstText(base, tag)?.toIntOrNull()?.let { tag to it } }
+        for ((tag, n) in copies) {
+            nodeGroups.forEachIndexed { i, g ->
+                require(g.size >= n) { "cluster ${AuthorShards.clusterName(i)} gets ${g.size} node(s), fewer than its <$tag> of $n" }
+            }
+        }
+        // Split as for one host, then drop from each cluster the nodes it does not get.
+        val doc = parse(shardContent(servicesXml, buckets))
+        val clusters = doc.getElementsByTagName(CONTENT)
+        for (i in 0 until clusters.length) {
+            val cluster = clusters.item(i) as Element
+            val index = AuthorShards.clusterIndex(cluster.getAttribute("id")) ?: error("unexpected content cluster '${cluster.getAttribute("id")}'")
+            val nodes = directNodes(cluster)
+            for (node in nodes) {
+                val key = node.getAttribute("distribution-key").toInt()
+                if (key !in nodeGroups[index]) {
+                    // The node and the whitespace before it, so the list keeps its indentation.
+                    (node.previousSibling?.takeIf { it.nodeType == org.w3c.dom.Node.TEXT_NODE && it.nodeValue.isBlank() })?.let { node.parentNode.removeChild(it) }
+                    node.parentNode.removeChild(node)
+                }
+            }
+        }
+        return serialize(doc, servicesXml.length * buckets.clusters)
+    }
+
+    /**
+     * Node groups written `0,1,2;3,4`: cluster i gets the distribution keys of the i-th
+     * `;`-separated list. What `shardPackage` reads from `SHARD_NODES`.
+     */
+    fun parseNodeGroups(spec: String): List<Set<Int>> =
+        spec.split(';').map { group ->
+            group
+                .split(',')
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .map { it.toIntOrNull() ?: throw IllegalArgumentException("'$it' in '$spec' is not a distribution key") }
+                .toSet()
+        }
+
+    /** The distribution keys of [content]'s `<nodes>` children, in order; a node without one is refused. */
+    private fun nodeKeys(content: Element): List<Int> =
+        directNodes(content).map { n ->
+            n.getAttribute("distribution-key").toIntOrNull() ?: error("a content node has no distribution-key: ${n.getAttribute("hostalias")}")
+        }
+
+    /** The `<node>` elements directly under [content]'s `<nodes>`. */
+    private fun directNodes(content: Element): List<Element> {
+        val lists = content.getElementsByTagName("nodes")
+        val out = ArrayList<Element>()
+        for (i in 0 until lists.length) {
+            val list = lists.item(i) as Element
+            if (list.parentNode != content) continue
+            val children = list.childNodes
+            for (j in 0 until children.length) (children.item(j) as? Element)?.takeIf { it.tagName == "node" }?.let(out::add)
+        }
+        return out
+    }
+
+    private fun firstText(
+        parent: Element,
+        tag: String,
+    ): String? =
+        parent
+            .getElementsByTagName(tag)
+            .item(0)
+            ?.textContent
+            ?.trim()
 
     /**
      * Return [servicesXml] with `<accesslog type="disabled" />` as the

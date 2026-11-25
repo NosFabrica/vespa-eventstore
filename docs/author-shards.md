@@ -504,3 +504,45 @@ goes through only over an empty deployment. A count is taken only from an answer
 coverage and no errors: with the content nodes down the container still answers, reading 0
 documents, and 0 would let any narrowing through. Moving to a new layout on real data is either the move above
 or a fresh deployment fed from the old one, for example by NIP-77 sync.
+
+## A multi-node package
+
+The store's bundled package is single-host: `VespaApp.zipBytes` splits its one content cluster
+into K clusters that all run on that host. A real deployment (production's five nodes) deploys
+its OWN package instead (`AUTO_DEPLOY=false` in vespa-relay; `docs/services-multinode-example.xml`),
+so its sharded `services.xml` has to come from that package. `./gradlew :benchmark:shardPackage`
+builds it:
+
+```
+APP_DIR=path/to/your/app  OUT_DIR=path/to/split-app \
+VESPA_AUTHOR_SHARDS=2  SHARD_NODES="0,1,2;3,4" \
+VESPA_CONFIG_URL=http://config:19071  VESPA_URL=http://query:8080 \
+./gradlew :benchmark:shardPackage
+```
+
+- It splits the one `content` cluster with `VespaApp.shardServices`. Each cluster gets the
+  store's document selections and only the nodes `SHARD_NODES` names for it, by
+  `distribution-key`: cluster `content` gets the first list, `content1` the second, and so on.
+  Everything else in the cluster (`<redundancy>`, `<engine>`, `<config>`, the expiry selection)
+  is copied to every cluster as written, and the containers, `hosts.xml` and the rest of the
+  package are left alone.
+- It records the bucket map as the comment the deploy guard reads, so the store judges this
+  package exactly as it judges the bundled one.
+- It refuses a split that could lose or misplace data:
+  - a node left out, or named for two clusters;
+  - a cluster with fewer nodes than its `<redundancy>` or `<min-redundancy>`;
+  - groups for another cluster count;
+  - `<group>` (grouped distribution, which it does not split);
+  - a package of several nodes with no `SHARD_NODES`. Every node would then hold every
+    cluster, and none would hold fewer reputation documents, which is the whole point.
+- With `VESPA_CONFIG_URL` set it runs the deploy guard against the LIVE deployment for the
+  package it wrote, read-only. A deploy by hand never passes through the store, so this is
+  where a package that would make a cluster keep fewer buckets over data gets refused (exit
+  code 2) before anyone deploys it. Checked on a real Vespa: over the bundled one-cluster
+  package holding 42,000 documents, the two-cluster split was refused (`'content' would drop 128
+  bucket(s)`); over an empty Vespa, and for the unsplit package, it passed.
+
+Then set the same `VESPA_AUTHOR_SHARDS` (or `VESPA_AUTHOR_BUCKETS`) on every store that opens
+the deployment (in vespa-relay, the relay and the sync), so each client knows the clusters. A
+move to more clusters is still the move above, with each step's package (overlap, final) built
+the same way: `VESPA_AUTHOR_BUCKETS` set to `BucketMove.overlap.spec()`, then to the final map.

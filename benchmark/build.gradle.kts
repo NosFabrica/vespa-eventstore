@@ -360,6 +360,13 @@ tasks.register<JavaExec>("shardScaleProbe") {
 }
 
 // The corpus by author bucket, read-only, before an author split is chosen. See BucketReport.kt.
+tasks.register<JavaExec>("shardPackage") {
+    group = "verification"
+    description = "An operator's own application package split into author-shard clusters, checked against the live deployment's guard"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.load.ShardPackage")
+}
+
 tasks.register<JavaExec>("bucketReport") {
     group = "verification"
     description = "Events and reputation documents per author bucket, and even bucket maps for a few cluster counts"

@@ -106,6 +106,14 @@ object AuthorShards {
     /** Shard [index]'s content cluster id: shard 0 is [BASE_CLUSTER], the rest `content1`, `content2`, … */
     fun clusterName(index: Int): String = if (index == 0) BASE_CLUSTER else "$BASE_CLUSTER$index"
 
+    /** The index [clusterName] gave [name]; null for a name it never gives. */
+    fun clusterIndex(name: String): Int? =
+        when {
+            name == BASE_CLUSTER -> 0
+            name.startsWith(BASE_CLUSTER) -> name.removePrefix(BASE_CLUSTER).toIntOrNull()?.takeIf { it in 1 until MAX && clusterName(it) == name }
+            else -> null
+        }
+
     /** Every shard's cluster id, in shard order. */
     fun clusters(shards: Int): List<String> {
         require(shards in 1..MAX) { "shards $shards is outside 1..$MAX" }
