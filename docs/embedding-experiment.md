@@ -268,6 +268,52 @@ What it says:
    because it reads `bitcoin` and `nostr` as navigational. A better classifier is worth up
    to the difference.
 
+### 8.4 Under production's name statistics (step 1)
+
+Production damps the perfect-match rung by how common the query word is as a name
+(`perfect_share()`). On the production sample (`benchmark/name_df.json`), that takes the rung
+fully off `bitcoin` (6.7e-4) and `nostr` (6.4e-4), and partly off `ai`, `music`, `news` and
+`crypto`. Multi-word queries are never damped. An evaluation index is under
+`perfect_df_min_docs` (100 000), so §8.2 ran with the damping OFF, and part of its gain could
+have been something production already does. The `prod_*` configs lift the guard and run with
+`--name-df benchmark/name_df.json`.
+
+| vs production | Δ nDCG@10 | 95% CI | W/T/L | topical |
+|---|---:|---|---:|---:|
+| `baseline` (damping off) | −0.006 | [−0.015, +0.002] | 4/39/10 | +0.002 |
+| `prod_baseline` (damping as production) | −0.001 | [−0.012, +0.010] | 8/36/9 | +0.015 |
+| `prod_intent_perfect_off` | +0.023 | [−0.003, +0.052] | 16/25/12 | +0.068 |
+| `prod_probe_perfect_off` | +0.015 | [−0.007, +0.038] | 16/26/11 | +0.041 |
+
+`prod_baseline` is the faithful local replay of production (−0.001), so it is the right baseline
+for the candidate's own effect. Paired against it (`--run` files, same judgments):
+
+| vs `prod_baseline` | Δ nDCG@10 | 95% CI | W/T/L | topical (24) | every other stratum |
+|---|---:|---|---:|---:|---|
+| **candidate** (`prod_intent_perfect_off`, oracle) | **+0.024** | **[+0.002, +0.049]** | 12/34/7 | **+0.053** | 0.000 |
+| probe (`prod_probe_perfect_off`) | +0.015 | [−0.004, +0.036] | 11/33/9 | +0.026 | ambiguous +0.089, prefix −0.010, multilingual −0.005 |
+
+Production's damping accounted for about 0.015 of §8.2's +0.068, and the candidate's own share
+is **+0.053 topical**. The CI's low end clears −0.01. By construction, it leaves every non-topical
+topic exactly as it was.
+
+**The two named losses have one mechanism: the reference work titled exactly the topic.**
+
+- `the art of war` (nDCG −0.17, RR −0.30): the wiki article "The Art of War" (kind 30818, grade 3)
+  goes from #2 to #5, below articles that only mention war.
+- `pico 8` (RR −0.50): the wiki article "PICO-8" (grade 3) leaves the top 6.
+
+On a topical query, the perfect-match rung pays two different things. One is an ENTITY named the
+topic: an app or calendar event called "Coffee", graded 1–2, which is what the rung should stop
+paying. The other is the canonical REFERENCE document about it: a wiki page or long-form
+article whose title is the topic, graded 3. Dropping the rung for topical queries drops both.
+
+**Next refinement:** drop it only off entity kinds, and keep it on reference kinds (30818 wiki,
+30023 long-form). `attribute(kind)` makes that one expression. It should remove both losses
+without giving back the `coffee`-style gains, whose perfect matches are apps (32267), calendar
+events (31923) and lists. Then grade the candidate's unjudged rows (`pool_step1.json`: 190 rows
+over six configs, fewer for the candidate alone) and read it against the ship rule.
+
 ### 8.3 What is owed
 
 - **Grades.** `intent_perfect_off` is the candidate. Its unjudged rows are in the round's

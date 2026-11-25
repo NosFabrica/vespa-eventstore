@@ -325,6 +325,19 @@ object RankAb {
                     "w_sem_tier_topical" to 550.0,
                     "w_sem_mult_topical" to 1.0,
                 ),
+            // §8.4: the same, under PRODUCTION's name statistics. Production
+            // damps the perfect-match rung by how common the word is as a name
+            // (perfect_share(), event.sd), which already takes it off `bitcoin`
+            // and `nostr` and partly off `ai`, `music`, `news`, `crypto`. An
+            // eval index is under perfect_df_min_docs, so that damping is OFF
+            // there unless the guard is lifted. RUN THESE WITH
+            // `--name-df benchmark/name_df.json`, or they read the local
+            // corpus's own name statistics, which the topics' pages inflate.
+            "prod_baseline" to mapOf("perfect_df_min_docs" to 0.0),
+            "prod_intent_perfect_off" to
+                mapOf("perfect_df_min_docs" to 0.0, "_intent" to 1.0, "topical_cap" to 1e12, "topical_drop_precision" to 0.0),
+            "prod_probe_perfect_off" to
+                mapOf("perfect_df_min_docs" to 0.0, "_intent" to 2.0, "topical_cap" to 1e12, "topical_drop_precision" to 0.0),
             // The same, decided by the probe instead of the label.
             "probe_cap_550" to mapOf("_intent" to 2.0, "topical_cap" to 550.0),
             "probe_hybrid" to
