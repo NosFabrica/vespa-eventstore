@@ -474,6 +474,32 @@ class TrustReconcilerTest {
             assertTrue(reconciler.verify().isClean(), "repair converged")
         }
 
+    /**
+     * A stale version left stored beside its winner (a supersession sweep that
+     * failed after the winner was written) must not speak for the address. The
+     * newest version dropped `rank`, which the cell path reads as a retraction;
+     * a derive that folded every version kept the stale rank, so verify called
+     * the faithful cells drift and every repair wrote the retracted rank back.
+     */
+    @Test
+    fun `a derive reads only the newest version, so a stale one cannot bring back a retracted rank`() =
+        runBlocking {
+            store.insert(list10040())
+            val v1 = card(rank = 87, followers = 120)
+            store.insert(v1)
+            store.insert(card(rank = null, followers = 150)) // newer: rank retracted
+            assertNull(reputations.get(subject)?.influenceScores?.get(ServiceKey(service)), "the cell path retracted the rank")
+            index.put(v1.toDoc()) // the stale version, left stored
+
+            val audit = reconciler.verify(repair = true)
+            assertTrue(audit.isClean(), "verify called the faithful cell path drift: ${audit.drift.map { it.expected }}")
+            assertNull(reputations.get(subject)?.influenceScores?.get(ServiceKey(service)), "repair wrote the stale rank back")
+
+            reconciler.rebuildAll()
+            assertNull(reputations.get(subject)?.influenceScores?.get(ServiceKey(service)), "rebuildAll wrote the stale rank back")
+            assertEquals(serviceCells(service to 150.0), reputations.get(subject)?.followerCounts, "the newest version's followers stand")
+        }
+
     /** A parent whose only card is by a service nobody names derives empty: it is drift, and repair drops it. */
     @Test
     fun `verify drops a parent that only an unnamed service's card stands behind`() =
