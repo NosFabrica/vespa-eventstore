@@ -68,9 +68,12 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody
 import okio.BufferedSink
+import java.io.IOException
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
 import kotlin.math.ceil
@@ -426,7 +429,65 @@ class VespaEventIndex(
     private fun removeOp(id: String) = feed.client.remove(DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, id), feedParams())
 
     override suspend fun put(doc: EventDoc) {
+        if (putDirect(doc)) return
         awaitPuts(listOf(doc), listOf(feed.enqueue { putOp(doc) }))
+    }
+
+    /**
+     * A lone put sent straight to `/document/v1` over the query client, when nothing could be
+     * overtaken by it; true when the engine stored it. The feed client hands every operation to
+     * a dispatcher thread that drains its queue and then sleeps a millisecond, so a lone write
+     * waited up to that long before it left, plus a thread hop each way: measured at about 2 ms
+     * of a 7 ms publish (benchmark/README.md, "The lone write").
+     *
+     * ORDER is what the feed client guarantees and this path does not, so it only runs while the
+     * feed client holds no unanswered operation ([VespaFeed.idle]), no batch-endpoint write is
+     * running ([batchWrites]) and no other direct put is in flight: nothing pending can be
+     * overtaken. A write issued after it is behind it, since [put] returns only once it is
+     * stored. Anything but a 2xx — a refused column, pushback, a transport failure — goes the
+     * feed client's way instead, which owns the retries and the schema-fallback net; a put
+     * repeats the same document, so landing twice is harmless.
+     */
+    private suspend fun putDirect(doc: EventDoc): Boolean {
+        if (!directWriteIdle() || !directPutBusy.compareAndSet(false, true)) return false
+        try {
+            if (!directWriteIdle()) return false
+            val url = "${documentEndpoint()}/document/v1/$EVENT_NAMESPACE/$EVENT_DOCTYPE/docid/${docIdSegment(docIdOf(doc))}?timeout=${FEED_TIMEOUT.seconds}s"
+            val body = doc.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge(), includeStem = fallbacks.stemFieldsAvailable)
+            val resp =
+                try {
+                    http.postJsonOnce(url, body)
+                } catch (e: IOException) {
+                    return false
+                }
+            if (resp.statusCode() !in 200..299) return false
+            directPutsSent.incrementAndGet()
+            return true
+        } finally {
+            directPutBusy.set(false)
+        }
+    }
+
+    private fun directWriteIdle(): Boolean = feed.idle() && batchWrites.get() == 0
+
+    /** A [putDirect] in flight: two at once could not be ordered against each other. */
+    private val directPutBusy = AtomicBoolean(false)
+
+    /** Batch-endpoint writes running now — the one write channel [VespaFeed.idle] cannot see. */
+    private val batchWrites = AtomicInteger()
+
+    private val directPutsSent = AtomicLong()
+
+    /** Lone puts [putDirect] stored without the feed client, since this index opened. */
+    val directPuts: Long get() = directPutsSent.get()
+
+    private suspend fun <T> batchWrite(write: suspend () -> T): T {
+        batchWrites.incrementAndGet()
+        try {
+            return write()
+        } finally {
+            batchWrites.decrementAndGet()
+        }
     }
 
     /**
@@ -446,11 +507,13 @@ class VespaEventIndex(
         // A lone document gains nothing from a batch and takes the feed client directly.
         val rest =
             batchFeed?.takeIf { docs.size > 1 }?.let { batches ->
-                batches.putAll(
-                    docs,
-                    docId = ::docIdOf,
-                    body = { it.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge(), includeStem = fallbacks.stemFieldsAvailable) },
-                )
+                batchWrite {
+                    batches.putAll(
+                        docs,
+                        docId = ::docIdOf,
+                        body = { it.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge(), includeStem = fallbacks.stemFieldsAvailable) },
+                    )
+                }
             } ?: docs
         rest.chunked(FEED_CHUNK).forEach { chunk -> awaitPuts(chunk, feed.enqueueAll(chunk, ::putOp)) }
     }
@@ -537,12 +600,14 @@ class VespaEventIndex(
         val rest =
             batchFeed?.takeIf { eligible.size > 1 }?.let { batches ->
                 val (refused, unconfirmed) =
-                    batches.putAllIfStored(
-                        eligible,
-                        docId = ::docIdOf,
-                        body = { it.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge(), includeStem = fallbacks.stemFieldsAvailable) },
-                        condition = ::storedCondition,
-                    )
+                    batchWrite {
+                        batches.putAllIfStored(
+                            eligible,
+                            docId = ::docIdOf,
+                            body = { it.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge(), includeStem = fallbacks.stemFieldsAvailable) },
+                            condition = ::storedCondition,
+                        )
+                    }
                 val settled = (refused + unconfirmed).mapTo(HashSet()) { it.id }
                 eligible.forEach { if (it.id !in settled) written += it.id }
                 unconfirmed
@@ -3121,7 +3186,7 @@ class VespaEventIndex(
     }
 
     /** One-line feed health for status lines: the feed client's ([VespaFeed.statusLine]), then the batch path's when it is on. */
-    fun feedStatus(): String = feed.statusLine() + (batchFeed?.let { " " + it.statusLine() } ?: "")
+    fun feedStatus(): String = feed.statusLine() + " direct $directPuts" + (batchFeed?.let { " " + it.statusLine() } ?: "")
 
     /** Whether a 404 has the batch path parked right now ([VespaBatchFeed]); false while batching is off by configuration. */
     val feedBatchParked: Boolean get() = batchFeed?.available == false
@@ -3369,7 +3434,10 @@ class VespaEventIndex(
          * which deadlocks the single-writer store behind it; a timeout turns
          * that hang into a retryable failure.
          */
-        fun feedParams(): OperationParameters = OperationParameters.empty().timeout(Duration.ofSeconds(30))
+        fun feedParams(): OperationParameters = OperationParameters.empty().timeout(FEED_TIMEOUT)
+
+        /** Every document write's deadline at the engine, the feed client's and [putDirect]'s alike. */
+        val FEED_TIMEOUT: Duration = Duration.ofSeconds(30)
 
         /**
          * Operations enqueued per awaited chunk on every pipelined feed call.

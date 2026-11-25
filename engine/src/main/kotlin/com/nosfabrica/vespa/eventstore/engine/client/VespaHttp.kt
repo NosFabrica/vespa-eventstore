@@ -218,6 +218,23 @@ internal class VespaHttp(
                 .build(),
         )
 
+    /**
+     * POST [body] as JSON to [url] ONCE, with no retry: for a caller that has its own way to
+     * handle whatever does not come back 2xx (the lone document write, which hands it to the feed
+     * client). A transport failure throws, as [postJson]'s last attempt does.
+     */
+    suspend fun postJsonOnce(
+        url: String,
+        body: String,
+    ): HttpResp =
+        http
+            .newCall(
+                request()
+                    .url(url)
+                    .post(body.toRequestBody(jsonMedia))
+                    .build(),
+            ).await()
+
     /** POST [body] to [url], retrying transient overload like [postJson]: a body written as it is sent. */
     suspend fun post(
         url: String,
