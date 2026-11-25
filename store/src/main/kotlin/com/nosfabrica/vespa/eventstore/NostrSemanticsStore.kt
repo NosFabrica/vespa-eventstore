@@ -932,12 +932,14 @@ class NostrSemanticsStore(
                                 .orEmpty()
                                 .flatMap(LiveGate.Text::words),
                         phrases =
-                            q.phrases
+                            PhraseRuns
+                                .phrasesOf(q.phrases)
                                 .flatMap(PhraseRuns::pieces)
                                 .map(LiveGate.Text::words)
                                 .filter { it.isNotEmpty() },
                         excluded =
-                            q.notSearch
+                            PhraseRuns
+                                .exclusionsOf(q.notSearch)
                                 .map { w -> PhraseRuns.exclusionPieces(w).map(LiveGate.Text::words).filter { it.isNotEmpty() } }
                                 .filter { it.isNotEmpty() },
                     )

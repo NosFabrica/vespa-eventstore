@@ -99,21 +99,32 @@ object IndexableChars {
         var spent = 0
         for (raw in queryText(search).split(WHITESPACE)) {
             if (out.size == MAX_SEARCH_WORDS || spent == MAX_SEARCH_TOKENS) break
-            val word = cutWord(raw)
+            val word = cutChars(raw, MAX_WORD_CHARS)
             if (!hasIndexable(word)) continue
             val left = MAX_SEARCH_TOKENS - spent
-            val end = tokenEnd(word, left)
-            out += if (end < word.length) word.substring(0, end) else word
+            out += cutTokens(word, left)
             spent += minOf(tokens(word).size, left)
         }
         return out
     }
 
-    /** [word]'s first [MAX_WORD_CHARS] chars, one fewer where the cut would split a surrogate pair. */
-    private fun cutWord(word: String): String {
-        if (word.length <= MAX_WORD_CHARS) return word
-        val end = if (Character.isHighSurrogate(word[MAX_WORD_CHARS - 1])) MAX_WORD_CHARS - 1 else MAX_WORD_CHARS
-        return word.substring(0, end)
+    /** [s]'s first [max] chars, one fewer where the cut would split a surrogate pair. */
+    internal fun cutChars(
+        s: String,
+        max: Int,
+    ): String {
+        if (s.length <= max) return s
+        val end = if (Character.isHighSurrogate(s[max - 1])) max - 1 else max
+        return s.substring(0, end)
+    }
+
+    /** [s] up to where its token number [max] + 1 starts, by the [tokens] rule: all of it when it holds no more than [max]. */
+    internal fun cutTokens(
+        s: String,
+        max: Int,
+    ): String {
+        val end = tokenEnd(s, max)
+        return if (end < s.length) s.substring(0, end) else s
     }
 
     /** Where [word]'s token number [max] + 1 starts, by the [tokens] rule; its length when it holds no more than [max]. */

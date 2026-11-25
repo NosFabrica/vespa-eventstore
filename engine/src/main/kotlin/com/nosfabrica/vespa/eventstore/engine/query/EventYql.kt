@@ -1534,8 +1534,9 @@ object EventYql {
         // often is one Vespa refuses outright, failing the whole REQ, so it
         // rides as the pieces Vespa accepts, every one REQUIRED. Nearly every
         // phrase is one piece, `@p$i`, exactly as typed.
+        // The first [PhraseRuns.MAX_PHRASES], each cut to its caps ([PhraseRuns.phrasesOf]).
         var phraseItems = 0
-        q.phrases.forEachIndexed { i, phrase ->
+        PhraseRuns.phrasesOf(q.phrases).forEachIndexed { i, phrase ->
             if (!IndexableChars.hasIndexable(phrase)) return null
             PhraseRuns.pieces(phrase).forEachIndexed { j, piece ->
                 val name = if (j == 0) "p$i" else "p${i}c$j"
@@ -1567,8 +1568,10 @@ object EventYql {
         // positive-side rule; "-🔥" is not erased, and excludes. Phrase grammar is also why [PhraseRuns.pieces]:
         // "-no-no-no-no-no-no" is six "no"s in one phrase, an HTTP 400. A word
         // in pieces drops the documents holding ALL of them.
-        q.notSearch
-            .filter(IndexableChars::hasIndexable)
+        // The first [PhraseRuns.MAX_EXCLUSIONS], an over-long one dropped rather than cut
+        // ([PhraseRuns.exclusionsOf]).
+        PhraseRuns
+            .exclusionsOf(q.notSearch)
             .forEachIndexed { i, word ->
                 val pieces =
                     PhraseRuns.exclusionPieces(word).mapIndexed { j, piece ->

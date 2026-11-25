@@ -682,6 +682,41 @@ class EventYqlTest {
         assertEquals("⚡⚡", EventYql.build(EventQuery(phrases = listOf("⚡⚡")))!!.params["p0"])
     }
 
+    /**
+     * Each quoted phrase and each exclusion is a clause of its own, so thousands of them built a
+     * query without bound beside the capped words. They are cut to [PhraseRuns.MAX_PHRASES]
+     * phrases of [PhraseRuns.MAX_PHRASE_TOKENS] tokens, and [PhraseRuns.MAX_EXCLUSIONS]
+     * exclusions of no more than that, the first ones kept.
+     */
+    @Test
+    fun `phrases and exclusions are capped in number and length, keeping the first`() {
+        fun size(q: VespaQuery) = q.yql.length + q.params.entries.sumOf { it.key.length + it.value.length }
+        val phrases = (0 until 5_000).map { "p$it q$it" }
+        val exclusions = (0 until 5_000).map { "x$it" }
+        val q = EventYql.build(EventQuery(search = "bitcoin", phrases = phrases, notSearch = exclusions, limit = 50))!!
+        assertTrue(size(q) < 64 * 1024, "5,000 phrases and 5,000 exclusions built ${size(q)} chars")
+        assertEquals("p0 q0", q.params["p0"])
+        assertNotNull(q.params["p${PhraseRuns.MAX_PHRASES - 1}"])
+        assertNull(q.params["p${PhraseRuns.MAX_PHRASES}"])
+        assertEquals("x0", q.params["n0"])
+        assertNotNull(q.params["n${PhraseRuns.MAX_EXCLUSIONS - 1}"])
+        assertNull(q.params["n${PhraseRuns.MAX_EXCLUSIONS}"])
+        assertEquals((1 + PhraseRuns.MAX_PHRASES).toString(), q.params["ranking.features.query(n_words)"])
+
+        // A long phrase is cut at a token: a looser requirement, still in order.
+        val sentence = (1..1_000).joinToString(" ") { "t$it" }
+        val cut = EventYql.build(EventQuery(phrases = listOf(sentence)))!!
+        assertEquals((1..PhraseRuns.MAX_PHRASE_TOKENS).joinToString(" ") { "t$it" } + " ", cut.params["p0"])
+        // A long exclusion is DROPPED, never cut: cut, it would exclude more than was typed.
+        val long = (1..PhraseRuns.MAX_PHRASE_TOKENS + 1).joinToString("-") { "t$it" }
+        val dropped = EventYql.build(EventQuery(search = "bitcoin", notSearch = listOf(long, "spam")))!!
+        assertEquals("spam", dropped.params["n0"])
+        assertNull(dropped.params["n1"])
+        // One huge piece of text costs no more than the caps allow.
+        val huge = EventYql.build(EventQuery(phrases = listOf("z".repeat(200_000)), notSearch = listOf("y".repeat(200_000))))!!
+        assertTrue(size(huge) < 8 * 1024, "built ${size(huge)} chars")
+    }
+
     @Test
     fun `notSearch words emit negated exact clauses with out-of-band params`() {
         val q = EventYql.build(EventQuery(search = "cat", notSearch = listOf("dog", "e-cash")))!!

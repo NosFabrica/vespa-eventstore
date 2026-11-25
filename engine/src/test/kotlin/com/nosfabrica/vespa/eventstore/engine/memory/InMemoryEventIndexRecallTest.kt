@@ -21,7 +21,9 @@
 package com.nosfabrica.vespa.eventstore.engine.memory
 
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.nosfabrica.vespa.eventstore.engine.query.PhraseRuns
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -84,5 +86,26 @@ class InMemoryEventIndexRecallTest {
             assertEquals(setOf('1'), index.idsOf(deletion))
             assertEquals(index.idsOf(deletion.copy(authors = emptyList())), index.idsOf(deletion))
             assertEquals(setOf('3'), index.idsOf(EventQuery(ids = listOf("3".repeat(64), "9".repeat(64)), authors = listOf(alice))))
+        }
+
+    /**
+     * The reference runs the phrases and exclusions the engine is sent ([PhraseRuns.phrasesOf],
+     * [PhraseRuns.exclusionsOf]): a note holding only the first phrases is served, as the engine
+     * asks for no more, and an exclusion past the cap, never sent, drops nothing.
+     */
+    @Test
+    fun `phrases and exclusions past the caps are not asked for`() =
+        runBlocking {
+            val index = InMemoryEventIndex()
+
+            fun note(
+                id: Char,
+                text: String,
+            ) = EventDoc(id = id.toString().repeat(64), pubkey = alice, createdAt = 100, kind = 1, tags = emptyList(), content = text, sig = "", search = SearchFields(text = text))
+            val phrases = (0 until 20).map { "p$it q$it" }
+            val held = phrases.take(PhraseRuns.MAX_PHRASES).joinToString(" ")
+            index.putAll(listOf(note('1', held), note('2', "$held x0"), note('3', "$held x${PhraseRuns.MAX_EXCLUSIONS}")))
+            val q = EventQuery(phrases = phrases, notSearch = (0 until 100).map { "x$it" })
+            assertEquals(setOf('1', '3'), index.idsOf(q))
         }
 }
