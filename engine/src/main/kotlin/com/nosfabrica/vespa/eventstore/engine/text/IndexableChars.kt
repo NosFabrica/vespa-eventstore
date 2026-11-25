@@ -92,6 +92,24 @@ object IndexableChars {
      *    it there loses the very notes the text was copied from.
      *  - Emoji skin-tone modifiers are dropped: the engine ignores them (👍🏽
      *    is 👍), and the in-memory reference matches by substring.
+     *  - The rest of the default grammar's OPERATORS become spaces too, since
+     *    a word reaches `userInput()` whole and Vespa parses it. MEASURED on
+     *    the local Vespa (2026-11-25, 31,654 notes; the grammar is `weakAnd`):
+     *    a COLON selects a field or a range — `kind:1` matched every kind 1,
+     *    `created_at:>0` every note, and `kind:` was an HTTP 400 (NullItem);
+     *    a BANG weights the term (`bitcoin!` is weight 150, `bitcoin!50` 50);
+     *    `( ) ; < > [ ]` cut the word into separate OR'd items (`zzqqxx;bitcoin`
+     *    matched every bitcoin note, where `zzqqxx.bitcoin` ANDs its two); and
+     *    a `-` or `+` that opens a term is a NOT or a MUST — `-bar` matched
+     *    every note. A sign opens a term behind ANY run of non-word characters
+     *    ("#-bar", "(-bar" are NOTs too), so one is a space unless the character
+     *    SENT before it is a letter, digit or mark (an emoji opens a term,
+     *    a selector dropped beside it does not count): "pico-8" and "e+1" are in-word, and
+     *    the engine ANDs their halves. Vespa reads the full-width forms
+     *    (`－ ： ！ （ …`) as the ASCII ones, so they go as well. A space and not
+     *    nothing for the same reason as the star: the document tokenized
+     *    "kind:1" as kind and 1, and each half is then a word that must land.
+     *    Everything else in ASCII parsed as plain text inside one word.
      * None of these is ever an indexed word on its own, so a search made only
      * of them stays "provably no match".
      */
@@ -101,7 +119,7 @@ object IndexableChars {
         s: String,
         syntax: Boolean,
     ): String {
-        if (s.none { (syntax && it in WORD_SYNTAX) || it in SELECTORS || Character.isSurrogate(it) }) return s
+        if (s.none { (syntax && (it in WORD_SYNTAX || it in SIGNS)) || it in SELECTORS || Character.isSurrogate(it) }) return s
         val out = StringBuilder(s.length)
         var i = 0
         var prev = -1
@@ -111,6 +129,7 @@ object IndexableChars {
             val next = if (i + n < s.length) s.codePointAt(i + n) else -1
             when {
                 syntax && cp < 0x10000 && cp.toChar() in WORD_SYNTAX -> out.append(' ')
+                syntax && cp < 0x10000 && cp.toChar() in SIGNS && opensTerm(out) -> out.append(' ')
                 cp < 0x10000 && cp.toChar() in SELECTORS && isLoneSelector(prev, next) -> Unit
                 cp in SKIN_TONES -> Unit
                 else -> out.appendCodePoint(cp)
@@ -135,6 +154,9 @@ object IndexableChars {
         return if (stripped != word && tokens(stripped).size == 1) stripped else word
     }
 
+    /** True when a sign appended to [out] would open a term: nothing, or no letter, digit or mark, stands before it. */
+    private fun opensTerm(out: StringBuilder): Boolean = out.isEmpty() || !isWordChar(out.codePointBefore(out.length))
+
     /** Drop the selector unless a letter or digit (which it would glue to) stands on either side. */
     private fun isLoneSelector(
         prev: Int,
@@ -146,7 +168,13 @@ object IndexableChars {
         Character.isLetterOrDigit(cp) ||
             Character.getType(cp).let { it == Character.NON_SPACING_MARK.toInt() || it == Character.COMBINING_SPACING_MARK.toInt() || it == Character.ENCLOSING_MARK.toInt() }
 
-    private const val WORD_SYNTAX = "\"\u201C\u201D\u201E\u201F\u2039\u203A\u00AB\u00BB\u301D\u301E\u301F\uFF02*\uFF0A"
+    /** Quotes, stars, and the operators of the default grammar ([queryText]), with the full-width forms Vespa reads as them. */
+    private const val WORD_SYNTAX =
+        "\"\u201C\u201D\u201E\u201F\u2039\u203A\u00AB\u00BB\u301D\u301E\u301F\uFF02*\uFF0A" +
+            ":!()[];<>\uFF1A\uFF01\uFF08\uFF09\uFF3B\uFF3D\uFF1B\uFF1C\uFF1E"
+
+    /** NOT and MUST, ASCII and full-width: syntax only where they open a term ([queryText]). */
+    private const val SIGNS = "-+\uFF0D\uFF0B"
 
     private const val SELECTORS = "\uFE0E\uFE0F"
 

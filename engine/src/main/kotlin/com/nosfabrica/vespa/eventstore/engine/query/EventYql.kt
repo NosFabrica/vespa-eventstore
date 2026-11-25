@@ -1409,9 +1409,11 @@ object EventYql {
         // applies the same rule.)
         //
         // Default-grammar syntax is cleaned from what is SENT
-        // ([IndexableChars.queryText]: quotes and stars become spaces, a lone
-        // variation selector and skin tones go), each of which made a typed
-        // word a different query or a 400. Not from [words]: a search that is
+        // ([IndexableChars.queryText]: quotes, stars and the grammar's
+        // operators — `field:`, a term-opening `-`/`+`, `!`, `( ) ; < > [ ]` —
+        // become spaces, a lone variation selector and skin tones go), each of
+        // which made a typed word a different query or a 400: `kind:1` matched
+        // every kind 1, `-bar` every note. Not from [words]: a search that is
         // only syntax must stay "provably no match", never a search for
         // everything.
         val words =

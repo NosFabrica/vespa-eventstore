@@ -1182,6 +1182,74 @@ class EventYqlTest {
         assertNull(EventYql.build(EventQuery(search = "“ ”")))
     }
 
+    /**
+     * Each word reaches the default grammar's `userInput()`, which PARSES it — measured on the
+     * local Vespa (2026-11-25, 31,654 notes): `created_at:>0` matched every note, `-bar` every
+     * note (a NOT over nothing), `kind:1` every kind 1, `kind:` was an HTTP 400, and
+     * `bitcoin!50` re-weighted the term. Quartz lifts only extension keys spelled a-z, and a star
+     * or quote inside a word becomes a space, so `foo*-bar` used to send a `-bar` word.
+     */
+    @Test
+    fun `a search word carries no Vespa query syntax into userInput`() {
+        fun sent(search: String): List<String> {
+            val q = assertNotNull(EventYql.build(EventQuery(search = search)), search)
+            return q.params
+                .filterKeys { it.matches(Regex("w\\d+|wp\\d+|wj")) }
+                .values
+                .toList()
+        }
+        val searches =
+            listOf(
+                "created_at:>0",
+                "-bar",
+                "foo*-bar",
+                "kind:1",
+                "kind:",
+                "name:vitor",
+                "bitcoin!50",
+                "bitcoin!",
+                "#-bar",
+                "zzqq(-bar",
+                "a;b",
+                "a<b",
+                "x[y]",
+                "--bar",
+                "+-bar",
+                "－bar",
+                "kind：1",
+                "bitcoin！",
+                "created_at:[0;99]",
+                "nostr:npub1abc pico-8",
+            )
+        for (search in searches) {
+            for (word in sent(search)) {
+                assertTrue(word.none { it in ":!()[];<>\"*：！（）［］；＜＞" }, "'$search' sent '$word'")
+                word.forEachIndexed { i, c ->
+                    if (c in "-+－＋") assertTrue(i > 0 && word[i - 1].isLetterOrDigit(), "'$search' sent a sign that opens a term: '$word'")
+                }
+            }
+        }
+
+        fun words(search: String) =
+            EventYql
+                .build(EventQuery(search = search))!!
+                .params
+                .filterKeys { it.matches(Regex("w\\d+")) }
+                .toSortedMap()
+                .values
+                .toList()
+        // The words are still the document's tokens: what the index split on, the query splits on.
+        assertEquals(listOf("kind", "1"), words("kind:1"))
+        assertEquals(listOf("bar"), words("-bar"))
+        assertEquals(listOf("foo", "bar"), words("foo*-bar"))
+        assertEquals(listOf("created_at", "0"), words("created_at:>0"))
+        assertEquals(listOf("bitcoin"), words("bitcoin!50").take(1))
+        // An in-word hyphen is not a sign: "pico-8" is still one word, as typed.
+        assertEquals(listOf("pico-8"), words("pico-8"))
+        // A search that is only syntax still matches nothing, never everything.
+        assertNull(EventYql.build(EventQuery(search = "-: !( )")))
+    }
+
     @Test
     fun `only a phrase Vespa would refuse is rewritten`() {
         val ok = "one no no no no no two"

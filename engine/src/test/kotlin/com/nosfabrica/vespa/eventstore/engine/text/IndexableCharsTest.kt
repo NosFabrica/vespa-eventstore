@@ -60,6 +60,20 @@ class IndexableCharsTest {
     }
 
     @Test
+    fun `query text - the default grammar's operators become spaces`() {
+        assertEquals("kind 1", IndexableChars.queryText("kind:1"), "a field selector")
+        assertEquals("created_at  0", IndexableChars.queryText("created_at:>0"), "a range")
+        assertEquals(" bar", IndexableChars.queryText("-bar"), "a NOT")
+        assertEquals(" bar", IndexableChars.queryText("+bar"))
+        assertEquals("foo  bar", IndexableChars.queryText("foo*-bar"), "a sign after a star made a space")
+        assertEquals("#  bar", IndexableChars.queryText("#(-bar"), "a sign behind any non-word lead is still a NOT")
+        assertEquals("bitcoin 50", IndexableChars.queryText("bitcoin!50"), "a term weight")
+        assertEquals("a b c d ", IndexableChars.queryText("a;b<c[d]"), "split the word into OR'd terms")
+        assertEquals(" bar kind 1 wow ", IndexableChars.queryText("－bar kind：1 wow！"), "the full-width forms Vespa reads as the ASCII ones")
+        assertEquals("pico-8 e+1", IndexableChars.queryText("pico-8 e+1"), "a sign inside a word is not an operator")
+    }
+
+    @Test
     fun `an exclusion drops a lone selector only when one token is left`() {
         assertEquals("❤", IndexableChars.exclusionText("❤️"), "-❤️ drops every heart")
         assertEquals("👍", IndexableChars.exclusionText("👍🏽"))
