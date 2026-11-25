@@ -32,6 +32,37 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class EventYqlTest {
+    /**
+     * A read with no free text names its language, so the query container skips detecting it; one
+     * with search terms, phrases or exclusions does not, because there the language picks the
+     * stemming. Every builder that writes filter clauses follows the same rule.
+     */
+    @Test
+    fun `only a text-free read names its language`() {
+        val key = "a1".repeat(32)
+        val textFree =
+            listOf(
+                EventQuery(kinds = listOf(1), tags = mapOf("t" to listOf("bitcoin")), limit = 10),
+                EventQuery(authors = listOf(key), limit = 10),
+                EventQuery(ids = listOf(key)),
+            )
+        for (q in textFree) {
+            assertEquals(EventYql.TEXT_FREE_LANGUAGE, EventYql.build(q)!!.params[EventYql.LANGUAGE], "read: $q")
+            assertEquals(EventYql.TEXT_FREE_LANGUAGE, EventYql.buildCount(q)!!.params[EventYql.LANGUAGE], "count: $q")
+        }
+        assertEquals(EventYql.TEXT_FREE_LANGUAGE, EventYql.buildExistence(listOf(key))!!.params[EventYql.LANGUAGE])
+        val withText =
+            listOf(
+                EventQuery(kinds = listOf(1), search = "bitcoin", limit = 10),
+                EventQuery(kinds = listOf(1), phrases = listOf("proof of work"), limit = 10),
+                EventQuery(kinds = listOf(1), notSearch = listOf("spam"), limit = 10),
+            )
+        for (q in withText) {
+            assertNull(EventYql.build(q)!!.params[EventYql.LANGUAGE], "read: $q")
+            assertNull(EventYql.buildCount(q)!!.params[EventYql.LANGUAGE], "count: $q")
+        }
+    }
+
     @Test
     fun `a multi-word search carries the typed words as a rank-only body phrase`() {
         // event.sd's body_phrase() needs the typed words ADJACENT in the query
@@ -362,9 +393,10 @@ class EventYqlTest {
         val q = EventYql.build(EventQuery())!!
         assertEquals("select ${EventYql.SUMMARY_FIELDS} from event where true order by created_at desc", q.yql)
         assertEquals(EventYql.RANK_UNRANKED, q.ranking)
-        // Nothing but the match-thread opt-out: plain recall is the shape the
-        // cluster's thread ceiling is NOT meant for (EventYql.MATCH_THREADS).
-        assertEquals(mapOf(EventYql.MATCH_THREADS to EventYql.SINGLE_MATCH_THREAD), q.params)
+        // Nothing but the match-thread opt-out (plain recall is the shape the
+        // cluster's thread ceiling is NOT meant for, EventYql.MATCH_THREADS) and
+        // the named language of a read with no text (EventYql.LANGUAGE).
+        assertEquals(mapOf(EventYql.LANGUAGE to EventYql.TEXT_FREE_LANGUAGE, EventYql.MATCH_THREADS to EventYql.SINGLE_MATCH_THREAD), q.params)
     }
 
     @Test
@@ -1336,7 +1368,7 @@ class EventYqlTest {
     fun `observer is ranking context only — never emitted for unranked recall`() {
         val unranked = EventYql.build(EventQuery(kinds = listOf(1), observer = hexA))!!
         assertEquals(
-            mapOf(EventYql.MATCH_THREADS to EventYql.SINGLE_MATCH_THREAD),
+            mapOf(EventYql.LANGUAGE to EventYql.TEXT_FREE_LANGUAGE, EventYql.MATCH_THREADS to EventYql.SINGLE_MATCH_THREAD),
             unranked.params,
             "no term, no profile: pure NIP-01 recall, and no ranking context at all",
         )

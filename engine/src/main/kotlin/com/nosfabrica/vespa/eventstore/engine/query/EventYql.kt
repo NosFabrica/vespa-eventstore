@@ -245,6 +245,24 @@ object EventYql {
     const val SINGLE_MATCH_THREAD = "1"
 
     /**
+     * The query's language, named so the container does not DETECT it. With no language set, the
+     * query container runs OpenNLP language detection over the query's terms on every request,
+     * and for a read with no free text those terms are pubkeys, ids and tag values: measured on
+     * replayed `#t` reads (32 clients, the same 1,000 reads, identical answers), naming it cut the
+     * container's CPU 5% per YQL query. Sent only by [isTextFree] reads, whose every term is on a
+     * `cased` attribute (id, pubkey, kind, created_at, tag_index, owner, expires_at, event.sd),
+     * where no language processing applies, so the value cannot change what matches. A read with
+     * search terms, phrases or exclusions keeps detection: there the language picks the stemming.
+     */
+    const val LANGUAGE = "model.language"
+
+    /** [LANGUAGE]'s value for a text-free read. Any code would do; none reaches an attribute. */
+    const val TEXT_FREE_LANGUAGE = "en"
+
+    /** Whether [q] carries no free text: no search terms, phrases or exclusions ([LANGUAGE]). */
+    fun isTextFree(q: EventQuery): Boolean = q.search.isNullOrBlank() && q.phrases.isEmpty() && q.notSearch.isEmpty()
+
+    /**
      * Vespa's query-time SORTING DEGRADER. When a query's primary sort key is a
      * single-value numeric fast-search attribute — `created_at` here — Vespa
      * activates match-phase degradation BY DEFAULT, on EVERY rank profile
@@ -436,7 +454,7 @@ object EventYql {
         val clause = hexIn("id", ids) ?: return null
         return VespaQuery(
             yql = "select id from event where $clause",
-            params = mapOf("presentation.summary" to SUMMARY_DEDUP, MATCH_THREADS to SINGLE_MATCH_THREAD),
+            params = mapOf("presentation.summary" to SUMMARY_DEDUP, MATCH_THREADS to SINGLE_MATCH_THREAD, LANGUAGE to TEXT_FREE_LANGUAGE),
             ranking = RANK_UNRANKED,
             shape = "ids",
         )
@@ -1185,6 +1203,7 @@ object EventYql {
         bodyPhrase: Boolean = false,
     ): List<String>? {
         val clauses = ArrayList<String>()
+        if (isTextFree(q)) params[LANGUAGE] = TEXT_FREE_LANGUAGE
 
         if (q.ids.isNotEmpty()) clauses += hexIn("id", q.ids) ?: return null
         if (q.idWeights.isNotEmpty()) clauses += hexDotProduct("id", q.idWeights) ?: return null

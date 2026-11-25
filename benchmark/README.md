@@ -1651,10 +1651,28 @@ Measured through vespa-relay, the same seeded store, two runs each, identical pa
 | REQ/s, limit 10, 200 clients | 1,796 / 2,016 | 2,027 / 2,084 |
 | REQ/s, limit 100, 200 clients | 812 / 843 | 877 / 933 |
 
-Not taken: setting the query language to skip detection (3%). On a free-text search
-the language picks the stemming, and a fixed one would change what a NIP-50 search
-matches; on a recency read the terms are pubkeys and tag values, where it would be
-safe, but that is a second rule for a small share.
+**Naming the language on a text-free read (2026-11-25).** With no language set, the
+container detects one (OpenNLP) on every query. On a free-text search that language
+picks the stemming, so a search keeps detection; a read with no search terms, phrases
+or exclusions filters only on `cased` attributes (id, pubkey, kind, created_at,
+tag_index, owner, expires_at), where no language processing applies, so it now sends
+`model.language=en` (`EventYql.isTextFree`, in `filterClauses` and the existence
+probe). Measured by replaying the same 1,000 `#t` reads (limit 20, `nip01`, 20 hits
+each) straight at Vespa with vespa-fbench, 32 clients, Vespa pinned to 2 cores and the
+client to the other 2, after a warm-up, three 30 s rounds in rotated order, CPU of
+`default/container.0` from `/proc`; the first 50 reads of every variant returned the
+same ids in the same order:
+
+| container CPU per query, three rounds | queries/s |
+|---|---|
+| detected: 900 / 971 / 978 µs (mean 950) | 1,069 |
+| `model.language=en`: 838 / 855 / 899 µs (mean **864, −9%**) | 1,152 |
+
+Measured against the same corpus in the same session: the JSON `select` form instead
+of YQL (`{"select":{"where":…}}`, `sorting=-created_at`) cost 817 µs (−14%), and 774 µs
+with the language named (−19%). Not taken yet: every builder, the summary-class and
+id-only rewrites, `SchemaFallbacks` and the unit tests' mock engine work on YQL text,
+and `select` documents no `in`, which the author and id recalls use.
 
 ### Small batches take the bulk path (2026-11-23)
 
