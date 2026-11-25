@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.eventstore.engine.client
 
 import com.nosfabrica.vespa.eventstore.engine.MockVespaEngine
+import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.ReputationCells
 import com.nosfabrica.vespa.eventstore.engine.doc.ServiceKey
 import kotlinx.coroutines.Dispatchers
@@ -98,6 +99,13 @@ class FeedEnqueueTest {
 
     @Test
     fun anEventWriteWaitingForTheThrottleWindowLeavesItsCallersThreadFree() = assertCallerStaysFree({ index.removeAll(ids) }, { mock.documentRemoves })
+
+    @Test
+    fun aReindexRePutWaitingForTheThrottleWindowLeavesItsCallersThreadFree() {
+        // The full-text reindex's conditional re-puts: one test-and-set put per document.
+        val docs = ids.map { EventDoc(id = it, pubkey = "a1".repeat(32), createdAt = 1_000L, kind = 1, tags = emptyList(), content = "x", sig = "e".repeat(128)) }
+        assertCallerStaysFree({ index.putAllIfStored(docs) }, { mock.documentPutAttempts.get() })
+    }
 
     @Test
     fun aReputationWriteWaitingForTheThrottleWindowLeavesItsCallersThreadFree() {

@@ -77,7 +77,7 @@ class TrustChainTest {
 
     @Test
     fun `a non-hex key is refused, not decoded`() =
-        runBlocking {
+        runBlocking<Unit> {
             val lensed: LensedEventStore = store
             assertFailsWith<IllegalArgumentException> { lensed.lensOf("npub1abc") }
         }

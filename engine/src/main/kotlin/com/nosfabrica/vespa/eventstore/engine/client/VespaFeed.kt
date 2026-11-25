@@ -20,12 +20,17 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.client
 
+import ai.vespa.feed.client.DocumentId
 import ai.vespa.feed.client.FeedClient
 import ai.vespa.feed.client.FeedClientBuilder
+import ai.vespa.feed.client.OperationParameters
+import ai.vespa.feed.client.Result
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.net.URI
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.KeyManager
 import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManager
@@ -71,7 +76,54 @@ internal class VespaFeed(
      */
     private val compression: FeedClientBuilder.Compression = tuning.feedCompressionOrEnv()
 
-    private val built: Lazy<FeedClient> = lazy { build(urls.map { URI.create(it) }) }
+    private val built: Lazy<FeedClient> = lazy { Counting(build(urls.map { URI.create(it) }), unanswered) }
+
+    /** Operations handed to [client] and not yet answered: see [idle]. */
+    private val unanswered = AtomicInteger()
+
+    /**
+     * True when no operation handed to [client] is still unanswered — counted from the moment it is
+     * handed over, so one still waiting in the client's own queue for its dispatcher counts too.
+     * The client orders operations on one document; a write that bypasses it may only be sent
+     * while this holds, so nothing it could overtake is pending.
+     */
+    fun idle(): Boolean = unanswered.get() == 0
+
+    /** [inner], counting every put, update and remove in [unanswered] from the call until its future completes. */
+    private class Counting(
+        private val inner: FeedClient,
+        private val unanswered: AtomicInteger,
+    ) : FeedClient by inner {
+        override fun put(
+            documentId: DocumentId,
+            documentJson: String,
+            params: OperationParameters,
+        ): CompletableFuture<Result> = counted { inner.put(documentId, documentJson, params) }
+
+        override fun update(
+            documentId: DocumentId,
+            updateJson: String,
+            params: OperationParameters,
+        ): CompletableFuture<Result> = counted { inner.update(documentId, updateJson, params) }
+
+        override fun remove(
+            documentId: DocumentId,
+            params: OperationParameters,
+        ): CompletableFuture<Result> = counted { inner.remove(documentId, params) }
+
+        private inline fun counted(op: () -> CompletableFuture<Result>): CompletableFuture<Result> {
+            unanswered.incrementAndGet()
+            val future =
+                try {
+                    op()
+                } catch (t: Throwable) {
+                    unanswered.decrementAndGet()
+                    throw t
+                }
+            future.whenComplete { _, _ -> unanswered.decrementAndGet() }
+            return future
+        }
+    }
 
     /**
      * The tuned client. Only construction and health live here; operations go through it, but

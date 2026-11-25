@@ -174,7 +174,7 @@ open class NostrSemanticsStoreTest {
     /** ReplaceableModule tie-break: equal created_at, LOWEST id wins. */
     @Test
     fun `replaceable ties keep the lowest id`() =
-        runBlocking {
+        runBlocking<Unit> {
             val high = MetadataEvent("f".repeat(64), alice, 100, emptyArray(), "{}", "")
             val low = MetadataEvent("0".repeat(64), alice, 100, emptyArray(), "{}", "")
             store.insert(high)
@@ -620,7 +620,7 @@ open class NostrSemanticsStoreTest {
     /** EventIndexesModule pubkey_owner_hash: a gift-wrap is OWNED by its p-tag recipient. */
     @Test
     fun `gift wraps obey their recipient not their signer`() =
-        runBlocking {
+        runBlocking<Unit> {
             val throwaway = "c3".repeat(32)
             val wrap = GiftWrapEvent(id(), throwaway, next(), arrayOf(arrayOf("p", alice)), "sealed", "")
             store.insert(wrap)
@@ -642,16 +642,24 @@ open class NostrSemanticsStoreTest {
             assertEquals(0, store.count(Filter(kinds = listOf(GiftWrapEvent.KIND))))
         }
 
-    /** NIP-62: history is erased "until its created_at" — INCLUSIVE (the spec; Quartz's trigger uses strict <). */
+    /**
+     * NIP-62's horizon as Quartz's STORE-D07 (and its SQLite trigger) draws it: the vanish erases
+     * the owner's history strictly BEFORE its created_at, and blocks new events up to and
+     * including it. An event already stored at the vanish's own second survives; one offered
+     * at that second afterwards is blocked.
+     */
     @Test
-    fun `vanish erases events up to and including its timestamp`() =
-        runBlocking {
+    fun `vanish erases events strictly before its timestamp and blocks new ones at it`() =
+        runBlocking<Unit> {
+            val before = note(at = 199)
             val atBoundary = note(at = 200)
             val after = note(at = 201)
+            store.insert(before)
             store.insert(atBoundary)
             store.insert(after)
             store.insert(RequestToVanishEvent(id(), alice, 200, arrayOf(arrayOf("relay", "ALL_RELAYS")), "", ""))
-            assertEquals(setOf(after.id), store.query<Event>(Filter(kinds = listOf(1))).map { it.id }.toSet())
+            assertEquals(setOf(atBoundary.id, after.id), store.query<Event>(Filter(kinds = listOf(1))).map { it.id }.toSet())
+            assertFailsWith<RejectedException> { store.insert(note(at = 200)) }
         }
 
     /** NIP-40: "Relays SHOULD NOT send expired events to clients, even if they are stored." */
@@ -1256,5 +1264,55 @@ open class NostrSemanticsStoreTest {
             assertEquals(2, storedDocs(), "an empty filter is a no-op for delete")
             store.delete(listOf(Filter(kinds = listOf(1))))
             assertEquals(0, storedDocs(), "a real filter still sweeps")
+        }
+
+    /**
+     * STORE-F10 + STORE-S01: the search extensions are stripped BEFORE the empty-filter
+     * check, as the SQLite store does (`strippingSearchExtensions()` first), so a filter
+     * whose search is nothing but extensions, or blank, IS the empty filter and deletes
+     * nothing. Checked before stripping instead, each of these got past the guard,
+     * mapped to an unconstrained query, and the sweep emptied the store.
+     */
+    @Test
+    fun `a delete whose search is only extensions or blank deletes nothing`() =
+        runBlocking {
+            val wiped =
+                listOf("include:spam", "   ", "observer:${"0b".repeat(32)}", "sort:recent", "language:pt").filter { search ->
+                    store.batchInsert((1..5).map { note() })
+                    val before = storedDocs()
+                    store.delete(Filter(search = search))
+                    storedDocs() != before
+                }
+            assertEquals(emptyList(), wiped, "these delete filters wiped the store")
+        }
+
+    /**
+     * The other half of stripping first: a delete with real terms and an `observer:`
+     * deletes the term matches UNGATED, as SQLite does. Gated, it went out carrying
+     * the observer, which on Vespa reads the observer's lens — never resolved by a
+     * sweep, so the empty tensor, "trusts nobody" — and deleted nothing. The
+     * in-memory reference ignores the gate, so the sweep's own queries are read.
+     */
+    @Test
+    fun `a delete with terms and an observer deletes the term matches ungated`() =
+        runBlocking {
+            val swept = mutableListOf<EventQuery>()
+            val inner = newIndex()
+            val recording =
+                object : EventIndex by inner {
+                    override suspend fun search(query: EventQuery): List<EventDoc> {
+                        swept += query
+                        return inner.search(query)
+                    }
+                }
+            val fresh = NostrSemanticsStore(recording)
+            val bitcoin = (1..2).map { TextNoteEvent(id(), alice, next(), emptyArray(), "bitcoin talk $it", "") }
+            val other = TextNoteEvent(id(), alice, next(), emptyArray(), "nostr talk", "")
+            fresh.batchInsert(bitcoin + other)
+            swept.clear()
+            fresh.delete(Filter(search = "bitcoin observer:${"0b".repeat(32)}"))
+            assertTrue(swept.isNotEmpty(), "the delete swept nothing")
+            assertEquals(emptyList(), swept.mapNotNull { it.observer }, "the delete's sweep went out gated")
+            assertEquals(listOf(other.id), fresh.query<Event>(Filter(kinds = listOf(1))).map { it.id })
         }
 }

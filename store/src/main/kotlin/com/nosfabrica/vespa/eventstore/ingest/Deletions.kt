@@ -171,12 +171,18 @@ internal class Deletions(
 
     /**
      * NIP-62 enforcement: when the request covers [relay], erase the owner's
-     * history "until its created_at" — INCLUSIVE, per the spec. The request
-     * itself is only stored after this runs, so it survives its own sweep.
+     * history STRICTLY BEFORE its created_at, as Quartz's STORE-D07 (and its
+     * SQLite trigger, `created_at < NEW.created_at`) draws the horizon: an
+     * event already stored at the request's own second survives it. Blocking
+     * stays INCLUSIVE ([isVanished], and the bulk guard's `<=`): an event at
+     * that second offered afterwards is refused, so the asymmetry is Quartz's.
+     * Every vanish erase runs through here: the per-event path, the mixed
+     * batch's replay over its snapshot and its erase of the real index. The
+     * request itself is only stored after this runs.
      */
     suspend fun applyVanish(ev: RequestToVanishEvent) {
         if (!ev.shouldVanishFrom(relay)) return
-        sweep(EventQuery(owners = listOf(ev.pubKey), until = ev.createdAt))
+        sweep(EventQuery(owners = listOf(ev.pubKey), until = ev.createdAt - 1))
     }
 
     /**
@@ -204,16 +210,7 @@ internal class Deletions(
      * its end.
      */
     suspend fun sweep(q: EventQuery) {
-        // The caller's own limit, if any, decides whether one page is the whole
-        // job, so page on q.limit rather than sweepPage. Plain sweeps stamp
-        // RANK_UNRANKED to opt out of the recency planner's count probes — a
-        // sweep wants ANY page — which compiles to identical YQL.
-        val paged =
-            if (q.search == null && q.ranking == null) {
-                q.copy(limit = q.limit ?: sweepPage, ranking = EventYql.RANK_UNRANKED)
-            } else {
-                q.copy(limit = q.limit ?: sweepPage)
-            }
+        val paged = paged(q)
         var lastPage: Set<String>? = null
         repeat(MAX_SWEEP_ROUNDS) {
             currentCoroutineContext().ensureActive()
@@ -226,6 +223,50 @@ internal class Deletions(
         // delete) must not believe the sweep completed.
         error("sweep did not drain after $MAX_SWEEP_ROUNDS rounds of ${paged.limit} for $q")
     }
+
+    /**
+     * A MULTI-FILTER erase, `delete(filters)`'s: the UNION of each query's match
+     * set, every one evaluated on the state the erase began with — SQLite's one
+     * `DELETE … WHERE row_id IN (subq1 UNION subq2)` (STORE-F07, with STORE-D08's
+     * per-filter limit). Same lock rule as [sweep]: the caller holds it across
+     * the whole call.
+     *
+     * A LIMITED query is what makes the order matter: its match set is "the
+     * first N of what is stored", so swept after a sibling had already removed
+     * rows, it took the next N instead and the erase removed more than the
+     * union (two identical limit-2 filters removed four). So every limited
+     * query reads its one page FIRST, before anything is removed, and the union
+     * of those pages goes in one removal. The unlimited ones then keep the paged
+     * [sweep]: "every match" is the same set whatever a limited sibling took
+     * first, since the rows it removed are matches either way, and paging is
+     * what keeps an unlimited match set out of one list.
+     */
+    suspend fun sweepUnion(queries: List<EventQuery>) {
+        val (limited, unlimited) = queries.partition { it.limit != null }
+        if (limited.isNotEmpty()) {
+            currentCoroutineContext().ensureActive()
+            // Every page read before the first removal: that is the point.
+            val pages = limited.map { index.search(paged(it)) }
+            val union = pages.flatten().distinctBy { it.id }
+            // The docs are in hand, as in a sweep round — removeDocs lets the
+            // trust projection react without a get per id.
+            if (union.isNotEmpty()) index.removeDocs(union)
+        }
+        unlimited.forEach { sweep(it) }
+    }
+
+    /**
+     * [q] as one [sweep] round reads it. The caller's own limit, if any, decides
+     * whether one page is the whole job, so page on q.limit rather than sweepPage.
+     * Plain sweeps stamp RANK_UNRANKED to opt out of the recency planner's count
+     * probes — a sweep wants ANY page — which compiles to identical YQL.
+     */
+    private fun paged(q: EventQuery): EventQuery =
+        if (q.search == null && q.ranking == null) {
+            q.copy(limit = q.limit ?: sweepPage, ranking = EventYql.RANK_UNRANKED)
+        } else {
+            q.copy(limit = q.limit ?: sweepPage)
+        }
 
     /**
      * ONE ROUND of [sweep]: read a page of [paged], remove exactly it, and

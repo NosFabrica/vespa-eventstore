@@ -68,6 +68,59 @@ object PhraseRuns {
     /** The most occurrences of one term Vespa accepts anywhere in a phrase. */
     const val MAX_OCCURRENCES = 10
 
+    /**
+     * The most quoted phrases of one search the engine is asked for ([phrasesOf]); the FIRST
+     * ones are kept. Each is a required clause of its own, so beside the capped words
+     * ([IndexableChars.MAX_SEARCH_WORDS]) they were the part of a search that still grew
+     * without bound: 5,000 phrases beside 5,000 exclusions built 790 KB. Eight leaves room for
+     * any search a person types, and each costs [MAX_PHRASE_TOKENS] + 1 query items at most,
+     * one more for each further piece [pieces] splits it into.
+     */
+    const val MAX_PHRASES = 8
+
+    /**
+     * The most exclusions (`-word`, `-"phrase"`) of one search the engine is asked for
+     * ([exclusionsOf]); the FIRST ones are kept. More than phrases, since a reader muting
+     * topics lists several, but each is a clause (a negated phrase of up to
+     * [MAX_PHRASE_TOKENS] tokens) on every query the search makes. 32 of them at the most
+     * tokens, beside eight phrases at the most tokens and the heaviest words the word caps allow
+     * (15 of 256 letters and one of 40 tokens: 7,313 items alone), measured
+     * 8,617 query items on the local Vespa (2026-11-25), under its limit of 10,000.
+     */
+    const val MAX_EXCLUSIONS = 32
+
+    /**
+     * The most tokens a phrase or an exclusion may hold (counted by [IndexableChars.tokens],
+     * which errs high). A longer phrase is CUT to its first [MAX_PHRASE_TOKENS] tokens — a
+     * requirement on a prefix of it, looser but still in order. A longer exclusion is DROPPED:
+     * cut, it would exclude every note holding its start, more than the user typed, and an
+     * exclusion must never out-reach what was typed.
+     */
+    const val MAX_PHRASE_TOKENS = 32
+
+    /** The most characters of a phrase or an exclusion; past it a phrase is cut there, an exclusion dropped, as with [MAX_PHRASE_TOKENS]. */
+    const val MAX_PHRASE_CHARS = 1024
+
+    /**
+     * [phrases] as the engine runs them: the first [MAX_PHRASES], each cut to
+     * [MAX_PHRASE_CHARS] characters and [MAX_PHRASE_TOKENS] tokens. The ONE list the engine
+     * query, the in-memory reference and the live gate read, so the three cannot keep
+     * different phrases.
+     */
+    fun phrasesOf(phrases: List<String>): List<String> = phrases.take(MAX_PHRASES).map { IndexableChars.cutTokens(IndexableChars.cutChars(it, MAX_PHRASE_CHARS), MAX_PHRASE_TOKENS) }
+
+    /**
+     * [notSearch] as the engine runs it: the vacuous exclusions (nothing an index holds) and
+     * the ones past [MAX_PHRASE_CHARS] or [MAX_PHRASE_TOKENS] dropped, and the first
+     * [MAX_EXCLUSIONS] of what is left. Shared like [phrasesOf].
+     */
+    fun exclusionsOf(notSearch: List<String>): List<String> =
+        notSearch
+            .asSequence()
+            .filter { it.length <= MAX_PHRASE_CHARS && IndexableChars.hasIndexable(it) && IndexableChars.tokens(it).size <= MAX_PHRASE_TOKENS }
+            .take(MAX_EXCLUSIONS)
+            .toList()
+
     /** True when [terms], as one phrase, passes both of Vespa's checks. */
     fun fits(terms: List<String>): Boolean {
         val seen = HashMap<String, Int>()

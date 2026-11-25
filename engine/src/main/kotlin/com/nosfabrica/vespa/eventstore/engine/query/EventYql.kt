@@ -1422,7 +1422,9 @@ object EventYql {
         q.notExpiredAt?.let { clauses += "expires_at > $it" }
 
         // Every word the caller typed goes into the query — never silently
-        // dropped for speed. Exception: a word with nothing an index holds
+        // dropped for speed — up to [IndexableChars.MAX_SEARCH_WORDS] words of
+        // [IndexableChars.MAX_WORD_CHARS] characters, the bound that keeps one
+        // search from building megabytes of YQL. Exception: a word with nothing an index holds
         // ([IndexableChars]: no letter, digit or emoji — "₿", "∞", "#") is
         // erased by tokenization on the doc side too, and a query of only such
         // terms is an HTTP 400 (NullItem); it is dropped, and a query that is
@@ -1431,9 +1433,11 @@ object EventYql {
         // applies the same rule.)
         //
         // Default-grammar syntax is cleaned from what is SENT
-        // ([IndexableChars.queryText]: quotes and stars become spaces, a lone
-        // variation selector and skin tones go), each of which made a typed
-        // word a different query or a 400. Not from [words]: a search that is
+        // ([IndexableChars.queryText]: quotes, stars and the grammar's
+        // operators — `field:`, a term-opening `-`/`+`, `!`, `( ) ; < > [ ]` —
+        // become spaces, a lone variation selector and skin tones go), each of
+        // which made a typed word a different query or a 400: `kind:1` matched
+        // every kind 1, `-bar` every note. Not from [words]: a search that is
         // only syntax must stay "provably no match", never a search for
         // everything.
         val words =
@@ -1442,11 +1446,7 @@ object EventYql {
                 .orEmpty()
                 .split(WHITESPACE)
                 .filter { it.isNotEmpty() }
-        val matchable =
-            IndexableChars
-                .queryText(q.search?.trim().orEmpty())
-                .split(WHITESPACE)
-                .filter(IndexableChars::hasIndexable)
+        val matchable = IndexableChars.searchWords(q.search?.trim().orEmpty())
         if (words.isNotEmpty() && matchable.isEmpty()) return null
         if (matchable.isNotEmpty()) {
             // The body phrase only where a body can exist: on body-less kinds it
@@ -1556,8 +1556,9 @@ object EventYql {
         // often is one Vespa refuses outright, failing the whole REQ, so it
         // rides as the pieces Vespa accepts, every one REQUIRED. Nearly every
         // phrase is one piece, `@p$i`, exactly as typed.
+        // The first [PhraseRuns.MAX_PHRASES], each cut to its caps ([PhraseRuns.phrasesOf]).
         var phraseItems = 0
-        q.phrases.forEachIndexed { i, phrase ->
+        PhraseRuns.phrasesOf(q.phrases).forEachIndexed { i, phrase ->
             if (!IndexableChars.hasIndexable(phrase)) return null
             PhraseRuns.pieces(phrase).forEachIndexed { j, piece ->
                 val name = if (j == 0) "p$i" else "p${i}c$j"
@@ -1589,8 +1590,10 @@ object EventYql {
         // positive-side rule; "-🔥" is not erased, and excludes. Phrase grammar is also why [PhraseRuns.pieces]:
         // "-no-no-no-no-no-no" is six "no"s in one phrase, an HTTP 400. A word
         // in pieces drops the documents holding ALL of them.
-        q.notSearch
-            .filter(IndexableChars::hasIndexable)
+        // The first [PhraseRuns.MAX_EXCLUSIONS], an over-long one dropped rather than cut
+        // ([PhraseRuns.exclusionsOf]).
+        PhraseRuns
+            .exclusionsOf(q.notSearch)
             .forEachIndexed { i, word ->
                 val pieces =
                     PhraseRuns.exclusionPieces(word).mapIndexed { j, piece ->
@@ -1675,8 +1678,25 @@ object EventYql {
      * DEL and the C1 block are deliberately NOT excluded: Vespa stores them
      * (mojibake'd Latin-1 lands there constantly), documents really do carry
      * them, and they need no escape.
+     *
+     * A LONE surrogate is excluded: it has no UTF-8 form, so the request
+     * writer sent it as `?` and `#t:["\uD83D"]` read the events tagged `?`. No
+     * document can hold one (`VespaText.isStorable` refuses it), so like a C0
+     * character it is unmatchable. A pair is one character, and quotable.
      */
-    private fun isQuotable(s: String): Boolean = s.none { it < ' ' && it != '\t' && it != '\n' && it != '\r' }
+    private fun isQuotable(s: String): Boolean {
+        var i = 0
+        while (i < s.length) {
+            val c = s[i]
+            when {
+                c < ' ' && c != '\t' && c != '\n' && c != '\r' -> return false
+                Character.isHighSurrogate(c) && i + 1 < s.length && Character.isLowSurrogate(s[i + 1]) -> i++
+                Character.isSurrogate(c) -> return false
+            }
+            i++
+        }
+        return true
+    }
 
     /**
      * `field in (…)` over the valid 64-hex entries of [values] (normalized to

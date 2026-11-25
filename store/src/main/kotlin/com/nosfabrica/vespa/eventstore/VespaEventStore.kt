@@ -260,8 +260,10 @@ class VespaEventStore internal constructor(
 
     /**
      * DELETE the orphan scores: every stored kind-30382 signed by a service no
-     * stored kind-10040 names. Those cards can never become a tensor cell for
-     * any observer, so a mirror that syncs 30382s by kind can reclaim them
+     * stored kind-10040 delegates kind 30382 to, under any metric (a service
+     * named only for `30382:hops` is kept: the search gate admits its cards).
+     * Those cards can never become a tensor cell for any observer nor unpack in
+     * any search, so a mirror that syncs 30382s by kind can reclaim them
      * wholesale. [dryRun] gives the same report with no writes; it is not a
      * tombstone, so pair the sweep with narrowing the sync.
      *

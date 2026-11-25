@@ -50,12 +50,15 @@ import com.nosfabrica.vespa.eventstore.engine.query.VespaQuery
 import com.nosfabrica.vespa.eventstore.engine.requirePlainReplaceable
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.utils.Hex
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -69,9 +72,12 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody
 import okio.BufferedSink
+import java.io.IOException
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
 import kotlin.math.ceil
@@ -440,7 +446,93 @@ class VespaEventIndex(
     private fun removeOp(id: String) = feed.client.remove(DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, id), feedParams())
 
     override suspend fun put(doc: EventDoc) {
+        if (putDirect(doc)) return
         awaitPuts(listOf(doc), listOf(feed.enqueue { putOp(doc) }))
+    }
+
+    /**
+     * A lone put sent straight to `/document/v1` over the query client, when nothing could be
+     * overtaken by it; true when the engine stored it. The feed client hands every operation to
+     * a dispatcher thread that drains its queue and then sleeps a millisecond, so a lone write
+     * waited up to that long before it left, plus a thread hop each way: measured at about 2 ms
+     * of a 7 ms publish (benchmark/README.md, "The lone write").
+     *
+     * ORDER is what the feed client guarantees and this path does not, so it only runs while the
+     * feed client holds no unanswered operation ([VespaFeed.idle]), no batch-endpoint write is
+     * running ([batchWrites]) and no other direct put is in flight: nothing pending can be
+     * overtaken. A write issued after it is behind it, since [put] returns only once it is
+     * stored. A 507 is a feed block and throws [EngineRefusesWrites] at once; anything else but
+     * a 2xx — a refused column, pushback, a transport failure — goes the feed client's way
+     * instead, which owns the retries and the schema-fallback net. A transport failure after the
+     * request left may still have been applied, so the feed client then puts the same document
+     * again: the same as its own retry of a put on a reset connection, and harmless, since a put
+     * repeats the same document.
+     *
+     * A CANCELLED caller (a client gone, a `withTimeout`) does not end the put: the request may
+     * already be at the engine, which applies it whether or not anyone still waits. Cancelled
+     * mid-flight, it used to clear [directPutBusy] and return while the engine could still apply
+     * it, so a write to the same docid issued after [put] returned — the store's next write
+     * under its lock — could land first and be undone by it (DirectPutTest). The feed client
+     * keeps a cancelled caller's operation and orders the next one on its docid behind it; this
+     * path does the same by waiting for the engine's answer under [NonCancellable], bounded by
+     * the server-side [FEED_TIMEOUT] (plus [DIRECT_PUT_MARGIN] for the answer to arrive), and
+     * then throws the cancellation.
+     */
+    private suspend fun putDirect(doc: EventDoc): Boolean {
+        if (!directWriteIdle() || !directPutBusy.compareAndSet(false, true)) return false
+        try {
+            if (!directWriteIdle()) return false
+            // A docid that cannot be one url segment (a non-hex id, or an address whose d tag holds
+            // a space, a `/` or non-ASCII) is the feed client's: interpolated, the null segment
+            // stored the document under the docid `null` and reported it stored.
+            val segment = docIdSegment(docIdOf(doc)) ?: return false
+            val url = "${documentEndpoint()}/document/v1/$EVENT_NAMESPACE/$EVENT_DOCTYPE/docid/$segment?timeout=${FEED_TIMEOUT.seconds}s"
+            val body = doc.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge(), includeStem = fallbacks.stemFieldsAvailable)
+            val resp =
+                withContext(NonCancellable) {
+                    try {
+                        // Null past the bound: the engine did not answer, so whether it applied the
+                        // put is unknown, and the feed client puts it again, as on an IOException.
+                        withTimeoutOrNull(FEED_TIMEOUT.toMillis() + DIRECT_PUT_MARGIN.toMillis()) { http.postJsonOnce(url, body) }
+                    } catch (e: IOException) {
+                        null
+                    }
+                }
+            val stored = resp != null && resp.statusCode() in 200..299
+            if (stored) directPutsSent.incrementAndGet()
+            // The engine has answered (or the bound passed): a cancelled caller stops here, with
+            // nothing of this put left in flight.
+            currentCoroutineContext().ensureActive()
+            if (resp == null) return false
+            // A feed block refuses every write, so the feed client's retries of it could only fail
+            // after seconds: said at once, as the batch path says it (EngineRefusesWrites).
+            if (resp.statusCode() == 507) throw EngineRefusesWrites("the engine is refusing writes (507): its feed is blocked for disk or memory")
+            return stored
+        } finally {
+            directPutBusy.set(false)
+        }
+    }
+
+    private fun directWriteIdle(): Boolean = feed.idle() && batchWrites.get() == 0
+
+    /** A [putDirect] in flight: two at once could not be ordered against each other. */
+    private val directPutBusy = AtomicBoolean(false)
+
+    /** Batch-endpoint writes running now — the one write channel [VespaFeed.idle] cannot see. */
+    private val batchWrites = AtomicInteger()
+
+    private val directPutsSent = AtomicLong()
+
+    /** Lone puts [putDirect] stored without the feed client, since this index opened. */
+    val directPuts: Long get() = directPutsSent.get()
+
+    private suspend fun <T> batchWrite(write: suspend () -> T): T {
+        batchWrites.incrementAndGet()
+        try {
+            return write()
+        } finally {
+            batchWrites.decrementAndGet()
+        }
     }
 
     /**
@@ -462,11 +554,13 @@ class VespaEventIndex(
         // seconds and then answered it as an event the store could not take.
         val rest =
             batchFeed?.let { batches ->
-                batches.putAll(
-                    docs,
-                    docId = ::docIdOf,
-                    body = { it.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge(), includeStem = fallbacks.stemFieldsAvailable) },
-                )
+                batchWrite {
+                    batches.putAll(
+                        docs,
+                        docId = ::docIdOf,
+                        body = { it.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge(), includeStem = fallbacks.stemFieldsAvailable) },
+                    )
+                }
             } ?: docs
         rest.chunked(FEED_CHUNK).forEach { chunk -> awaitPuts(chunk, feed.enqueueAll(chunk, ::putOp)) }
     }
@@ -553,12 +647,14 @@ class VespaEventIndex(
         val rest =
             batchFeed?.takeIf { eligible.size > 1 }?.let { batches ->
                 val (refused, unconfirmed) =
-                    batches.putAllIfStored(
-                        eligible,
-                        docId = ::docIdOf,
-                        body = { it.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge(), includeStem = fallbacks.stemFieldsAvailable) },
-                        condition = ::storedCondition,
-                    )
+                    batchWrite {
+                        batches.putAllIfStored(
+                            eligible,
+                            docId = ::docIdOf,
+                            body = { it.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge(), includeStem = fallbacks.stemFieldsAvailable) },
+                            condition = ::storedCondition,
+                        )
+                    }
                 val settled = (refused + unconfirmed).mapTo(HashSet()) { it.id }
                 eligible.forEach { if (it.id !in settled) written += it.id }
                 unconfirmed
@@ -567,7 +663,9 @@ class VespaEventIndex(
             var pending = chunk
             var refusals = 0
             while (pending.isNotEmpty()) {
-                val ops = pending.map { ifStoredOp(it) }
+                // Handed over through enqueueAll like every feed operation: past the client's
+                // throttle window a hand-over sleeps on its thread, which was the caller's here.
+                val ops = feed.enqueueAll(pending, ::ifStoredOp)
                 val refused = ArrayList<EventDoc>()
                 var failure: Throwable? = null
                 // Every op is awaited before anything is thrown: they are in
@@ -778,20 +876,28 @@ class VespaEventIndex(
     }
 
     /**
-     * A direct read's page, whole: the members a ids-only query brought in (an empty
-     * `sig`, which every stored event has) read by id, in place, by the same [hydrate]
-     * id-first uses. A page that needed none, the common case, costs nothing here.
+     * A direct read's page, whole: the members a ids-only query brought in ([isIdOnly])
+     * read by id, in place, by the same [hydrate] id-first uses. A page that needed none,
+     * the common case, costs nothing here.
      */
     private suspend fun completeDocuments(
         page: List<VespaSummary>,
         acceptsPartial: Boolean,
     ): List<VespaSummary> {
-        val missing = page.filter { it.sig.isEmpty() }
+        val missing = page.filter { it.isIdOnly() }
         if (missing.isEmpty()) return page
         val full = HashMap<String, VespaSummary>(missing.size * 2)
         for (hit in hydrate(missing, acceptsPartial)) full[hit.id] = hit
-        return page.mapNotNull { if (it.sig.isNotEmpty()) it else full[it.id] }
+        return page.mapNotNull { if (!it.isIdOnly()) it else full[it.id] }
     }
+
+    /**
+     * Whether [this] is an id-only hit (the attribute-only `idtime` summary: id and
+     * created_at) rather than a document. Told by its empty `pubkey`, which `idtime` never
+     * carries and every stored event has. NOT by an empty `sig`: the store keeps unsigned
+     * rumors, which decode with one, and a direct page holding a rumor read it again by id.
+     */
+    private fun VespaSummary.isIdOnly(): Boolean = pubkey.isEmpty()
 
     /**
      * What a recency read's FIRST query will ask for, taken once per read so the
@@ -1069,21 +1175,63 @@ class VespaEventIndex(
                 // — a [t,t] window is tiny) or the rerun would resurrect
                 // below-floor authors into the boundary group.
                 val tieRanking = if (q.usesGatedProfile()) EventYql.RANK_RECENCY_GATED_EXACT else EventYql.RANK_UNRANKED
+                val newer = hits.filter { it.createdAt > t }
                 // Under a direct read the group is read as ids: a crowded second costs
                 // its ids, and only the members the page keeps are read whole.
-                val ties =
-                    recallRoot(q.copy(since = t, until = t, limit = null, ranking = tieRanking), idOnly || direct != null)
-                        ?.children
-                        ?.mapNotNull { it.fields }
-                        ?.filter { it.id.isNotEmpty() }
-                        ?: emptyList()
+                val group = tieGroup(q.copy(since = t, until = t, limit = null, ranking = tieRanking), limit - newer.size, idOnly || direct != null)
+                val ties = group.members
                 // Members already in hand whole stay whole: nothing to read for them again.
-                val whole = if (direct == null) null else hits.filter { it.createdAt == t && it.sig.isNotEmpty() }.associateBy { it.id }
-                hits = hits.filter { it.createdAt > t } + (if (whole.isNullOrEmpty()) ties else ties.map { whole[it.id] ?: it })
-                if (teaches && tracker?.seen != true) slackMemory?.learn(slackShape!!, lease!!, hits.size - limit, cut = true)
+                val whole = if (direct == null) null else hits.filter { it.createdAt == t && !it.isIdOnly() }.associateBy { it.id }
+                hits = newer + (if (whole.isNullOrEmpty()) ties else ties.map { whole[it.id] ?: it })
+                if (teaches && tracker?.seen != true) slackMemory?.learn(slackShape!!, lease!!, newer.size + group.size - limit, cut = true)
             }
         }
         return hits.sortedWith(SUMMARY_NEWEST_FIRST).take(limit)
+    }
+
+    /** A boundary second as [tieGroup] read it: the [members] a page may keep, and how many the second holds ([size], at least that many). */
+    private class TieGroup(
+        val members: List<VespaSummary>,
+        val size: Int,
+    )
+
+    /**
+     * The members of ONE boundary second — [second] is a `[T,T]` read with no limit — that a
+     * page still needing [need] of them can keep: the whole group when the engine served it
+     * whole, else its [need] lowest ids. [idsOnly]: the read is projected to ids (id-first, or a
+     * direct read's tie read), and so are the members.
+     *
+     * An unlimited read asks for VESPA_UNBOUNDED_HITS ([unboundedHits]), the deployed cap a
+     * multi-node cluster sets, and a provider's bulk second is far wider than any cap: the
+     * engine answers with the cap's worth of ITS members, and a page that kept the lowest ids
+     * of that subset served the wrong events. So an answer AT the cap, or one the engine says
+     * is short of the group (`totalCount` past what came back), is CUT, and the group is read
+     * by id prefix ([visitTieByIdPrefix]) lowest ids first, until [need] have arrived — the id
+     * walk's resolution of a dense second ([newestExact]), with its one inexact corner: a
+     * second the prefix budget cannot split goes to a scan whose pages come in document order.
+     * A cut group read for documents ([idsOnly] false) has its kept members read by id.
+     */
+    private suspend fun tieGroup(
+        second: EventQuery,
+        need: Int,
+        idsOnly: Boolean,
+    ): TieGroup {
+        val root = recallRoot(second, idsOnly) ?: return TieGroup(emptyList(), 0)
+        val ties = root.children.mapNotNull { it.fields }.filter { it.id.isNotEmpty() }
+        val total = root.fields.totalCount
+        // At the cap with no count saying it is whole, or a count saying it is not.
+        val cut = total > ties.size || (ties.size >= unboundedHits && total < ties.size)
+        if (!cut || need <= 0) return TieGroup(ties, maxOf(ties.size, total))
+        IngestStats.timed("recency.ties.dense") { }
+        val cap = minOf(denseCap(idPageSize), unboundedHits)
+        val lowest = ArrayList<DocRef>()
+        visitTieByIdPrefix(second, withDTag = false, cap = cap) { page ->
+            lowest += page
+            lowest.size < need
+        }
+        val kept = lowest.sortedWith(DOCREF_NEWEST_FIRST).take(need).map { VespaSummary(id = it.id, createdAt = it.createdAt) }
+        val members = if (idsOnly) kept else hydrate(kept, second.acceptsPartial)
+        return TieGroup(members, maxOf(ties.size, total, lowest.size))
     }
 
     /** [q]'s [RecencyWindowMemory.Shape], anchored as [speculativeAttempts] anchors it. */
@@ -1178,7 +1326,7 @@ class VespaEventIndex(
                 // have been proven by a window: the shape is NOT narrow. Its exact
                 // shape remembers that window (its next read speculates from it) and
                 // the family hears a busy vote. Anything else was narrow after all.
-                val span = if (page.size >= limit) anchor - page[limit - 1].createdAt else null
+                val span = if (page.size >= limit) minusSaturated(anchor, page[limit - 1].createdAt) else null
                 if (span != null && span <= RecencyPlanner.NARROW_HORIZON) {
                     outcome("prior.busy")
                     learn(shape, RecencyWindowMemory.Recall.Window(span.coerceIn(RecencyPlanner.FIRST_WINDOW, RecencyPlanner.MAX_WINDOW), limit))
@@ -1221,7 +1369,15 @@ class VespaEventIndex(
                     fallback = "attempts"
                     break
                 }
-                val since = anchor - window
+                // Saturated: an anchor near Long.MIN_VALUE (a caller's `until`) wrapped
+                // `anchor - window` to the far future, the empty attempt made THAT the
+                // boundary, and the fallback served the newest page. A window that reaches
+                // the bottom of Long cannot sit below the anchor: the unwindowed read is it.
+                val since = minusSaturated(anchor, window)
+                if (since == Long.MIN_VALUE) {
+                    fallback = "floor"
+                    break
+                }
                 if (q.since != null && since <= q.since) {
                     fallback = "since"
                     break
@@ -1315,7 +1471,8 @@ class VespaEventIndex(
      * restriction), asking for [remaining] results — the rest of a speculative
      * read whose newer part short attempts already delivered. `until` only
      * ever TIGHTENS: a boundary is at or below the anchor, itself at or below
-     * the caller's `until`.
+     * the caller's `until`. `boundary - 1` cannot wrap: a boundary is an
+     * attempt's `since`, and no attempt runs with its `since` at Long.MIN_VALUE.
      */
     private fun EventQuery.olderThan(
         boundary: Long?,
@@ -1389,7 +1546,8 @@ class VespaEventIndex(
      * strictly-newer docs already fill the limit; the residual cost — a page
      * that lands INSIDE a group far wider than the limit reads the whole group —
      * is inherited from [recallSummaries] and is the price of never truncating
-     * a tie silently.
+     * a tie silently. A group wider than the deployed hits cap cannot come back
+     * whole at all, and is read lowest ids first instead ([tieGroup]).
      */
     private suspend fun pagedRecency(
         q: EventQuery,
@@ -1416,7 +1574,11 @@ class VespaEventIndex(
             // group cannot contain a hit and is not worth reading — which is
             // what keeps the unbounded window below off the common path.
             if (out.size >= limit) break
-            recallPage(q.copy(since = boundary, until = boundary, limit = null), planned = false, idOnly = idOnly).forEach { out[it.id] = it }
+            // The group whole, or — wider than the deployed hits cap — the lowest ids the
+            // limit still needs ([tieGroup]); recallPage's unlimited read kept the cap's worth
+            // of the engine's members. Projected as recallPage projects an unlimited read.
+            val ids = idOnly || currentCoroutineContext()[DirectRead] != null
+            tieGroup(q.copy(since = boundary, until = boundary, limit = null), limit - out.size, ids).members.forEach { out[it.id] = it }
             // Strictly past the group just taken in full — `boundary - 1` is what
             // makes the cursor terminate on a corpus that shares one timestamp.
             if (boundary <= (q.since ?: Long.MIN_VALUE)) break
@@ -2274,10 +2436,12 @@ class VespaEventIndex(
     ): Boolean {
         var queries = tiePrefixQueries
         val unresolved = ArrayList<String>()
+        // A read that already carries an id prefix splits below it, never beside it.
+        val root = second.idPrefixHex() ?: ""
 
         suspend fun bucket(prefix: String): Boolean {
             // The root is the group the caller already read past the cap.
-            if (prefix.isNotEmpty()) {
+            if (prefix != root) {
                 val ids =
                     try {
                         idTimeRetrying(second.copy(idPrefix = prefix, limit = cap), withDTag, "walk.ties.prefix")
@@ -2300,7 +2464,7 @@ class VespaEventIndex(
             return true
         }
 
-        if (!bucket("")) return false
+        if (!bucket(root)) return false
         if (unresolved.isEmpty()) return true
         IngestStats.timed("walk.ties.prefix.budget") { }
         var carryOn = true
@@ -3290,7 +3454,7 @@ class VespaEventIndex(
     }
 
     /** One-line feed health for status lines: the feed client's ([VespaFeed.statusLine]), then the batch path's when it is on. */
-    fun feedStatus(): String = feed.statusLine() + (batchFeed?.let { " " + it.statusLine() } ?: "")
+    fun feedStatus(): String = feed.statusLine() + " direct $directPuts" + (batchFeed?.let { " " + it.statusLine() } ?: "")
 
     /** Whether a 404 has the batch path parked right now ([VespaBatchFeed]); false while batching is off by configuration. */
     val feedBatchParked: Boolean get() = batchFeed?.available == false
@@ -3427,9 +3591,14 @@ class VespaEventIndex(
 
         /**
          * The NARROWEST slack a shape learns ([TieSlackMemory]): a page that showed no boundary
-         * ties still keeps this much, as headroom for the next one's.
+         * ties still keeps this much, as headroom for the next one's. A direct read fetches its
+         * slack as whole documents, so on a store larger than memory each one is a cold read
+         * (~8 KB): at 8 a limit-3 page read 88 KB, at 3 it reads 48 KB and serves 15-25% more
+         * cold reads per second, with hot reads and dense boundaries level (benchmark/README.md,
+         * "The least tie slack, on disk"). Not 1: the simulation there puts a 1-5 event/s feed
+         * at 25-70% more container CPU, its every boundary tie a cut back to the wide slack.
          */
-        const val MIN_TIE_SLACK = 8
+        const val MIN_TIE_SLACK = 3
 
         /**
          * `a + b` for a non-negative [b], stopping at [Int.MAX_VALUE] instead of wrapping. Every
@@ -3441,6 +3610,20 @@ class VespaEventIndex(
             a: Int,
             b: Int,
         ): Int = (a.toLong() + b).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+
+        /**
+         * `a - b`, stopping at [Long.MIN_VALUE] / [Long.MAX_VALUE] instead of wrapping. A recency
+         * window's floor is `anchor - window` and the anchor is a caller's `until`, which may be
+         * any Long: near Long.MIN_VALUE the floor wrapped to the far future.
+         */
+        internal fun minusSaturated(
+            a: Long,
+            b: Long,
+        ): Long {
+            val r = a - b
+            // Overflow exactly when the operands' signs differ and the result's sign is not a's.
+            return if (((a xor b) and (a xor r)) < 0) (if (a < 0) Long.MIN_VALUE else Long.MAX_VALUE) else r
+        }
 
         /** The dense tie-group threshold for a page of [pageSize]: `pageSize * TIE_DENSE_FACTOR + 1`, saturated like [plusSaturated]. */
         internal fun denseCap(pageSize: Int): Int = (pageSize.toLong() * TIE_DENSE_FACTOR + 1).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
@@ -3595,7 +3778,17 @@ class VespaEventIndex(
          * which deadlocks the single-writer store behind it; a timeout turns
          * that hang into a retryable failure.
          */
-        fun feedParams(): OperationParameters = OperationParameters.empty().timeout(Duration.ofSeconds(30))
+        fun feedParams(): OperationParameters = OperationParameters.empty().timeout(FEED_TIMEOUT)
+
+        /** Every document write's deadline at the engine, the feed client's and [putDirect]'s alike. */
+        val FEED_TIMEOUT: Duration = Duration.ofSeconds(30)
+
+        /**
+         * How long past [FEED_TIMEOUT] a [putDirect] waits for the engine's answer before it
+         * gives up on it: the engine answers a timed-out put itself, so this only covers the
+         * answer's way back (and a connection that died with nothing to say so).
+         */
+        val DIRECT_PUT_MARGIN: Duration = Duration.ofSeconds(5)
 
         /**
          * Operations enqueued per awaited chunk on every pipelined feed call.

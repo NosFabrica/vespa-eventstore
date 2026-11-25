@@ -203,20 +203,26 @@ class EngineTuning(
 
     /**
      * Fix the per-process settings this tuning names, BEFORE anything reads
-     * them. Checked as a whole first, so a conflict leaves nothing half-pinned.
+     * them. Checked as a whole first, so a conflict leaves nothing half-pinned:
+     * every pin is checked under [PIN_LOCK] with no side effect, and only then
+     * applied. Applied in order instead, a conflict on a later knob left the
+     * earlier ones pinned by a tuning that threw.
      */
     internal fun pinProcessKnobs() {
         val pins =
             listOfNotNull(
-                queryFanout?.let { { ProcessKnobs.queryFanout.pin(it) } },
-                putFanout?.let { { ProcessKnobs.putFanout.pin(it) } },
-                matchPhaseMaxHits?.let { { ProcessKnobs.matchPhaseMaxHits.pin(it) } },
-                dedupChunk?.let { { StoreKnobs.dedupChunk.pin(it) } },
-                trustWalkPage?.let { { StoreKnobs.trustWalkPage.pin(it) } },
-                trustGateSlice?.let { { StoreKnobs.trustGateSlice.pin(it) } },
-                expirySweepPage?.let { { StoreKnobs.expirySweepPage.pin(it) } },
+                queryFanout?.let { ProcessKnobs.queryFanout to it },
+                putFanout?.let { ProcessKnobs.putFanout to it },
+                matchPhaseMaxHits?.let { ProcessKnobs.matchPhaseMaxHits to it },
+                dedupChunk?.let { StoreKnobs.dedupChunk to it },
+                trustWalkPage?.let { StoreKnobs.trustWalkPage to it },
+                trustGateSlice?.let { StoreKnobs.trustGateSlice to it },
+                expirySweepPage?.let { StoreKnobs.expirySweepPage to it },
             )
-        synchronized(PIN_LOCK) { pins.forEach { it() } }
+        synchronized(PIN_LOCK) {
+            pins.forEach { (knob, to) -> knob.checkPin(to) }
+            pins.forEach { (knob, to) -> knob.pin(to) }
+        }
     }
 
     /** The access-log choice for the deployed package: this tuning's, else `VESPA_ACCESS_LOG` as before. */

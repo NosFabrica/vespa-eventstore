@@ -30,6 +30,8 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.normalizeRelayUrl
+import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
+import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -112,5 +114,56 @@ class EventAdmissionTest {
             val stale = assertFailsWith<RejectedException> { store.insert(profile(50)) }
             assertTrue(stale.message!!.startsWith("replaced"), "${stale.message}")
             assertEquals(listOf(stored.id), index.search(EventQuery(kinds = listOf(0), authors = listOf(alice))).map { it.id })
+        }
+
+    /** Lands every write, then throws for one carrying a kind in [kinds]: a timeout after the feed accepted it. */
+    private class LandsThenThrows(
+        val inner: InMemoryEventIndex,
+        private val kinds: Set<Int>,
+    ) : EventIndex by inner {
+        var armed = true
+
+        override suspend fun put(doc: EventDoc) {
+            inner.put(doc)
+            check(!(armed && doc.kind in kinds)) { "timeout after landing" }
+        }
+
+        override suspend fun putAll(docs: List<EventDoc>) {
+            inner.putAll(docs)
+            check(!(armed && docs.any { it.kind in kinds })) { "timeout after landing" }
+        }
+
+        override suspend fun putIfNewer(doc: EventDoc): Boolean = super<EventIndex>.putIfNewer(doc)
+    }
+
+    /**
+     * A tombstone or vanish whose write LANDS and then fails (a timeout after the feed took it)
+     * is a stored guard all the same, so its owner must be in the guard filter: noted after the
+     * write, the note was skipped, the re-offered guard came back a duplicate that notes nothing,
+     * and under SINGLE_WRITER (no rebuild) the covered event was admitted for good.
+     */
+    @Test
+    fun `a guard whose write lands and then fails still flags its owner`() =
+        runBlocking {
+            for (kind in listOf(DeletionRequestEvent.KIND, RequestToVanishEvent.KIND)) {
+                val index = LandsThenThrows(InMemoryEventIndex(), setOf(kind))
+                val store = NostrSemanticsStore(index, relay = relayUrl, writers = WriterTopology.SINGLE_WRITER)
+                val target = Event(id(), alice, 1_000, 1, emptyArray(), "covered", "")
+                store.insert(target) // also loads the guard filters, with nobody in them
+                val guard =
+                    if (kind == DeletionRequestEvent.KIND) {
+                        DeletionRequestEvent(id(), alice, 2_000, arrayOf(arrayOf("e", target.id)), "", "")
+                    } else {
+                        RequestToVanishEvent(id(), alice, 2_000, arrayOf(arrayOf("relay", "ALL_RELAYS")), "", "")
+                    }
+                assertFailsWith<IllegalStateException> { store.insert(guard) }
+                index.armed = false
+                assertTrue(index.inner.get(guard.id) != null, "the guard landed (kind $kind)")
+                assertEquals(null, index.inner.get(target.id), "and erased the target (kind $kind)")
+
+                assertFailsWith<RejectedException>("a re-offer of the erased event is blocked (kind $kind)") { store.insert(target) }
+                assertEquals(null, index.inner.get(target.id), "the erased event stays erased (kind $kind)")
+                store.close()
+            }
         }
 }

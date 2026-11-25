@@ -392,9 +392,9 @@ class InMemoryEventIndex(
         /** tagsAll keeps AND semantics: every listed pair must be on the doc. */
         private val tagAll: List<List<String>> = q.tagsAll.map { (name, values) -> values.map { "$name:$it" } }
 
-        /** The phrases as the engine runs them ([PhraseRuns.pieces]), rewritten once per query, not per doc. */
-        private val phrasePieces = q.phrases.map { PhraseRuns.pieces(it) }
-        private val exclusionPieces = q.notSearch.map(PhraseRuns::exclusionPieces)
+        /** The phrases as the engine runs them ([PhraseRuns.phrasesOf], [PhraseRuns.pieces]), rewritten once per query, not per doc. */
+        private val phrasePieces = PhraseRuns.phrasesOf(q.phrases).map { PhraseRuns.pieces(it) }
+        private val exclusionPieces = PhraseRuns.exclusionsOf(q.notSearch).map(PhraseRuns::exclusionPieces)
 
         // The stemmed column holds bodies only, so like EventYql it is searched only
         // where a body can exist.

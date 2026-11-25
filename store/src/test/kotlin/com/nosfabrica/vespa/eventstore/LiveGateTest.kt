@@ -160,6 +160,47 @@ class LiveGateTest {
     }
 
     /**
+     * A SEARCH IS CUT THE SAME WAY LIVE AS ON THE PAGE (IndexableChars.searchWords): the engine
+     * runs only the first 16 words, so a note holding those and none of the rest is on the page,
+     * and the live tail must not refuse it for the words the page never asked for.
+     */
+    @Test
+    fun `live text reads only the words the page was read with`() {
+        val words =
+            listOf(
+                "apple",
+                "banana",
+                "cherry",
+                "damson",
+                "elder",
+                "fig",
+                "grape",
+                "hazel",
+                "iris",
+                "juniper",
+                "kiwi",
+                "lemon",
+                "mango",
+                "nectar",
+                "olive",
+                "papaya",
+                "quince",
+                "rowan",
+                "sloe",
+                "tamarind",
+            )
+        val search = words.joinToString(" ")
+        val text = words.take(16).joinToString(" ")
+        val stored = note(trusted, text)
+        runBlocking { store.insert(stored) }
+        val page = runBlocking { store.query<Event>(Filter(kinds = listOf(1), search = search)) }
+        assertTrue(page.any { it.id == stored.id }, "the REQ serves it: only the first 16 words are asked for")
+        val g = assertNotNull(gate(search))
+        assertTrue(runBlocking { g.admits(note(trusted, text)) }, "and its live tail admits the same note")
+        assertFalse(runBlocking { g.admits(note(trusted, words.drop(1).joinToString(" "))) }, "a word of the first 16 is still required")
+    }
+
+    /**
      * A PHRASE VESPA WOULD REFUSE IS JUDGED AS THE ENGINE RAN IT (PhraseRuns):
      * the page excluded every note holding five "no"s, so the live stream
      * must too — the text as typed (six) would let those through.

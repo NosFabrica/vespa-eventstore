@@ -37,8 +37,8 @@ class TieSlackMemoryTest {
     @Test
     fun `a cut goes back to at least the widest slack, and learns a wider group exactly`() {
         assertEquals(wide, TieSlackMemory.next(slack = least, over = 0, cut = true))
-        // The [T,T] read counted 60 past the page: 2 * 60 + 8, so the next read holds it.
-        assertEquals(128, TieSlackMemory.next(slack = wide, over = 60, cut = true))
+        // The [T,T] read counted 60 past the page: 2 * 60 + 3, so the next read holds it.
+        assertEquals(123, TieSlackMemory.next(slack = wide, over = 60, cut = true))
         assertEquals(TieSlackMemory.MAX_LEARNED_SLACK, TieSlackMemory.next(slack = wide, over = 5_000, cut = true), "never past what one avoided query is worth")
     }
 
@@ -50,12 +50,13 @@ class TieSlackMemoryTest {
 
     @Test
     fun `a quiet page narrows by a quarter of the gap, never below the least`() {
-        // Target 8 from 64: a quarter of the 56 gap.
-        assertEquals(50, TieSlackMemory.next(slack = wide, over = 0, cut = false))
-        assertEquals(least, TieSlackMemory.next(slack = 9, over = 0, cut = false), "at least one step")
+        // Target 3 from 64: a quarter of the 61 gap.
+        assertEquals(49, TieSlackMemory.next(slack = wide, over = 0, cut = false))
+        assertEquals(8, TieSlackMemory.next(slack = 9, over = 0, cut = false), "at least one step")
+        assertEquals(least, TieSlackMemory.next(slack = least + 1, over = 0, cut = false))
         assertEquals(least, TieSlackMemory.next(slack = least, over = 0, cut = false))
-        // One quieter page on a busy shape does not open it to a cut: target 28, but 64 -> 55.
-        assertEquals(55, TieSlackMemory.next(slack = wide, over = 10, cut = false))
+        // One quieter page on a busy shape does not open it to a cut: target 23, but 64 -> 54.
+        assertEquals(54, TieSlackMemory.next(slack = wide, over = 10, cut = false))
     }
 
     @Test
@@ -63,7 +64,7 @@ class TieSlackMemoryTest {
         assertEquals(wide, memory.slackFor(shape(1)).value)
         assertEquals(12, memory.slackFor(shape(1), cold = 12).value, "a cold shape starts from the caller's evidence")
         memory.learn(shape(1), memory.slackFor(shape(1)), over = 0, cut = false)
-        assertEquals(50, memory.slackFor(shape(1), cold = 12).value, "and a learned one ignores it")
+        assertEquals(49, memory.slackFor(shape(1), cold = 12).value, "and a learned one ignores it")
         assertEquals(wide, memory.slackFor(shape(7)).value, "another shape is its own")
     }
 
@@ -86,7 +87,7 @@ class TieSlackMemoryTest {
     @Test
     fun `a narrowing that lands after a concurrent cut does not undo it`() {
         val shape = shape(1)
-        memory.learn(shape, memory.slackFor(shape), over = 0, cut = false) // 50, a learned entry
+        memory.learn(shape, memory.slackFor(shape), over = 0, cut = false) // 49, a learned entry
         val a = memory.slackFor(shape)
         val b = memory.slackFor(shape)
         memory.learn(shape, a, over = 80, cut = true)
@@ -98,7 +99,7 @@ class TieSlackMemoryTest {
         // A raise computed from an older lease never lowers what is stored either.
         val c = memory.slackFor(shape)
         memory.learn(shape, c, over = 85, cut = true)
-        memory.learn(shape, b, over = 20, cut = false) // a raise from 50 to 48? no: target 48 < 50, a stale narrowing
+        memory.learn(shape, b, over = 20, cut = false) // a raise from 49 to 43? no: target 43 < 49, a stale narrowing
         assertEquals(2 * 85 + least, memory.slackFor(shape).value)
     }
 

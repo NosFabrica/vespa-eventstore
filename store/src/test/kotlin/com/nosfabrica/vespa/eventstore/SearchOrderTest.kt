@@ -76,7 +76,7 @@ class SearchOrderTest {
 
     @Test
     fun `a ranked match-all (sort extension) keeps the engine's order too`() =
-        runBlocking {
+        runBlocking<Unit> {
             val ids = store().query<Event>(Filter(search = "sort:rank")).map { it.id }
             assertEquals(listOf(older.id, newer.id), ids)
         }

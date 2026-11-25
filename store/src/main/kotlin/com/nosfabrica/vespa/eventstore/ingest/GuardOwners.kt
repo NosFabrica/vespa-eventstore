@@ -41,8 +41,11 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.Collections
+import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * The owners with a stored tombstone / stored vanish — the keys that let the
@@ -58,7 +61,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  *  - OVER-flagging only costs a probe. UNDER-flagging re-admits an erased
  *    event, so it is the one thing the design forbids: the sets are preloaded
  *    from the engine and every guard stored afterwards is added via
- *    [noteDeletionStored]/[noteVanishStored].
+ *    [noteDeletionStored]/[noteVanishStored], before its write is sent (a
+ *    write can land and still fail).
  *  - [GuardBloom]s scale to millions of deleters in a few MB; the Bloom's
  *    no-false-negative property is exactly the under-flag prohibition. The
  *    load must be EXHAUSTIVE, so it uses the continuation-paged
@@ -89,6 +93,11 @@ internal class GuardOwners(
      * passes it as a value instead.
      */
     override: WriterTopology? = envOverride(),
+    /**
+     * This index's guard-write count ([guardWrites]): by default the one every [GuardOwners]
+     * over [index] in this process shares. [forReplay] passes its own.
+     */
+    private val writes: AtomicLong = guardWriteCounter(index),
 ) {
     private class Blooms(
         val deleters: GuardBloom,
@@ -109,6 +118,35 @@ internal class GuardOwners(
     /** The override outranks the caller: an operator must be able to force the strict floor. */
     private val mode = override ?: topology
 
+    /**
+     * How many kind 5 and kind 62 writes (and the erasures they stand for) this process has made
+     * to this index so far, counted when each one ENDS, landed or failed, plus every publish of
+     * rebuilt filters ([refresh], and the first load). A guard read taken after reading this number
+     * is still exact under the writer lock as long as the number has not moved: whatever this
+     * process wrote since would have moved it, and a foreign writer's guard could race a locked
+     * read just the same. [BulkRecordInsert] reads its guards that way, beside its dedup, and reads
+     * them again under the lock only when the number moved.
+     *
+     * WHY A REBUILD COUNTS. Under [WriterTopology.SHARED] the rebuild is how a foreign guard
+     * reaches this store: an owner unflagged when the early read ran was skipped by it (nothing
+     * queried), and a rebuild that flags them before the commit means the locked read would query
+     * them. Without the count the commit kept the empty early read and stored an event the
+     * foreign tombstone covers, inside the very rebuild that was meant to honour it.
+     */
+    fun guardWrites(): Long = writes.get()
+
+    /**
+     * Runs [write], a write that stores a kind 5 or 62 or applies one, and counts it in
+     * [guardWrites] however it ends: a write that failed may still have landed. Callers hold the
+     * writer lock, so the count moves before any other batch's locked commit compares it.
+     */
+    suspend fun <T> writingGuards(write: suspend () -> T): T =
+        try {
+            write()
+        } finally {
+            writes.incrementAndGet()
+        }
+
     @Volatile
     private var blooms: Blooms? = null
 
@@ -126,7 +164,9 @@ internal class GuardOwners(
      */
     private val swapLock = Any()
 
-    private val refreshScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    /** Only a [WriterTopology.SHARED] cache with a cadence ever refreshes, so only it holds a scope to refresh in. */
+    private val refreshScope: CoroutineScope? =
+        if (mode == WriterTopology.SHARED && refreshMillis > 0L) CoroutineScope(SupervisorJob() + Dispatchers.Default) else null
 
     private val refresherStarted = AtomicBoolean(false)
 
@@ -158,7 +198,10 @@ internal class GuardOwners(
         return owners.filter { b.vanishers.mightContain(it) }
     }
 
-    /** A kind 5 by [author] was just stored — their events must probe NIP-09 from now on. */
+    /**
+     * A kind 5 by [author] is about to be stored — their events must probe NIP-09 from now on.
+     * Called BEFORE the write: one that lands and then fails is stored all the same.
+     */
     fun noteDeletionStored(author: String) {
         synchronized(swapLock) {
             noting?.deleters?.add(author)
@@ -166,7 +209,7 @@ internal class GuardOwners(
         }
     }
 
-    /** A kind 62 by [author] was just stored — their events must probe NIP-62 from now on. */
+    /** A kind 62 by [author] is about to be stored — as [noteDeletionStored], for NIP-62. */
     fun noteVanishStored(author: String) {
         synchronized(swapLock) {
             noting?.vanishers?.add(author)
@@ -212,13 +255,15 @@ internal class GuardOwners(
                 buffered.vanishers.forEach(fresh.vanishers::add)
                 blooms = fresh
                 noting = null
+                // New filters can flag an owner an early guard read skipped: see [guardWrites].
+                writes.incrementAndGet()
             }
         }
     }
 
     /** Stops the background refresher. Idempotent; the store owns the call. */
     fun close() {
-        refreshScope.cancel()
+        refreshScope?.cancel()
     }
 
     private suspend fun loaded(): Blooms? {
@@ -242,6 +287,9 @@ internal class GuardOwners(
                 buffered.vanishers.forEach(b.vanishers::add)
                 blooms = b
                 noting = null
+                // Every publish counts, the first one too (as in [refresh]), so no early read can
+                // straddle a filter change; it costs one batch a locked re-read, once per process.
+                writes.incrementAndGet()
             }
             startRefresher()
             return b
@@ -254,9 +302,9 @@ internal class GuardOwners(
      * needs the sets at all.
      */
     private fun startRefresher() {
-        if (mode != WriterTopology.SHARED || refreshMillis <= 0L) return
+        val scope = refreshScope ?: return
         if (!refresherStarted.compareAndSet(false, true)) return
-        refreshScope.launch {
+        scope.launch {
             while (isActive) {
                 delay(refreshMillis)
                 try {
@@ -303,6 +351,23 @@ internal class GuardOwners(
     }
 
     internal companion object {
+        /** One counter per index object, so two [GuardOwners] over one index share it; weak, so a closed index's goes with it. */
+        private val guardWriteCounters: MutableMap<EventIndex, AtomicLong> = Collections.synchronizedMap(WeakHashMap())
+
+        private fun guardWriteCounter(index: EventIndex): AtomicLong = guardWriteCounters.getOrPut(index) { AtomicLong() }
+
+        /**
+         * The guards of [BulkMixedInsert]'s replay, over its throwaway snapshot: no cache
+         * ([WriterTopology.SHARED_STRICT], which is what a replay wants; the real store's cache
+         * answers for the real index), built once per mixed batch, so built without the
+         * per-instance costs that only a store's guards need. It never reads
+         * `GUARD_OWNERS_DISABLE` (the default `override` re-parsed it per batch, and an
+         * unparseable value failed every mixed batch even on a store given an explicit setting),
+         * holds no refresh scope, and counts its guard writes privately instead of in the
+         * process-wide map, whose lock every batch took for an index nobody else sees.
+         */
+        fun forReplay(snapshot: EventIndex): GuardOwners = GuardOwners(snapshot, WriterTopology.SHARED_STRICT, override = null, writes = AtomicLong())
+
         const val ENV_DISABLE = "GUARD_OWNERS_DISABLE"
 
         private val TRUTHY = setOf("1", "true", "yes", "on")
@@ -319,7 +384,11 @@ internal class GuardOwners(
          * while the parse was `toBooleanStrictOrNull`, which returns null for
          * "1" — and a correctness mechanism must not have a quiet failure mode.
          */
-        fun envOverride(): WriterTopology? = parseDisable(System.getenv(ENV_DISABLE))
+        fun envOverride(): WriterTopology? = parseDisable(environment(ENV_DISABLE))
+
+        /** Where [envOverride] reads the environment: the process's, which a test cannot set, so it swaps this. */
+        @Volatile
+        internal var environment: (String) -> String? = System::getenv
 
         /** [envOverride]'s parse, split out so a test can reach it without mutating the process environment. */
         fun parseDisable(raw: String?): WriterTopology? {
