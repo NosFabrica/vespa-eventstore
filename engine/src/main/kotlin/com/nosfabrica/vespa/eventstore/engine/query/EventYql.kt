@@ -450,6 +450,7 @@ object EventYql {
             completeCoverage = q.complete,
             sampled = q.sampled,
             shape = clauseShape(q),
+            authorFilter = authorFilterOf(q),
         )
     }
 
@@ -726,6 +727,7 @@ object EventYql {
             sampled = q.sampled,
             acceptsPartial = q.acceptsPartial,
             shape = clauseShape(q),
+            authorFilter = authorFilterOf(q),
             select = if (selectable(q)) SelectForm(q, SUMMARY_FIELD_LIST, newestFirst, q.limit) else null,
         )
     }
@@ -900,6 +902,7 @@ object EventYql {
             ranking = ranking,
             acceptsPartial = q.acceptsPartial,
             shape = clauseShape(q),
+            authorFilter = authorFilterOf(q),
         )
     }
 
@@ -998,6 +1001,7 @@ object EventYql {
             ranking = ranking,
             acceptsPartial = q.acceptsPartial,
             shape = clauseShape(q),
+            authorFilter = if (source == EVENT_SOURCE) authorFilterOf(q) else null,
         )
     }
 
@@ -1205,6 +1209,16 @@ object EventYql {
         if (q.until != null) parts += "until"
         return if (parts.isEmpty()) SHAPE_PLAIN else parts.joinToString(",")
     }
+
+    /**
+     * The author clauses of [q], carried UNPROCESSED to the client ([AuthorFilter]): null, and no
+     * allocation, when the query names no author. Normalizing them costs a pass over the list, and
+     * only a sharded client reads them, so the work is deferred to [AuthorFilter.scope].
+     */
+    internal fun authorFilterOf(q: EventQuery): AuthorFilter? = if (q.authors.isEmpty() && q.authorWeights.isEmpty()) null else AuthorFilter(q.authors, q.authorWeights.keys)
+
+    /** [authorFilterOf]'s scope, computed: what a sharded client restricts the query to. */
+    internal fun authorScopeOf(q: EventQuery): Set<String>? = authorFilterOf(q)?.scope()
 
     /**
      * Whether [q] has a `select` form ([SelectForm]): a text-free read with no weighted key set and

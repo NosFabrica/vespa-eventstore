@@ -633,7 +633,7 @@ class VespaEventStore internal constructor(
             mode: SchemaDeploy = SchemaDeploy.IF_CHANGED,
             tuning: EngineTuning = EngineTuning(),
             awaitTimeout: Duration = Duration.ofMinutes(10),
-        ): SchemaDeployment = runSchemaDeploy(SchemaDeployer(configUrl), url, mode, tuning.accessLogOrEnv(), awaitTimeout)
+        ): SchemaDeployment = runSchemaDeploy(SchemaDeployer(configUrl), url, mode, tuning.accessLogOrEnv(), awaitTimeout, tuning.bucketMap())
 
         /** Backoff between drain retries after an engine failure. */
         private const val DRAIN_RETRY_MILLIS = 5_000L

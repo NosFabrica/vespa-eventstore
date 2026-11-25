@@ -93,9 +93,10 @@ class FilterMatrixIT {
                 vespa.start()
                 val queryUrl = "http://${vespa.host}:${vespa.getMappedPort(QUERY_PORT)}"
                 val configUrl = "http://${vespa.host}:${vespa.getMappedPort(CONFIG_PORT)}"
-                SchemaDeployer(configUrl).deployIfAbsent(queryUrl)
-                VespaEventStore.open(url = queryUrl, autoDeploy = false, configUrl = configUrl).use { front ->
+                SchemaDeployer(configUrl).deployIfAbsent(queryUrl, ItAuthorShards.zip())
+                VespaEventStore.open(url = queryUrl, autoDeploy = false, configUrl = configUrl, tuning = ItAuthorShards.tuning()).use { front ->
                     runBlocking {
+                        ItAuthorShards.requireSpread(AUTHORS)
                         front.batchInsert(CARDS + NOTES + TIES + REACTIONS)
                         front.insert(LIST_10040)
                         front.awaitTrustProjection()
@@ -434,8 +435,12 @@ class FilterMatrixIT {
         val STRANGER = "d".repeat(64)
         val PROVIDER = "5e".repeat(32)
 
-        /** Seven authors, one trust tier each; the last has no card at all. */
-        val AUTHORS = (1..7).map { it.toString(16).padStart(64, 'b') }
+        /**
+         * Seven authors, one trust tier each; the last has no card at all. Their MIDDLE bytes
+         * differ (36, 72, … 252 at `AuthorShards.BUCKET_BYTE`), so under `-DitAuthorShards=2` the
+         * first three live in one cluster and the rest in the other; the keys still sort by `n`.
+         */
+        val AUTHORS = (1..7).map { n -> "b".repeat(32) + "%02x".format(n * 36) + "b".repeat(29) + n.toString(16) }
         val RANKS = listOf(90, 60, 50, 10, 2, 1)
         val FOLLOWER_COUNTS = listOf(5, 50, 500, 5000, 1, 2)
         val RANK = AUTHORS.zip(RANKS).toMap()

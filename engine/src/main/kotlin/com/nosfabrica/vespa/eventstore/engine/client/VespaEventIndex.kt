@@ -287,7 +287,13 @@ class VespaEventIndex(
      */
     private val resources = EngineResources(http, ::queryEndpoint)
 
-    private val visits = VespaVisits(http, ::documentEndpoint, visitSlices, visitConcurrency, visitStreaming)
+    /** The author clusters, checked against the deployment before a visit or a cluster-scoped query relies on them. */
+    private val authorClusters = AuthorClusters(tuning.bucketMap(), http, ::documentEndpoint)
+
+    /** The clusters a visit walks; `[null]` on the bundled single cluster. */
+    private val clusters: List<String?> = authorClusters.visitClusters
+
+    private val visits = VespaVisits(http, ::documentEndpoint, visitSlices, visitConcurrency, visitStreaming, clusters, authorClusters::verify)
 
     private val fallbacks = SchemaFallbacks()
 
@@ -2547,6 +2553,16 @@ class VespaEventIndex(
         return authors
     }
 
+    /**
+     * Every stored event's author, page by page, from a visit projecting only `pubkey`: the corpus
+     * as the author shards' buckets see it (`bucketReport`). Read-only, and a full walk — on a
+     * production corpus, hours of background visiting, so an operator's tool and never a serving
+     * path. A false return from [onPage] stops the walk.
+     */
+    suspend fun visitAuthors(onPage: suspend (List<String>) -> Boolean) {
+        visits.pages(EVENT_DOCTYPE, "$EVENT_DOCTYPE:pubkey") { documents -> onPage(documents.mapNotNull { it.fields?.pubkey }) }
+    }
+
     // ---- counts and groupings -----------------------------------------------
 
     /**
@@ -2664,14 +2680,41 @@ class VespaEventIndex(
      * degraded answer rather than hand back a partial statistic that reads as a
      * whole one. A query that provably matches nothing answers an empty root
      * without a round trip.
+     *
+     * Under author sharding a pipeline with a group LIMIT (`max(10)`, as opposed to the
+     * `max(created_at)` aggregator) is refused: each content cluster applies the limit before
+     * answering, so the merged root ([GroupingResults.mergeRoots]) would hold up to K times the
+     * groups or hits asked for, and could miss one that is n+1st in every cluster. Refusing is
+     * honest where a trimmed answer would only look right. Inside an `each(…)` under
+     * `group(pubkey)` the limit stands: those groups all come from one cluster. So is a count of distinct values of a
+     * field other than the author's, except in the one shape statistics use,
+     * `all(group(F) output(count()))`, which is answered exactly from the merged groups instead
+     * ([ShardedGrouping]).
      */
     suspend fun group(
         query: EventQuery,
         pipeline: String,
         source: String = EventYql.EVENT_SOURCE,
     ): JsonObject {
-        val vq = EventYql.buildGrouping(query, pipeline, source) ?: return EMPTY_GROUPING_ROOT
-        return queryRoot(vq, hits = 0) ?: error("vespa answered a grouping with no root")
+        if (!authorClusters.sharded) {
+            val vq = EventYql.buildGrouping(query, pipeline, source) ?: return EMPTY_GROUPING_ROOT
+            return queryRoot(vq, hits = 0) ?: error("vespa answered a grouping with no root")
+        }
+        return when (val plan = ShardedGrouping.plan(pipeline)) {
+            ShardedGrouping.Plan.AsIs -> {
+                val vq = EventYql.buildGrouping(query, pipeline, source) ?: return EMPTY_GROUPING_ROOT
+                queryRoot(vq, hits = 0) ?: error("vespa answered a grouping with no root")
+            }
+
+            is ShardedGrouping.Plan.Distinct -> {
+                val vq = EventYql.buildGrouping(query, plan.pipeline, source) ?: return EMPTY_GROUPING_ROOT
+                ShardedGrouping.exactDistinct(queryRoot(vq, hits = 0) ?: error("vespa answered a grouping with no root"))
+            }
+
+            is ShardedGrouping.Plan.Refused -> {
+                throw IllegalArgumentException(plan.reason)
+            }
+        }
     }
 
     /**
@@ -2880,38 +2923,52 @@ class VespaEventIndex(
     ): VespaHttp.HttpResp {
         // The where is rendered here, last, so a read that goes as YQL never pays for it.
         val form = vq.select?.takeIf { selectQueries && fallbacks.selectAvailable && it.where != null }
+        // Author sharding: the clusters this read may touch ([requestBody]), checked against the
+        // deployment before the first read that relies on them. Null on one cluster.
+        val scoped = authorClusters.clustersFor(vq.authorFilter)
+        if (scoped != null) authorClusters.verify()
         if (form != null) {
-            val resp = http.post(searchUrl(), requestBody(vq, hits, form))
+            val resp = http.post(searchUrl(), requestBody(vq, hits, form, scoped))
             if (resp.statusCode() != 400) {
                 require(resp.statusCode() < 400) { "vespa search ${resp.statusCode()}: ${resp.body().take(300)}" }
                 return resp
             }
-            val viaYql = http.post(searchUrl(), requestBody(vq, hits, null))
+            val viaYql = http.post(searchUrl(), requestBody(vq, hits, null, scoped))
             if (viaYql.statusCode() < 400 && fallbacks.markSelectRefused()) IngestStats.timed(SELECT_REFUSED_STAGE) { }
             require(viaYql.statusCode() < 400) { "vespa search ${viaYql.statusCode()}: ${viaYql.body().take(300)}" }
             return viaYql
         }
-        val resp = http.post(searchUrl(), requestBody(vq, hits, null))
+        val resp = http.post(searchUrl(), requestBody(vq, hits, null, scoped))
         require(resp.statusCode() < 400) { "vespa search ${resp.statusCode()}: ${resp.body().take(300)}" }
         return resp
     }
 
-    /** One `/search/` request body for [vq]: the [form] when given, else its YQL. */
+    /** One `/search/` request body for [vq]: the [form] when given, else its YQL; sent only to [scoped] clusters when named. */
     private fun requestBody(
         vq: VespaQuery,
         hits: Int,
         form: SelectForm?,
+        scoped: List<String>?,
     ): RequestBody {
         // Written into the socket as it is sent: an id or author recall's yql runs to hundreds of
         // kilobytes, and as a buffer, its string and its bytes it was three copies of that.
         // Repeatable, as VespaHttp's retries need.
         val timing = ledger != null
+        // Author sharding: a query every match of which is by a known set of authors is sent only
+        // to the clusters those authors live in, and with a move in flight every query names the
+        // serving clusters, so the pending one is never read. As YQL, `from sources …` names the
+        // clusters and `model.restrict` keeps the schema, since a cluster also holds `reputation`
+        // (measured: without it the query reads both types). As `select`, which has no `from`,
+        // `model.sources` names them beside the `model.restrict` it always sends.
+        val rewritten = if (form == null) scoped?.let { scopedYql(vq.yql, it) } else null
+        val yql = rewritten?.first ?: vq.yql
         return object : RequestBody() {
             override fun contentType() = JSON_MEDIA
 
             override fun writeTo(sink: BufferedSink) {
                 if (form == null) {
-                    sink.writeUtf8("{\"yql\":").writeJsonString(vq.yql)
+                    sink.writeUtf8("{\"yql\":").writeJsonString(yql)
+                    if (rewritten != null) sink.writeUtf8(",\"model.restrict\":").writeJsonString(rewritten.second)
                     sink.writeUtf8(",\"hits\":").writeJsonString(hits.toString())
                 } else {
                     // `from event` is model.restrict, `order by` is sorting, and YQL's `limit`
@@ -2923,6 +2980,7 @@ class VespaEventIndex(
                         sink.writeByte(']'.code)
                     }
                     sink.writeUtf8("},\"model.restrict\":\"event\"")
+                    if (scoped != null) sink.writeUtf8(",\"model.sources\":").writeJsonString(scoped.joinToString(","))
                     if (form.newestFirst) sink.writeUtf8(",\"sorting\":\"-created_at\"")
                     sink.writeUtf8(",\"hits\":").writeJsonString((form.limit ?: hits).toString())
                 }
@@ -2947,12 +3005,46 @@ class VespaEventIndex(
     }
 
     /**
+     * [searchRootOnce], and under author sharding with a document met twice served once
+     * ([distinctHits]). Vespa applies `hits` before the client can see the repeats, so a page that
+     * came back FULL but shrank when deduplicated is asked again for more, until it holds [hits]
+     * distinct documents or the engine runs out: a reader that stops on a short page would
+     * otherwise stop early. Repeats exist only while a bucket move's old owner still holds copies
+     * ([BucketMove]); outside one, no page shrinks and nothing is asked twice.
+     */
+    private suspend fun searchRoot(
+        vq: VespaQuery,
+        hits: Int,
+    ): SearchRoot {
+        val first = searchRootOnce(vq, hits)
+        if (!authorClusters.sharded) return first
+        // Never past what the engine serves one request: an operator capping maxHits caps
+        // [unboundedHits] with it, and a refetch over it would turn a short page into a 400.
+        val ceiling = maxOf(hits, unboundedHits)
+        var asked = hits
+        var root = first
+        repeat(MAX_REPEAT_REFETCHES) {
+            val kept = distinctHits(root)
+            if (kept.children.size >= hits || root.children.size < asked || asked >= ceiling) return kept.trimmedTo(hits)
+            asked = minOf(asked.toLong() * 2, ceiling.toLong()).toInt()
+            // The page size is the yql's own `limit` where it has one, which wins over `hits`:
+            // raising `hits` alone answers the same page again (the first cut did).
+            // A `select` read's page size is its form's limit, sent as `hits`: raised with it.
+            val raised = withYqlLimit(vq.yql, asked)?.let { vq.copy(yql = it) } ?: vq
+            root = searchRootOnce(raised.select?.let { raised.copy(select = it.withLimit(asked)) } ?: raised, asked)
+        }
+        return distinctHits(root).trimmedTo(hits)
+    }
+
+    private fun SearchRoot.trimmedTo(hits: Int): SearchRoot = if (children.size <= hits) this else SearchRoot(children.take(hits), coverage, fields, errors)
+
+    /**
      * The recall paths' `/search/` funnel, streamed straight into DTOs.
      * Together with [queryRoot] (the grouping/count paths, which need the tree)
      * it is the only way a response reaches a caller, and both refuse reported
      * errors and verify coverage — so nothing can accidentally accept a degraded answer.
      */
-    private suspend fun searchRoot(
+    private suspend fun searchRootOnce(
         vq: VespaQuery,
         hits: Int,
     ): SearchRoot {
@@ -3017,6 +3109,25 @@ class VespaEventIndex(
     }
 
     /**
+     * [root] with a document met twice served once: the cut-over of a bucket move ([BucketMove])
+     * leaves the old owner a copy until its cleanup, and a read naming both clusters meets it in
+     * each. Keyed by the event id, or the pubkey on a reputation hit; a hit carrying neither is
+     * kept. Never runs on one cluster, where no document can be stored twice.
+     */
+    private fun distinctHits(root: SearchRoot): SearchRoot {
+        if (root.children.size < 2) return root
+        val seen = HashSet<String>(root.children.size * 2)
+        val kept =
+            root.children.filter { h ->
+                h.fields
+                    ?.let { f -> f.id.ifEmpty { f.pubkey } }
+                    ?.takeIf { it.isNotEmpty() }
+                    ?.let(seen::add) ?: true
+            }
+        return if (kept.size == root.children.size) root else SearchRoot(kept, root.coverage, root.fields, root.errors)
+    }
+
+    /**
      * The query's SHAPE for a degraded-read tally: which clause kinds it
      * carried, never their values. A yql holds what somebody searched for, and
      * this is read from places a search term must not reach.
@@ -3078,6 +3189,10 @@ class VespaEventIndex(
         )
         return envelope["root"]
             ?.jsonObject
+            // One grouping root per content cluster under author sharding: merged before anything reads it.
+            ?.let(GroupingResults::mergeRoots)
+            // And any hits in the answer served once, as [searchRoot]'s are ([GroupingResults.distinctHits]).
+            ?.let { if (authorClusters.sharded) GroupingResults.distinctHits(it) else it }
             ?.also { root ->
                 // Before the coverage check, as in [searchRoot]: a node that did not answer is outside what coverage counts.
                 root["errors"]?.let { refuseErrors(VESPA_JSON.decodeFromJsonElement(ListSerializer(SearchError.serializer()), it)) }
@@ -3207,6 +3322,60 @@ class VespaEventIndex(
     }
 
     internal companion object {
+        /**
+         * [yql] reading `from sources` [clusters] instead of `from event` or `from reputation`,
+         * paired with the schema it read, which the request must then name in `model.restrict`
+         * (a cluster holds both types); null when it reads from neither.
+         */
+        internal fun scopedYql(
+            yql: String,
+            clusters: List<String>,
+        ): Pair<String, String>? {
+            for (schema in SCOPABLE) {
+                val from = " from $schema where "
+                val at = yql.indexOf(from)
+                if (at >= 0) return (yql.substring(0, at) + " from sources ${clusters.joinToString(", ")} where " + yql.substring(at + from.length)) to schema
+            }
+            return null
+        }
+
+        private val SCOPABLE = listOf(EVENT_DOCTYPE, "reputation")
+
+        /**
+         * [yql] with its LAST `limit N` (the page size, which Vespa takes over the `hits`
+         * parameter) set to [n]; null when it has none outside a quoted literal (a search term may
+         * spell "limit 5"), when the page is `hits` alone.
+         */
+        internal fun withYqlLimit(
+            yql: String,
+            n: Int,
+        ): String? {
+            val m = YQL_LIMIT.findAll(yql).lastOrNull { !insideQuotes(yql, it.range.first) } ?: return null
+            return yql.replaceRange(m.range, " limit $n")
+        }
+
+        private val YQL_LIMIT = Regex(""" limit \d+\b""")
+
+        /** Whether [at] sits inside a double-quoted yql literal (backslash escapes honored). */
+        private fun insideQuotes(
+            yql: String,
+            at: Int,
+        ): Boolean {
+            var quoted = false
+            var i = 0
+            while (i < at) {
+                when (yql[i]) {
+                    '\\' -> i++
+                    '"' -> quoted = !quoted
+                }
+                i++
+            }
+            return quoted
+        }
+
+        /** How many times a sharded page that lost repeats is asked again, each for twice the hits ([searchRoot]). */
+        private const val MAX_REPEAT_REFETCHES = 4
+
         /**
          * The FED column generations a schema can predate — the near tier, the
          * edge column, the stemmed columns — each refused on its own feed round.

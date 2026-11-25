@@ -16,7 +16,10 @@
        * resource limits (the bundled dev override is REMOVED here: size disks
          instead, and let Vespa's default 80%/85% feed-block guard protect you)
        * numthreadspersearch (1 = concurrent-serving throughput; raise for a
-         latency-critical few-big-queries deployment)                          -->
+         latency-critical few-big-queries deployment)
+     To split this package by author (docs/author-shards.md, "A multi-node
+     package"), do not edit the content cluster by hand: keep the one cluster
+     here and run ./gradlew :benchmark:shardPackage over it.                   -->
 <services version="1.0">
 
   <!-- Config servers are declared in your deployment tooling (3 for HA). -->

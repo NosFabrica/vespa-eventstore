@@ -192,6 +192,13 @@ class MockVespaEngine(
      */
     @Volatile var degradeNextSearches: Int = 0
 
+    /**
+     * Serve each of the first N matches of a hit search TWICE, side by side, before the yql `limit`
+     * (and then `hits`) cuts the page: a bucket move's cut-over, where a read over every cluster meets a moved document in
+     * its old owner and its new one.
+     */
+    @Volatile var repeatFirstHits: Int = 0
+
     /** What [degradeNextSearches] degrades with. `non-ideal-state` is a cluster still settling. */
     @Volatile var transientReason: String = NON_IDEAL_STATE
 
@@ -861,7 +868,10 @@ class MockVespaEngine(
                         sorted
                     }
                 }
-        val matches = query.limit?.let { admitted.take(it) } ?: admitted
+        // Repeats BEFORE the yql limit: real Vespa merges every cluster's hits, repeats and all, and
+        // then cuts the page at the query's `limit`, which wins over the `hits` parameter.
+        val repeated = if (repeatFirstHits > 0 && !grouped) admitted.flatMapIndexed { i, d -> if (i < repeatFirstHits) listOf(d, d) else listOf(d) } else admitted
+        val matches = query.limit?.let { repeated.take(it) } ?: repeated
         // Simulated match-phase under-delivery: fewer hits than the limit, with
         // ONLY the match-phase degradation flag set (see [matchPhaseUnderdeliver]).
         val underdeliver = matchPhaseUnderdeliver > 0 && !grouped && (params["ranking"] == "recency" || params["ranking"] == "recency_gated")

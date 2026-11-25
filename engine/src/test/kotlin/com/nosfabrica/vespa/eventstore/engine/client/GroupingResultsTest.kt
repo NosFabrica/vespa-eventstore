@@ -22,9 +22,14 @@ package com.nosfabrica.vespa.eventstore.engine.client
 
 import com.nosfabrica.vespa.eventstore.engine.DocRef
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.double
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertSame
 
 class GroupingResultsTest {
     /**
@@ -109,5 +114,113 @@ class GroupingResultsTest {
     fun `no author groups is nothing to beat`() {
         val root = Json.parseToJsonElement("""{"id":"toplevel","fields":{"totalCount":0},"children":[{"id":"group:root:0"}]}""").jsonObject
         assertEquals(emptyMap(), GroupingResults.newestPerAuthor(root))
+    }
+
+    /**
+     * Two content clusters (author sharding) answer one grouping with one `group:root` EACH —
+     * Vespa 8 measured, the shape below trimmed from it. Without the merge [GroupingResults.firstCount]
+     * read the first cluster's count alone and [GroupingResults.groupCounts] let the second
+     * cluster's count for the same tag overwrite the first's.
+     */
+    @Test
+    fun `per-cluster grouping roots merge into one, counts and sums added`() {
+        val root =
+            Json
+                .parseToJsonElement(
+                    """
+                    {"id":"toplevel","relevance":1.0,"fields":{"totalCount":22},"children":[
+                      {"id":"group:root:0","relevance":1.0,"fields":{"count()":11},"children":[
+                        {"id":"grouplist:tag_index","label":"tag_index","children":[
+                          {"id":"group:string:t:a","relevance":1.0,"value":"t:a","fields":{"count()":3,"max(created_at)":10,"sum(relevance())":1.5}},
+                          {"id":"group:string:t:b","relevance":0.5,"value":"t:b","fields":{"count()":1,"max(created_at)":4,"sum(relevance())":2.0}}]}]},
+                      {"id":"group:root:0","relevance":1.0,"fields":{"count()":11},"children":[
+                        {"id":"grouplist:tag_index","label":"tag_index","children":[
+                          {"id":"group:string:t:a","relevance":1.0,"value":"t:a","fields":{"count()":4,"max(created_at)":12,"sum(relevance())":0.5}},
+                          {"id":"group:string:t:c","relevance":0.5,"value":"t:c","fields":{"count()":2,"max(created_at)":3}}]}]}]}
+                    """.trimIndent(),
+                ).jsonObject
+        val merged = GroupingResults.mergeRoots(root)
+        assertEquals(22, GroupingResults.firstCount(merged))
+        assertEquals(mapOf("t:a" to 7, "t:b" to 1, "t:c" to 2), GroupingResults.groupCounts(merged).filterKeys { it.startsWith("t:") })
+        val a = merged.toString().let { Json.parseToJsonElement(it) }
+        val tagA =
+            a.jsonObject["children"]!!
+                .jsonArray
+                .single()
+                .jsonObject["children"]!!
+                .jsonArray
+                .single()
+                .jsonObject["children"]!!
+                .jsonArray
+                .first()
+                .jsonObject["fields"]!!
+                .jsonObject
+        assertEquals(12, tagA["max(created_at)"]!!.jsonPrimitive.int)
+        assertEquals(2.0, tagA["sum(relevance())"]!!.jsonPrimitive.double)
+    }
+
+    /** The link read's three levels: a key both clusters hold, its people disjoint (an author lives in one). */
+    @Test
+    fun `a key both clusters hold keeps every cluster's people`() {
+        fun cluster(person: String) =
+            """{"id":"group:root:0","children":[{"id":"grouplist:tag_index","label":"tag_index","children":[
+                 {"id":"group:string:e:aa","value":"e:aa","children":[{"id":"grouplist:pubkey","label":"pubkey","children":[
+                   {"id":"group:string:$person","value":"$person","children":[{"id":"grouplist:kind","label":"kind","children":[
+                     {"id":"group:long:7","value":"7","fields":{"count()":1,"sum(relevance())":9.0}}]}]}]}]}]}]}"""
+        val root = Json.parseToJsonElement("""{"id":"toplevel","children":[${cluster("bob")},${cluster("carol")}]}""").jsonObject
+        assertEquals(
+            mapOf("e:aa" to mapOf("bob" to mapOf(7 to (1 to 9.0)), "carol" to mapOf(7 to (1 to 9.0)))),
+            GroupingResults.keyPersonKinds(GroupingResults.mergeRoots(root)),
+        )
+    }
+
+    @Test
+    fun `one root is returned as it came`() {
+        val root = Json.parseToJsonElement("""{"id":"toplevel","children":[{"id":"group:root:0","fields":{"count()":3}}]}""").jsonObject
+        assertSame(root, GroupingResults.mergeRoots(root))
+    }
+
+    /** Two groupings in one query are two trees (`group:root:0`, `group:root:1`): never summed, on one cluster or many. */
+    @Test
+    fun `roots with different ids stay apart`() {
+        val root =
+            Json
+                .parseToJsonElement(
+                    """{"id":"toplevel","children":[{"id":"group:root:0","fields":{"count()":3}},{"id":"group:root:1","fields":{"count()":5}},
+                       {"id":"group:root:0","fields":{"count()":4}},{"id":"group:root:1","fields":{"count()":6}}]}""",
+                ).jsonObject
+        val counts =
+            GroupingResults
+                .mergeRoots(root)["children"]!!
+                .jsonArray
+                .map {
+                    it.jsonObject["id"]!!.jsonPrimitive.content to
+                        it.jsonObject["fields"]!!
+                            .jsonObject["count()"]!!
+                            .jsonPrimitive.int
+                }
+        assertEquals(listOf("group:root:0" to 7, "group:root:1" to 11), counts)
+        val single = Json.parseToJsonElement("""{"id":"toplevel","children":[{"id":"group:root:0"},{"id":"group:root:1"}]}""").jsonObject
+        assertSame(single, GroupingResults.mergeRoots(single), "one cluster's two groupings are left as they came")
+    }
+
+    /** A bucket move's cut-over: the zap receipt by a moved author comes back from both clusters, and counts once. */
+    @Test
+    fun `a hit met in two clusters is served once, groupings untouched`() {
+        val root =
+            Json
+                .parseToJsonElement(
+                    """
+                    {"id":"toplevel","fields":{"totalCount":3},"children":[
+                      {"id":"index:content/0/aa","fields":{"id":"z1","pubkey":"p1"}},
+                      {"id":"index:content1/0/aa","fields":{"id":"z1","pubkey":"p1"}},
+                      {"id":"index:content1/0/bb","fields":{"id":"z2","pubkey":"p2"}},
+                      {"id":"group:root:0","fields":{"count()":3}}]}
+                    """.trimIndent(),
+                ).jsonObject
+        val out = GroupingResults.distinctHits(root)["children"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content }
+        assertEquals(listOf("index:content/0/aa", "index:content1/0/bb", "group:root:0"), out)
+        val single = Json.parseToJsonElement("""{"id":"toplevel","children":[{"id":"index:content/0/aa","fields":{"id":"z1"}}]}""").jsonObject
+        assertSame(single, GroupingResults.distinctHits(single), "nothing repeated: the answer as it came")
     }
 }

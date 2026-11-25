@@ -155,7 +155,28 @@ class EngineTuningTest {
         assertEquals(500, EngineTuning.DEFAULT_DEDUP_CHUNK)
         assertEquals(200, EngineTuning.DEFAULT_ID_FIRST_MAX_DIRECT_HITS)
         assertEquals(EngineTuning.VARIABLES.size, EngineTuning.VARIABLES.toSet().size, "each variable once")
-        assertEquals(26, EngineTuning.VARIABLES.size)
+        assertEquals(28, EngineTuning.VARIABLES.size)
+    }
+
+    /** The shard count decides where documents live, so it parses strictly and reaches the client. */
+    @Test
+    fun `author shards parse strictly in 1 to 256`() {
+        assertEquals(2, EngineTuning.fromEnv(mapOf("VESPA_AUTHOR_SHARDS" to "2")).authorShards)
+        assertEquals(null, EngineTuning.fromEnv(mapOf("VESPA_AUTHOR_SHARDS" to " ")).authorShards)
+        for (bad in listOf("0", "257", "two")) {
+            assertFailsWith<IllegalArgumentException>(bad) { EngineTuning.fromEnv(mapOf("VESPA_AUTHOR_SHARDS" to bad)) }
+        }
+        assertFailsWith<IllegalArgumentException> { EngineTuning(authorShards = 0) }
+        assertEquals(3, EngineTuning(authorShards = 3).bucketMap().clusters)
+        assertEquals("00-99=0,9a-ff=1", EngineTuning.fromEnv(mapOf("VESPA_AUTHOR_BUCKETS" to "00-99=0,9a-ff=1")).bucketMap().spec())
+        assertFailsWith<IllegalArgumentException>("a gap") { EngineTuning.fromEnv(mapOf("VESPA_AUTHOR_BUCKETS" to "00-98=0,9a-ff=1")) }
+        assertFailsWith<IllegalArgumentException>("disagreeing counts") { EngineTuning(authorShards = 3, authorBuckets = "00-99=0,9a-ff=1") }
+        // From the environment the disagreement is one problem among the rest, all in one boot.
+        val e =
+            assertFailsWith<IllegalArgumentException> {
+                EngineTuning.fromEnv(mapOf("VESPA_AUTHOR_SHARDS" to "3", "VESPA_AUTHOR_BUCKETS" to "00-99=0,9a-ff=1", "VESPA_FEED_BATCH" to "abc"))
+            }
+        assertTrue("disagrees" in e.message.orEmpty() && "VESPA_FEED_BATCH" in e.message.orEmpty(), e.message)
     }
 
     /** A per-store setting reaches the store it opens: feedBatch 0 leaves the batch path unbuilt. */
