@@ -379,7 +379,12 @@ internal object FuzzyWordGroup {
         // trigrams from "Vitor" would silently never match.
         val grams = trigrams(word.lowercase())
         if (grams.size < minGrams) return null
-        return grams.joinToString(" and ", prefix = "(", postfix = ")") { "$gramField contains \"$it\"" }
+        // Each trigram ONCE: a term ANDed with itself matches nothing more, and
+        // "hahaha…" (30 chars) was 28 terms on each of five nets for 2 distinct
+        // trigrams. The floor above still counts every one, so which words get a
+        // net is unchanged. Not in [phraseGramClause]: a phrase needs a repeat
+        // at its own position.
+        return grams.distinct().joinToString(" and ", prefix = "(", postfix = ")") { "$gramField contains \"$it\"" }
     }
 
     /**

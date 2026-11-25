@@ -1412,6 +1412,21 @@ class EventYqlTest {
     }
 
     @Test
+    fun `an AND gram net asks for each trigram once, the phrase net keeps every position`() {
+        // "hahaha…" is 28 trigrams and 2 distinct: ANDing a term with itself
+        // matches nothing more, and five nets paid it 28 times each.
+        val haha = EventYql.build(EventQuery(search = "ha".repeat(15)))!!
+        for (field in listOf("name_gram", "display_name_gram", "search_primary_gram", "about_gram", "search_secondary_gram")) {
+            assertEquals(2, Regex("(?<![a-z_])$field contains").findAll(haha.yql).count(), field)
+        }
+        // The floor still counts every trigram, so which words get a net is unchanged.
+        assertTrue("name_gram contains \"aaa\")" in EventYql.build(EventQuery(search = "aaaa"))!!.yql)
+        // A phrase needs its repeats: each trigram sits at its own position.
+        val phrase = EventYql.build(EventQuery(search = "hahaha"))!!
+        assertTrue("search_text_gram contains phrase(\"hah\", \"aha\", \"hah\", \"aha\"))" in phrase.yql, phrase.yql)
+    }
+
+    @Test
     fun `synthetic concatenations get prefix but not fuzzy`() {
         // The joined/pair variants are built from words nobody typed, and they
         // are long — they would draw the TOP typo budget, the single most
