@@ -43,9 +43,15 @@ class OkHttpThreadLeakTest {
     /**
      * Live OkHttp threads this client can own: its dispatcher's, and an HTTP/2 reader (named for
      * its connection while it runs). Not the `OkHttp TaskRunner` threads idle between tasks:
-     * that runner is one per process, shared by every client, and idles out on its own.
+     * that runner is one per process, shared by every client, and idles out on its own. Nor the
+     * same runner's thread while it runs a pool's `connection closer`: a runner thread takes the
+     * name of the task it runs, and that task may be ANY client's in this JVM (another test's),
+     * which is how this test flaked once in a full build and passed alone.
      */
-    private fun okHttpThreads(): Set<Thread> = Thread.getAllStackTraces().keys.filterTo(HashSet()) { it.isAlive && it.name.startsWith("OkHttp") && it.name != "OkHttp TaskRunner" }
+    private fun okHttpThreads(): Set<Thread> =
+        Thread.getAllStackTraces().keys.filterTo(HashSet()) {
+            it.isAlive && it.name.startsWith("OkHttp") && it.name != "OkHttp TaskRunner" && !it.name.endsWith("connection closer")
+        }
 
     @Test
     fun closingTheIndexesLeavesNoOkHttpThreadsBehind() {

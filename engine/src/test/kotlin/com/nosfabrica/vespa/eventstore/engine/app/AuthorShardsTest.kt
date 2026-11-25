@@ -1,0 +1,172 @@
+/*
+ * Copyright (c) 2026 NosFabrica
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to use,
+ * copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+ * Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+ * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+package com.nosfabrica.vespa.eventstore.engine.app
+
+import kotlin.random.Random
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+
+class AuthorShardsTest {
+    private val hex = "0123456789abcdef"
+
+    private fun key(
+        random: Random,
+        middle: String? = null,
+    ): String {
+        val k = CharArray(64) { hex[random.nextInt(16)] }
+        middle?.forEachIndexed { i, c -> k[32 + i] = c }
+        return String(k)
+    }
+
+    @Test
+    fun `the bucket is the pubkey's middle byte, whatever its ends are`() {
+        val middle = "00000000000000000000000000000000" + "7f" + "000000000000000000000000000000"
+        assertEquals(0x7f, AuthorShards.bucketOf(middle))
+        // A vanity key: the same middle under a ground prefix and suffix lands in the same bucket.
+        val vanity = "deadbeefdeadbeefdeadbeefdeadbeef" + "7f" + "c0ffeec0ffeec0ffeec0ffeec0ffee"
+        assertEquals(0x7f, AuthorShards.bucketOf(vanity))
+        assertEquals(AuthorShards.shardOf(middle, 4), AuthorShards.shardOf(vanity, 4))
+    }
+
+    @Test
+    fun `a key with no hex at the middle byte goes to shard 0`() {
+        assertEquals(null, AuthorShards.bucketOf("short"))
+        assertEquals(null, AuthorShards.bucketOf("0".repeat(32) + "7F" + "0".repeat(30)), "uppercase is not the stored spelling")
+        assertEquals(0, AuthorShards.shardOf("dirt-ledger-marker", 8))
+        assertEquals(0, AuthorShards.shardOf("0".repeat(32) + "zz" + "0".repeat(30), 8))
+    }
+
+    /**
+     * A key that is not hex BEFORE the middle byte is shard 0's too, whatever sits at the byte.
+     * The selection is evaluated by two regex engines that disagree on `.` (Java skips `\u2028`
+     * and `\r`, the content node's engine does not), so a selection written as "anything, then
+     * hex" sends such a key to shard 0 when routing and to another shard when garbage collection
+     * re-reads it — and the collector deletes it. Each selection must say the same in every engine.
+     */
+    @Test
+    fun `a key that is not hex up to the middle byte goes to shard 0, and no selection uses a dot`() {
+        val hexAtMiddle = "f0" + "0".repeat(30)
+        for (odd in listOf('\u2028', '\r', '\n', 'G', 'A')) {
+            val k = "0".repeat(10) + odd + "0".repeat(21) + hexAtMiddle
+            assertEquals(null, AuthorShards.bucketOf(k), "'${odd.code}' before the middle byte")
+            assertEquals(0, AuthorShards.shardOf(k, 2))
+        }
+        for (shards in listOf(2, 7, 256)) {
+            for (i in 0 until shards) {
+                val sel = AuthorShards.selection("v", i, shards)
+                assertFalse('.' in sel, "selection $i of $shards: $sel")
+            }
+        }
+    }
+
+    @Test
+    fun `every bucket belongs to exactly one shard, and every shard owns a contiguous run`() {
+        for (shards in listOf(1, 2, 3, 5, 7, 16, 100, 255, 256)) {
+            val owned = (0 until shards).map { AuthorShards.bucketsOf(it, shards) }
+            assertEquals((0 until 256).toList(), owned.flatMap { it.toList() }, "$shards shards")
+            for (b in 0 until 256) assertEquals(b * shards / 256, owned.indexOfFirst { b in it })
+        }
+        assertFailsWith<IllegalArgumentException> { AuthorShards.shardOf("x", 0) }
+        assertFailsWith<IllegalArgumentException> { AuthorShards.shardOf("x", 257) }
+    }
+
+    /**
+     * The selection Vespa routes by and [AuthorShards.shardOf] must name the same shard for every
+     * key, or an event and its author's reputation document could part (both selections are the
+     * same expression over the same string, so one agreement covers both). Java's regex stands in
+     * for the container's, which is Java too; the content node's GC re-evaluation is checked by
+     * `AuthorShardsIT` against a real Vespa.
+     */
+    @Test
+    fun `the cluster selections claim exactly the keys shardOf assigns them`() {
+        val random = Random(7)
+        val keys =
+            (0 until 2_000).map { key(random) } +
+                (0 until 256).map { b -> key(random, "%02x".format(b)) } +
+                listOf("dirt-ledger-marker", "", "0".repeat(32) + "G0" + "0".repeat(30), "0".repeat(33)) +
+                listOf('\u2028', '\r', 'G').map { "0".repeat(5) + it + "0".repeat(26) + "f0" + "0".repeat(30) }
+        for (shards in listOf(2, 3, 4, 16, 256)) {
+            val patterns = (0 until shards).map { selectionMatcher(AuthorShards.selection("v", it, shards)) }
+            for (k in keys) {
+                val claimed = patterns.indices.filter { patterns[it](k) }
+                assertEquals(listOf(AuthorShards.shardOf(k, shards)), claimed, "key '$k' under $shards shards")
+            }
+        }
+    }
+
+    @Test
+    fun `cluster names keep the bundled cluster as shard 0`() {
+        assertEquals(listOf("content"), AuthorShards.clusters(1))
+        assertEquals(listOf("content", "content1", "content2"), AuthorShards.clusters(3))
+    }
+
+    /** Evaluate the two selection shapes [AuthorShards.selection] emits over the value `v`. */
+    private fun selectionMatcher(selection: String): (String) -> Boolean {
+        val regexes = Regex("v =~ \"([^\"]*)\"").findAll(selection).map { Regex(it.groupValues[1]) }.toList()
+        return when (regexes.size) {
+            1 -> { v -> regexes[0].containsMatchIn(v) }
+            2 -> { v -> regexes[0].containsMatchIn(v) || !regexes[1].containsMatchIn(v) }
+            else -> error("unexpected selection $selection")
+        }
+    }
+
+    /** The even map writes the very selections the shard count did, so a deployed even split is unchanged by the map. */
+    @Test
+    fun `an even map is the shard count's split, spec and all`() {
+        val two = AuthorShards.BucketMap.even(2)
+        assertEquals("00-7f=0,80-ff=1", two.spec())
+        assertEquals(two, AuthorShards.BucketMap.parse("00-7f=0,80-ff=1"))
+        assertEquals(
+            "(v =~ \"^[0123456789abcdef]{32}(8[0123456789abcdef]|9[0123456789abcdef]|a[0123456789abcdef]|b[0123456789abcdef]|c[0123456789abcdef]|d[0123456789abcdef]|e[0123456789abcdef]|f[0123456789abcdef])\")",
+            two.selection("v", 1),
+        )
+        for (k in listOf(1, 3, 5, 16)) assertEquals(AuthorShards.BucketMap.even(k), AuthorShards.BucketMap.parse(AuthorShards.BucketMap.even(k).spec()))
+    }
+
+    /** Three nodes and two: cluster 0 serves 60% of the buckets. Adding a third cluster moves only the buckets given to it. */
+    @Test
+    fun `an uneven map, and a third cluster that moves only its own buckets`() {
+        val split = AuthorShards.BucketMap.parse("00-99=0,9a-ff=1")
+        assertEquals(154, split.bucketsOf(0).size)
+        assertEquals(0, split.shardOf("0".repeat(32) + "99" + "0".repeat(30)))
+        assertEquals(1, split.shardOf("0".repeat(32) + "9a" + "0".repeat(30)))
+        val moving = AuthorShards.BucketMap.parse("00-99=0,9a-cf=1,d0-ff=1+2")
+        assertEquals(listOf(0, 1), moving.serving)
+        assertEquals(listOf(2), moving.pending)
+        assertEquals(emptyList(), split.narrowedBy(moving, 1), "receiving into a new cluster narrows nobody")
+        val after = AuthorShards.BucketMap.parse("00-99=0,9a-cf=1,d0-ff=2")
+        assertEquals((0xd0..0xff).toList(), moving.narrowedBy(after, 1), "the cut-over narrows the old owner by exactly the moved buckets")
+        assertEquals(emptyList(), split.narrowedBy(after, 0), "and nobody else")
+    }
+
+    @Test
+    fun `a bucket map names every bucket once, and cluster 0 serves`() {
+        assertFailsWith<IllegalArgumentException>("gap") { AuthorShards.BucketMap.parse("00-7e=0,80-ff=1") }
+        assertFailsWith<IllegalArgumentException>("overlap") { AuthorShards.BucketMap.parse("00-80=0,80-ff=1") }
+        assertFailsWith<IllegalArgumentException>("empty cluster") { AuthorShards.BucketMap.parse("00-7f=0,80-ff=2") }
+        assertFailsWith<IllegalArgumentException>("cluster 0 only receiving") { AuthorShards.BucketMap.parse("00-ff=1+0") }
+        assertFailsWith<IllegalArgumentException>("same cluster twice") { AuthorShards.BucketMap.parse("00-7f=0+0,80-ff=1") }
+        assertFailsWith<IllegalArgumentException>("not hex") { AuthorShards.BucketMap.parse("00-zz=0") }
+        assertFailsWith<IllegalArgumentException>("a range with three ends is a typo, not 00-7f") { AuthorShards.BucketMap.parse("00-7f-9a=0,80-ff=1") }
+    }
+}

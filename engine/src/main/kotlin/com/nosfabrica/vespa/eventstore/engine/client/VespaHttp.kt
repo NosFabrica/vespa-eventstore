@@ -199,6 +199,23 @@ internal class VespaHttp(
         )
 
     /**
+     * A visit that WRITES inside Vespa, on the visit client: `POST` with `destinationCluster`
+     * copies the selected documents into another cluster, `DELETE` with `selection` removes them.
+     * Both are idempotent, so a page retried on overload does no harm.
+     */
+    suspend fun writeVisit(
+        url: String,
+        delete: Boolean,
+    ): HttpResp =
+        send(
+            request()
+                .url(url)
+                .let { if (delete) it.delete() else it.post(ByteArray(0).toRequestBody(null)) }
+                .build(),
+            visitHttp,
+        )
+
+    /**
      * A raw call on the visit client, for the streamed JSON-Lines walk: the
      * caller runs the blocking read loop and owns the call's lifecycle
      * (cancel on coroutine cancellation). Same read deadline as [getVisit].

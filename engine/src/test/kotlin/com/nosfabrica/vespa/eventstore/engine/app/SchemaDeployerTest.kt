@@ -46,6 +46,21 @@ class SchemaDeployerTest {
 
     private val deploys = AtomicInteger()
 
+    /** No application deployed: the content API answers what Vespa's does then (measured, 404 NOT_FOUND). */
+    @Volatile private var noApplication = false
+
+    /** The content API failing (a config server under load): neither the package nor its absence is known. */
+    @Volatile private var contentFails = false
+
+    /** What the fake container's document count answers; null fails the count. */
+    @Volatile private var storedTotal: Long? = null
+
+    /** The content nodes not answering: the container still answers the count, 200 with no coverage. */
+    @Volatile private var contentNodesDown = false
+
+    /** The content clusters the fake container names when asked for one it lacks; null answers nothing useful. */
+    @Volatile private var servedClusters: List<String>? = null
+
     /** Generations the services advance by per converge poll after a deploy, so the wait is observable. */
     private val polls = AtomicInteger()
 
@@ -70,6 +85,27 @@ class SchemaDeployerTest {
                             // The services catch up a poll or two after the activation, as Vespa's do.
                             if (current < wanted && polls.incrementAndGet() % 2 == 0) current += 1
                             200 to """{"currentGeneration":$current,"wantedGeneration":$wanted,"converged":${current == wanted}}""".toByteArray()
+                        }
+
+                        path == "/search/" -> {
+                            storedTotal?.let {
+                                val coverage = if (contentNodesDown) """{"coverage":0,"documents":0,"full":false,"nodes":0,"results":0,"resultsFull":0,"degraded":{"timeout":true}}""" else """{"coverage":100,"documents":$it,"full":true,"nodes":1,"results":1,"resultsFull":1}"""
+                                200 to """{"root":{"fields":{"totalCount":$it},"coverage":$coverage}}""".toByteArray()
+                            } ?: (503 to ByteArray(0))
+                        }
+
+                        path.startsWith("/document/v1/") -> {
+                            servedClusters?.let { c ->
+                                400 to """{"message":"Your Vespa deployment has no content cluster 'no-such-cluster', only ${c.joinToString(", ") { "'$it'" }}"}""".toByteArray()
+                            } ?: (503 to ByteArray(0))
+                        }
+
+                        noApplication && path.contains("/content/") -> {
+                            404 to """{"error-code":"NOT_FOUND","message":"Unknown application id 'default.default.default'"}""".toByteArray()
+                        }
+
+                        contentFails && path.contains("/content/") -> {
+                            500 to ByteArray(0)
                         }
 
                         path.endsWith("/content/") -> {
@@ -147,6 +183,141 @@ class SchemaDeployerTest {
     fun aGenerationThatNeverArrivesTimesOutWithoutThrowing() {
         wanted = 99
         assertFalse(deployer.awaitConverged(99, timeout = Duration.ofMillis(300), poll = Duration.ofMillis(50)))
+    }
+
+    @Test
+    fun aShardedPackageDeploysOntoAnEmptyVespa() {
+        // Nothing deployed and no container to count documents: there is nothing to lose.
+        noApplication = true
+        assertTrue(deployer.deployIfChanged(base, VespaApp.zipBytes(null, 2), convergeTimeout = Duration.ofSeconds(5)))
+        assertEquals(1, deploys.get())
+    }
+
+    @Test
+    fun anUnreadableActivePackageIsJudgedByTheDocumentsItHolds() {
+        // A two-cluster deployment whose package the content API cannot hand back right now.
+        active = SchemaDeployer.files(VespaApp.zipBytes(null, 2))
+        contentFails = true
+        storedTotal = 1_000
+        val e = kotlin.test.assertFailsWith<IllegalStateException> { deployer.checkShardChange(base, pkg) }
+        assertTrue("1000 documents" in e.message.orEmpty(), e.message)
+        storedTotal = null
+        kotlin.test.assertFailsWith<IllegalStateException>("a count that cannot be read refuses too") { deployer.checkShardChange(base, pkg) }
+        servedClusters = listOf("content", "content1")
+        kotlin.test.assertFailsWith<IllegalStateException>("a sharded container does not vouch for a one-cluster package") { deployer.checkShardChange(base, pkg) }
+        storedTotal = 0
+        deployer.checkShardChange(base, pkg)
+    }
+
+    /** Content nodes down read 0 documents with no coverage: that is not an empty deployment. */
+    @Test
+    fun aCountFromADegradedAnswerIsNotTakenForAnEmptyDeployment() {
+        active = SchemaDeployer.files(VespaApp.zipBytes(null, 2))
+        storedTotal = 0
+        contentNodesDown = true
+        assertEquals(null, deployer.storedDocuments(base), "a count no content node answered is unknown")
+        kotlin.test.assertFailsWith<IllegalStateException>("so a narrowing package is refused") { deployer.checkShardChange(base, pkg) }
+        contentNodesDown = false
+        assertEquals(0L, deployer.storedDocuments(base))
+        deployer.checkShardChange(base, pkg)
+    }
+
+    @Test
+    fun anUnreadablePackageOverOneServedClusterStillTakesAOneClusterPackage() {
+        // Production's shape: one cluster, a changed package, the content API failing for a moment.
+        // The container names its one cluster, which keeps every bucket under either package.
+        contentFails = true
+        storedTotal = 1_000
+        servedClusters = listOf("content")
+        deployer.checkShardChange(base, pkg)
+        kotlin.test.assertFailsWith<IllegalStateException>("but not a sharded one over it") { deployer.checkShardChange(base, VespaApp.zipBytes(null, 2)) }
+    }
+
+    /** The bundled package with its services.xml replaced by [servicesXml]. */
+    private fun packageWith(servicesXml: String): ByteArray {
+        val out = java.io.ByteArrayOutputStream()
+        java.util.zip.ZipOutputStream(out).use { z ->
+            for ((path, bytes) in SchemaDeployer.files(pkg) + ("services.xml" to servicesXml.toByteArray())) {
+                z.putNextEntry(java.util.zip.ZipEntry(path))
+                z.write(bytes)
+                z.closeEntry()
+            }
+        }
+        return out.toByteArray()
+    }
+
+    /** A one-cluster package over content nodes [keys]; [retired] of them marked retired. */
+    private fun nodesPackage(
+        keys: List<Int>,
+        retired: Set<Int> = emptySet(),
+    ): String {
+        val bundled = SchemaDeployer.files(pkg).getValue("services.xml").decodeToString()
+        val nodes = keys.joinToString("\n") { k -> """      <node distribution-key="$k" hostalias="node$k"${if (k in retired) " retired=\"true\"" else ""} />""" }
+        return bundled.replace(Regex("""(<content[^>]*>.*?<nodes>).*?(</nodes>)""", RegexOption.DOT_MATCHES_ALL)) { m -> m.groupValues[1] + "\n" + nodes + "\n    " + m.groupValues[2] }
+    }
+
+    /**
+     * With redundancy 1 a content node is the only copy of what it holds: a package that drops one
+     * deletes that share of the corpus, whatever the author buckets say. Vespa's way is to retire it
+     * first, wait for its documents to move, then remove it; the guard holds a package to that.
+     */
+    @Test
+    fun aNodeHoldingDataCannotLeaveItsClusterUnlessItWasRetired() {
+        active = SchemaDeployer.files(packageWith(nodesPackage(listOf(0, 1, 2, 3, 4))))
+        storedTotal = 1_000
+        val e = kotlin.test.assertFailsWith<IllegalStateException> { deployer.checkShardChange(base, packageWith(nodesPackage(listOf(0, 1, 2)))) }
+        assertTrue("'content' would drop node(s) [3, 4]" in e.message.orEmpty(), e.message)
+        deployer.checkShardChange(base, packageWith(nodesPackage(listOf(0, 1, 2, 3, 4, 5))))
+        kotlin.test.assertFailsWith<IllegalStateException>("allowNarrowing is about buckets, not nodes") {
+            deployer.checkShardChange(base, packageWith(nodesPackage(listOf(0, 1, 2))), allowNarrowing = true)
+        }
+        active = SchemaDeployer.files(packageWith(nodesPackage(listOf(0, 1, 2, 3, 4), retired = setOf(3, 4))))
+        deployer.checkShardChange(base, packageWith(nodesPackage(listOf(0, 1, 2))))
+        active = SchemaDeployer.files(packageWith(nodesPackage(listOf(0, 1, 2, 3, 4))))
+        storedTotal = 0
+        deployer.checkShardChange(base, packageWith(nodesPackage(listOf(0, 1, 2))))
+    }
+
+    /** [DeployGuard] as a script runs it: its exit status, and what it said. */
+    private fun guard(vararg args: String): Triple<Int, String, String> {
+        val out = java.io.ByteArrayOutputStream()
+        val err = java.io.ByteArrayOutputStream()
+        val status = DeployGuard.run(arrayOf(*args), java.io.PrintStream(out), java.io.PrintStream(err))
+        return Triple(status, out.toString(), err.toString())
+    }
+
+    /**
+     * The guard for a package a script deploys (production's Helm hook): a directory or a zip,
+     * judged against the live package, 0 to deploy, 2 refused, 1 for anything it cannot judge.
+     */
+    @Test
+    fun theGuardCommandRefusesWhatWouldDeleteDataAndPassesTheRest() {
+        active = SchemaDeployer.files(packageWith(nodesPackage(listOf(0, 1, 2, 3, 4))))
+        storedTotal = 1_000
+        val dir =
+            java.nio.file.Files
+                .createTempDirectory("guard-app")
+                .toFile()
+        try {
+            java.io.File(dir, "services.xml").writeText(nodesPackage(listOf(0, 1, 2)))
+            java.io.File(dir, "schemas").mkdirs()
+            val (refused, _, said) = guard("--config-url", base, "--query-url", base, dir.path)
+            assertEquals(2, refused, said)
+            assertTrue("would drop node(s) [3, 4]" in said, said)
+            assertEquals(2, guard("--config-url", base, "--query-url", base, "--allow-narrowing", dir.path).first, "narrowing excuses buckets, never nodes")
+
+            val zip = java.io.File(dir, "same.zip").apply { writeBytes(packageWith(nodesPackage(listOf(0, 1, 2, 3, 4)))) }
+            assertEquals(0, guard("--config-url", base, "--query-url", base, zip.path).first, "an unchanged layout, as a zip")
+
+            storedTotal = 0
+            assertEquals(0, guard("--config-url", base, "--query-url", base, dir.path).first, "over an empty deployment anything goes")
+
+            assertEquals(1, guard("--query-url", base, dir.path).first, "no config server")
+            assertEquals(1, guard("--config-url", base, "--query-url", base, java.io.File(dir, "nope").path).first, "no package there")
+            assertEquals(1, guard("--config-url", base, "--query-url", base, "--bogus", dir.path).first)
+        } finally {
+            dir.deleteRecursively()
+        }
     }
 
     private companion object {

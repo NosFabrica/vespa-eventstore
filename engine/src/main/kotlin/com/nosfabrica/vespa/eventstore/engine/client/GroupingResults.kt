@@ -32,12 +32,183 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 
 /**
  * Readers for Vespa grouping responses. Grouping output nests `group:` nodes
  * at varying depths, so each reader walks the tree rather than assuming a shape.
  */
 internal object GroupingResults {
+    /**
+     * [root] with its grouping trees merged into ONE `group:root`: under author sharding
+     * ([com.nosfabrica.vespa.eventstore.engine.app.AuthorShards]) the container answers a grouping
+     * with one root per content cluster — measured: it merges a query's HITS across clusters, and
+     * leaves the groupings side by side. Every reader here took the first count it met or let a
+     * later group overwrite an earlier one, so on two clusters a COUNT read half the corpus.
+     *
+     * Groups are matched by id (`group:string:<value>`) under grouplists matched by label, at
+     * every depth, and their outputs combined by what the aggregator is: `count()` and `sum(…)`
+     * ADD, `max(…)` and `min(…)` take the extreme. Any other output (`avg`, `summary()`, …) keeps
+     * the first cluster's value, since it cannot be merged from the outputs alone. Hit lists under
+     * a group are concatenated, highest relevance first.
+     *
+     * What a merge CANNOT restore: a `max(n)` a cluster applied before answering. Each cluster keeps
+     * its own top n, so a group that is n+1st everywhere is absent from the merge, and the merged
+     * list keeps first-seen order rather than re-sorting (a group's `relevance` is its rank within
+     * one cluster's list, not a value). Exact for every grouping the store itself runs: the
+     * author-keyed ones never meet across clusters (a pubkey lives in one), and the rest are
+     * uncapped counts and sums.
+     *
+     * One root — every one-cluster answer — is returned as it came.
+     */
+    fun mergeRoots(root: JsonObject): JsonObject {
+        val children = root["children"] as? JsonArray ?: return root
+        // Every grouping answer passes here, and on one cluster it has one root per grouping: count
+        // roots without allocating, and return untouched unless some id repeats.
+        var roots = 0
+        for (child in children) if ((child as? JsonObject)?.isGroupingRoot() == true) roots++
+        if (roots < 2) return root
+        // By EXACT id: one request's roots are `group:root:0`, a second grouping in the same query
+        // would be `group:root:1`, and those are different trees, never one to be summed.
+        val byId = children.mapNotNull { it as? JsonObject }.filter { it.isGroupingRoot() }.groupBy { it.idOf() }
+        if (byId.values.none { it.size > 1 }) return root
+        val emitted = HashSet<String?>()
+        val out =
+            children.mapNotNull { child ->
+                val node = child as? JsonObject
+                if (node == null || !node.isGroupingRoot()) return@mapNotNull child
+                val id = node.idOf()
+                if (!emitted.add(id)) null else byId.getValue(id).reduce(::mergeGroup)
+            }
+        return JsonObject(root + ("children" to JsonArray(out)))
+    }
+
+    /**
+     * [root] with a HIT met twice served once, keyed like [VespaEventIndex]'s hit pages: by the
+     * event id, or the pubkey of a reputation hit; a hit carrying neither is kept. Under author
+     * sharding a read over every cluster meets a moved document in its old owner and its new one
+     * until a bucket move finishes, and a read that sums what it gets (the zap receipts a
+     * `sort:links` rerank counts) would count it twice. Grouping roots are left as they are.
+     */
+    fun distinctHits(root: JsonObject): JsonObject {
+        val children = root["children"] as? JsonArray ?: return root
+        if (children.size < 2) return root
+        val seen = HashSet<String>(children.size * 2)
+        val kept =
+            children.filter { child ->
+                val node = child as? JsonObject ?: return@filter true
+                if (node.isGroupingRoot()) return@filter true
+                val fields = node["fields"] as? JsonObject ?: return@filter true
+                val key = ((fields["id"] ?: fields["pubkey"]) as? JsonPrimitive)?.content?.takeIf { it.isNotEmpty() } ?: return@filter true
+                seen.add(key)
+            }
+        return if (kept.size == children.size) root else JsonObject(root + ("children" to JsonArray(kept)))
+    }
+
+    private fun JsonObject.isGroupingRoot(): Boolean = idOf()?.startsWith("group:root") == true
+
+    private fun JsonObject.idOf(): String? = (this["id"] as? JsonPrimitive)?.content
+
+    /** Two groups with the same id: outputs combined, child lists merged by id. */
+    private fun mergeGroup(
+        a: JsonObject,
+        b: JsonObject,
+    ): JsonObject {
+        val out = LinkedHashMap<String, JsonElement>(a)
+        val fa = a["fields"] as? JsonObject
+        val fb = b["fields"] as? JsonObject
+        if (fa != null || fb != null) out["fields"] = mergeOutputs(fa ?: JsonObject(emptyMap()), fb ?: JsonObject(emptyMap()))
+        val ca = (a["children"] as? JsonArray).orEmpty()
+        val cb = (b["children"] as? JsonArray).orEmpty()
+        if (ca.isNotEmpty() || cb.isNotEmpty()) out["children"] = JsonArray(mergeLists(ca, cb))
+        return JsonObject(out)
+    }
+
+    /** A group's children are grouplists and hitlists, each matched by id; a list's members merge by id too. */
+    private fun mergeLists(
+        a: List<JsonElement>,
+        b: List<JsonElement>,
+    ): List<JsonElement> {
+        val byId = LinkedHashMap<String, JsonObject>()
+        val anonymous = ArrayList<JsonElement>()
+        for (element in a + b) {
+            val node = element as? JsonObject
+            val id = node?.idOf()
+            if (node == null || id == null) {
+                anonymous += element
+                continue
+            }
+            val seen = byId[id]
+            byId[id] =
+                when {
+                    seen == null -> node
+                    id.startsWith("hitlist:") -> mergeHitList(seen, node)
+                    id.startsWith("grouplist:") -> mergeGroupList(seen, node)
+                    else -> mergeGroup(seen, node)
+                }
+        }
+        return byId.values.toList<JsonElement>() + anonymous
+    }
+
+    private fun mergeGroupList(
+        a: JsonObject,
+        b: JsonObject,
+    ): JsonObject {
+        val out = LinkedHashMap<String, JsonElement>(a)
+        out["children"] = JsonArray(mergeLists((a["children"] as? JsonArray).orEmpty(), (b["children"] as? JsonArray).orEmpty()))
+        return JsonObject(out)
+    }
+
+    private fun mergeHitList(
+        a: JsonObject,
+        b: JsonObject,
+    ): JsonObject {
+        val hits = (a["children"] as? JsonArray).orEmpty() + (b["children"] as? JsonArray).orEmpty()
+        val out = LinkedHashMap<String, JsonElement>(a)
+        out["children"] = JsonArray(hits.sortedByDescending { ((it as? JsonObject)?.get("relevance") as? JsonPrimitive)?.doubleOrNull ?: Double.NEGATIVE_INFINITY })
+        return JsonObject(out)
+    }
+
+    private fun mergeOutputs(
+        a: JsonObject,
+        b: JsonObject,
+    ): JsonObject {
+        val out = LinkedHashMap<String, JsonElement>(a)
+        for ((key, vb) in b) {
+            val va = a[key]
+            out[key] =
+                if (va == null) {
+                    vb
+                } else {
+                    when {
+                        key == "count()" || key.startsWith("sum(") -> combine(va, vb, Long::plus, Double::plus)
+                        key.startsWith("max(") -> combine(va, vb, ::maxOf, ::maxOf)
+                        key.startsWith("min(") -> combine(va, vb, ::minOf, ::minOf)
+                        else -> va
+                    }
+                }
+        }
+        return JsonObject(out)
+    }
+
+    /** Two numeric outputs combined, kept integral when both are; anything not numeric keeps [a]. */
+    private fun combine(
+        a: JsonElement,
+        b: JsonElement,
+        whole: (Long, Long) -> Long,
+        real: (Double, Double) -> Double,
+    ): JsonElement {
+        val pa = a as? JsonPrimitive ?: return a
+        val pb = b as? JsonPrimitive ?: return a
+        if (pa.isString || pb.isString) return a
+        val la = pa.longOrNull
+        val lb = pb.longOrNull
+        if (la != null && lb != null) return JsonPrimitive(whole(la, lb))
+        val da = pa.doubleOrNull ?: return a
+        val db = pb.doubleOrNull ?: return a
+        return JsonPrimitive(real(da, db))
+    }
+
     /** The first `count()` grouping output anywhere under [node] — flat for a plain `all(output(count()))`. */
     fun firstCount(node: JsonElement): Int? =
         when (node) {
