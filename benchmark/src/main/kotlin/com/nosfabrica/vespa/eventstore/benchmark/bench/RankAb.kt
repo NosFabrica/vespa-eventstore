@@ -338,6 +338,25 @@ object RankAb {
                 mapOf("perfect_df_min_docs" to 0.0, "_intent" to 1.0, "topical_cap" to 1e12, "topical_drop_precision" to 0.0),
             "prod_probe_perfect_off" to
                 mapOf("perfect_df_min_docs" to 0.0, "_intent" to 2.0, "topical_cap" to 1e12, "topical_drop_precision" to 0.0),
+            // §8.5: the rung kept on reference kinds (wiki 30818, long-form 30023),
+            // dropped only off entities NAMED the topic. `the art of war` and
+            // `pico 8` lost their grade-3 wiki page under prod_intent_perfect_off.
+            "prod_intent_entity_off" to
+                mapOf(
+                    "perfect_df_min_docs" to 0.0,
+                    "_intent" to 1.0,
+                    "topical_cap" to 1e12,
+                    "topical_drop_precision" to 0.0,
+                    "topical_keep_reference" to 1.0,
+                ),
+            "prod_probe_entity_off" to
+                mapOf(
+                    "perfect_df_min_docs" to 0.0,
+                    "_intent" to 2.0,
+                    "topical_cap" to 1e12,
+                    "topical_drop_precision" to 0.0,
+                    "topical_keep_reference" to 1.0,
+                ),
             // The same, decided by the probe instead of the label.
             "probe_cap_550" to mapOf("_intent" to 2.0, "topical_cap" to 550.0),
             "probe_hybrid" to

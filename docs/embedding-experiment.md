@@ -1,6 +1,6 @@
 # The embedding experiment: does dense retrieval improve search?
 
-Status: **two rounds run (§7, §8). The win so far is an intent-aware ladder with no embedding in it. Pools unjudged.** Nothing here ships. The experiment
+Status: **the candidate is `prod_intent_entity_off` / `prod_probe_entity_off` (§8.5): an intent-gated perfect-match rung, with no embedding in it. 52 rows to grade. The embedding itself did not earn its place (§7, §8.2).** Nothing here ships. The experiment
 package is built from a COPY of `engine/app`, and the shipped schema is unchanged.
 
 ## 1. The question
@@ -313,6 +313,48 @@ article whose title is the topic, graded 3. Dropping the rung for topical querie
 without giving back the `coffee`-style gains, whose perfect matches are apps (32267), calendar
 events (31923) and lists. Then grade the candidate's unjudged rows (`pool_step1.json`: 190 rows
 over six configs, fewer for the candidate alone) and read it against the ship rule.
+
+### 8.5 The rung kept on reference documents: the candidate
+
+§8.4's two losses were wiki articles titled exactly the topic. `topical_keep_reference` keeps the
+perfect-match rung on wiki (30818) and long-form (30023) documents and drops it only off
+everything else (apps, calendar events, lists, profiles), and still only for a topical query.
+Same cluster, `--name-df`, paired against `prod_baseline` (whose top 10 is identical, on 54 of
+54 topics, to its run before the machine restarted):
+
+| vs `prod_baseline` | Δ nDCG@10 | 95% CI | p (Holm) | W/T/L | topical nDCG (24) | topical RR (22) | other strata |
+|---|---:|---|---:|---:|---:|---:|---|
+| `prod_intent_perfect_off` (§8.4) | +0.024 | [+0.002, +0.049] | 0.053 | 12/34/7 | +0.053 | +0.027 | 0.000 |
+| **`prod_intent_entity_off`** (oracle) | **+0.051** | **[+0.023, +0.083]** | **0.003** | **14/38/1** | **+0.113** | **+0.225** | 0.000 |
+| **`prod_probe_entity_off`** (probe) | **+0.039** | **[+0.015, +0.067]** | **0.004** | 13/37/3 | +0.079 | +0.164 | ambiguous +0.089, prefix −0.010, multilingual −0.005 |
+
+- **No loss over 0.1** for either. `the art of war` and `pico 8` are back: their wiki pages are
+  #2 and #1.
+- **The judged evidence agrees.** The candidates' judged top-10 documents grade higher than the
+  baseline's (2.03 and 1.97 against 1.81), with 78% of a topical top 10 judged (baseline 88%).
+- **The one `LOST` case is not this change.** `Verified Human` is navigational, so its pages
+  are untouched, and its pinned document (production's #81) is missing from every local
+  config, `prod_baseline` included.
+- **For scale:** the phrase band, the last ranking change shipped, measured +0.040 overall and
+  +0.079 topical. The probe version matches it, and the oracle doubles its topical gain.
+
+**Owed before shipping:** 52 unjudged rows across the two candidates' topical top 10s
+(`pool_step2.json` also holds their top-20 rows and the baseline's). These may be model-graded
+with a 20% human audit (§5.3), because the change adds no model. Then the probe's cost on the
+query path (one extra kind-restricted query per search, not yet measured) and the shipping
+work (§8.6).
+
+### 8.6 What shipping it takes (none of the embedding)
+
+1. `event.sd`, `search` profile: `query(topical)` (default 0) and the perfect-match subtraction
+   gated by `reference_kind()`. Inert at 0, so it deploys ahead of the store change.
+2. The store decides `topical` (the entity probe, or a better classifier) and sends it through
+   `EventQuery.rankFeatures`, as `LookupQueries` already does for member scoring.
+3. A ranking IT that pins it: `coffee` reaches articles, `the art of war` / `pico 8` keep their
+   wiki page first, and `odell` / `amethyst` do not move. `RankRegressionIT`, `PhraseBandIT` and
+   `FieldCoverageRankIT` stay green.
+4. After deploying, re-capture production and confirm that the live pages match the local
+   replay (§9).
 
 ### 8.3 What is owed
 

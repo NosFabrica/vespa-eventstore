@@ -48,6 +48,9 @@ This never touches engine/app: it rewrites a COPY of the built package. What it 
                                  BEING the query (an app called "Coffee") and not for a
                                  title holding it ("On Freedom of Speech"). The body
                                  phrase and the phrase band stay either way.
+     query(topical_keep_reference)  1: the perfect-match rung is kept on wiki (30818) and
+                                 long-form (30023) documents even for a topical query: a
+                                 reference page titled exactly the topic IS its answer.
      query(w_sem_tier_topical),  the semantic rung and the aboutness multiplier, added to
      query(w_sem_mult_topical)   w_sem_tier / w_sem_mult in proportion to topical, so a
                                  config can switch them on for topical queries only. The
@@ -108,6 +111,7 @@ PROFILE_ADDITIONS = f"""
             query(w_sem_tier_topical) double: 0.0
             query(w_sem_mult_topical) double: 0.0
             query(topical_drop_precision) double: 1.0
+            query(topical_keep_reference) double: 0.0
         }}
         # Guarded twice. With no q_emb sent the query tensor is all zeros, so
         # nothing reads the cosine unless a knob is on. And an event with no
@@ -140,8 +144,15 @@ PROFILE_ADDITIONS = f"""
         function perfect_boost() {{
             expression: query(w_perfect_pop) * perfect_share() * pow(perfect_match(), query(w_perfect_pow))
         }}
+        # A REFERENCE document: a wiki article (30818) or long-form article
+        # (30023). Titled exactly the topic, it is the canonical page ABOUT it
+        # ("The Art of War", "PICO-8", graded 3), not an entity NAMED it (an app
+        # or calendar event called "Coffee", graded 1-2). §8.5.
+        function reference_kind() {{
+            expression: if(attribute(kind) == 30818, 1.0, if(attribute(kind) == 30023, 1.0, 0.0))
+        }}
         function intent_precision() {{
-            expression: precision_boost_pop() - query(topical) * (query(topical_drop_precision) * precision_boost_pop() + (1.0 - query(topical_drop_precision)) * perfect_boost())
+            expression: precision_boost_pop() - query(topical) * (query(topical_drop_precision) * precision_boost_pop() + (1.0 - query(topical_drop_precision)) * (1.0 - query(topical_keep_reference) * reference_kind()) * perfect_boost())
         }}
 """
 
