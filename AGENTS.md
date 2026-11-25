@@ -33,7 +33,7 @@ Three repos, one direction of dependency: quartz ← vespa-eventstore ← its co
   (`TrustChain`, `SchemaDeployException.serving`, a raw grouping root), never the decision.
 - **Skills that describe quartz come from quartz.** `.claude/skills/quartz/` is quartz's
   distributed skill, installed unmodified from `quartz/agent-skill/quartz/` at the commit this
-  store pins (now v2.25.2; `SKILL.md` plus `references/nip85-trusted-assertions.md` and
+  store pins (now v2.28.0; `SKILL.md` plus `references/nip85-trusted-assertions.md` and
   `references/search-and-stores.md`); it replaced the copies of `nostr-expert`,
   `event-store-semantics`, `searchable-events`, `nip85-trusted-assertions` and
   `quartz-integration` this repo used to carry. Refresh it at every quartz bump, from a
@@ -133,7 +133,8 @@ deliberate decision (it fails until the layer table names it) rather than a drif
   answer), the values a consumer passes in — `EngineTuning` (every operator setting, with the
   strict `fromEnv`), `SchemaDeploy` — and the values it hands back or throws — `RejectedException`,
   `EngineReads`, `TrustHealth`, `TrustChain` (`lensOf`), `ReadShape` (the search grammar's verdict
-  on a filter), `StoreTelemetry`, `SchemaDeployment` / `SchemaDeployException`, `LiveGate` (the
+  on a filter), `FilterLocality` (the write and search predicates a relay hands quartz's
+  `LiveEventStore`, so a NEG-OPEN snapshot outlives the writes that cannot change it), `StoreTelemetry`, `SchemaDeployment` / `SchemaDeployException`, `LiveGate` (the
   observer gate a relay applies to a subscription's live events), `isStoreRefusingWrites` (a write
   failed because the engine refuses every write: a feed block), `ScoredSearch`
   (`scoredProfileSearch`'s hits with their own engine scores, plus the rank service that scored them).
@@ -181,7 +182,7 @@ page assembly). So when hunting a rule: supersession and address computation are
 
 `EventIndex` (`:engine`, `EventIndex.kt`) is the seam everything hangs on: get/put/remove + `EventQuery` recall, with a hard contract — read-your-writes per document, and an **acked put is visible to search**. That contract is what makes the store's query-then-write logic sound. There are two implementations: the real Vespa client, and `InMemoryEventIndex`, which is the **executable specification** of `EventQuery` matching semantics — store tests run against it with no Vespa. `MockVespaEngine` (testFixtures, a Jetty h2c server) additionally exercises the real HTTP clients' wire format.
 
-**Known blind spot**: the in-memory reference and the mock can miss real-Vespa-only divergences (e.g. Vespa omits empty-string fields from summaries; string attributes match uncased unless `match: cased`). Anything touching YQL, summaries, or the schema needs the integration gate (`-Pintegration`): `VespaParityIT` asserts exact result parity with Quartz's SQLite store on quartz's own conformance battery and corpus (`nip01Core.store.conformance`, 155/155 checks keyed to the STORE-* rules; `StoreParityTest` runs the same battery against the in-memory stack in every unit build), `RankRegressionIT` pins search-ranking quality against a canonical corpus, `ObserverGateIT` pins the observer gate engine-side (trust-gated recall, both gated profiles), `OrphanSweepIT` pins the orphan-score sweep (the `distinctAuthors` grouping decides what gets deleted), `FilterMatrixIT` runs ~10k REQ+COUNT pairs through `open()` — NIP-01 shapes × lens modes × `sort:` × search shapes — against an in-test oracle (served set == oracle, COUNT == served), `NewestVersionsIT` holds the newest-version grouping to the in-memory reference, `EngineGroupIT` runs vespa-relay's statistics pipelines through `EngineReads.group` — the mock cannot rank, gate or run a grouping beyond a count.
+**Known blind spot**: the in-memory reference and the mock can miss real-Vespa-only divergences (e.g. Vespa omits empty-string fields from summaries; string attributes match uncased unless `match: cased`). Anything touching YQL, summaries, or the schema needs the integration gate (`-Pintegration`): `VespaParityIT` asserts exact result parity with Quartz's SQLite store on quartz's own conformance battery and corpus (`nip01Core.store.conformance`, 156/156 checks keyed to the STORE-* rules; `StoreParityTest` runs the same battery against the in-memory stack in every unit build), `RankRegressionIT` pins search-ranking quality against a canonical corpus, `ObserverGateIT` pins the observer gate engine-side (trust-gated recall, both gated profiles), `OrphanSweepIT` pins the orphan-score sweep (the `distinctAuthors` grouping decides what gets deleted), `FilterMatrixIT` runs ~10k REQ+COUNT pairs through `open()` — NIP-01 shapes × lens modes × `sort:` × search shapes — against an in-test oracle (served set == oracle, COUNT == served), `NewestVersionsIT` holds the newest-version grouping to the in-memory reference, `EngineGroupIT` runs vespa-relay's statistics pipelines through `EngineReads.group` — the mock cannot rank, gate or run a grouping beyond a count.
 
 ### Recency planning (`RecencyStrategy`, `engine/client/`)
 

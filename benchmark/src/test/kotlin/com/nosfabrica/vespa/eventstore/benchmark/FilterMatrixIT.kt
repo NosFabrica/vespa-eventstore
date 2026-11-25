@@ -64,10 +64,10 @@ import kotlin.test.assertTrue
  *  - the REQ (the raw path a relay serves, [NostrSemanticsStore.rawQuery])
  *    serves exactly the oracle's set;
  *  - COUNT equals what that REQ served (NIP-45, STORE-C01's clamp included);
- *  - the NIP-77 snapshot of the same filters holds the same set, whole, read
- *    through the `observer:` token (a reconcile carries no connection lens) —
- *    and a limit'd snapshot is exactly the page the REQ served, a tie group cut
- *    at the Nth position included ([TIES]);
+ *  - the NIP-77 snapshot of the same filters, taken on the same connection,
+ *    holds the same set, whole, through the same lens (the token, else the
+ *    connection's) — and a limit'd snapshot is exactly the page the REQ
+ *    served, a tie group cut at the Nth position included ([TIES]);
  *  - what a relay would deliver LIVE — quartz's in-memory filter match, then
  *    the store's LiveGate — is that same set, one filter or many;
  *  - a chronological read is in NIP-01 order, and a termless trust sort is
@@ -138,6 +138,14 @@ class FilterMatrixIT {
             store.rawQuery(case.filters) { served += it.toEvent<Event>() }
             count = store.count(case.filters)
         }
+        // A NEG-OPEN on the same connection: quartz's relay runs the snapshot as the caller.
+        val snapshotIds: suspend () -> List<String> = {
+            if (case.connection != null) {
+                withContext(StoreQueryContext(setOf(case.connection))) { store.snapshotIdsForNegentropy(case.filters, null, null).map { it.id } }
+            } else {
+                store.snapshotIdsForNegentropy(case.filters, null, null).map { it.id }
+            }
+        }
 
         val problems = ArrayList<String>()
         val servedIds = served.map { it.id }
@@ -162,10 +170,10 @@ class FilterMatrixIT {
         if (count != servedIds.size) problems += "COUNT $count != served ${servedIds.size}"
 
         // NIP-77: the snapshot a reconcile of these filters walks. The whole set
-        // — no page limit — read through the token observer only.
+        // — no page limit — read through the lens the REQ read through.
         if (limit == null) {
-            val snapshot = store.snapshotIdsForNegentropy(case.filters, null, null).map { it.id }
-            val want = case.expectedSnapshot().map { it.id }.toSet()
+            val snapshot = snapshotIds()
+            val want = expected.map { it.id }.toSet()
             if (snapshot.toSet() != want) {
                 problems += "SNAPSHOT ${snapshot.toSet().size}, oracle ${want.size}" +
                     (want - snapshot.toSet()).takeIf { it.isNotEmpty() }?.let { " | missing ${describe(it)}" }.orEmpty() +
@@ -190,12 +198,10 @@ class FilterMatrixIT {
                     (page - live).takeIf { it.isNotEmpty() }?.let { " | missing ${describe(it)}" }.orEmpty() +
                     (live - page).takeIf { it.isNotEmpty() }?.let { " | extra ${describe(it)}" }.orEmpty()
             }
-        } else if (case.connection == null || case.lens.tokenObserver != null) {
+        } else {
             // A LIMIT'D snapshot is the page its REQ serves — the newest N with
-            // NIP-01's id tiebreak for a recency read, the top N for a ranking —
-            // wherever the two read through the same observer (a reconcile
-            // carries only the token's; see expectedSnapshot).
-            val snapshot = store.snapshotIdsForNegentropy(case.filters, null, null).map { it.id }.toSet()
+            // NIP-01's id tiebreak for a recency read, the top N for a ranking.
+            val snapshot = snapshotIds().toSet()
             if (snapshot != servedIds.toSet()) {
                 problems += "LIMIT'D SNAPSHOT ${snapshot.size}, served ${servedIds.size}" +
                     (servedIds.toSet() - snapshot).takeIf { it.isNotEmpty() }?.let { " | missing ${describe(it)}" }.orEmpty() +
@@ -301,13 +307,6 @@ class FilterMatrixIT {
 
         /** What the whole request should serve, before any limit: the union over its filters. */
         fun expected(): List<Event> = ALL.filter { e -> filters.any { f -> matches(f, e, observer) } }
-
-        /**
-         * What a NIP-77 snapshot of these filters should hold: the same set, read
-         * through the TOKEN observer alone — a reconcile carries no connection
-         * lens (the relay's NEG path runs outside any StoreQueryContext).
-         */
-        fun expectedSnapshot(): List<Event> = ALL.filter { e -> filters.any { f -> matches(f, e, lens.tokenObserver) } }
 
         private fun matches(
             f: Filter,

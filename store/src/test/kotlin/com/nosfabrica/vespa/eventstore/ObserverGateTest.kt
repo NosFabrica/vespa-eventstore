@@ -168,6 +168,15 @@ class ObserverGateTest {
         assertEquals(hex, q.observer)
     }
 
+    /** A ranked query never takes the engine's by-id document gets, so a mirror's id fetch must waive the lens. */
+    @Test
+    fun `a context observer gates a plain by-id read too`() {
+        val q = captured(Filter(ids = listOf("d".repeat(64))), observer = hex)
+        assertEquals(EventYql.RANK_RECENCY_GATED, q.ranking)
+        assertEquals(DEFAULT_MIN_RANK, q.minRank)
+        assertNull(captured(Filter(ids = listOf("d".repeat(64)), search = "include:spam"), observer = hex).ranking)
+    }
+
     @Test
     fun `an observer search token gates plain recall the same way`() {
         val q = captured(Filter(kinds = listOf(1), search = "observer:$hex"))
