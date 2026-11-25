@@ -324,6 +324,31 @@ object EventYql {
     const val SUMMARY_FIELDS = "id, pubkey, created_at, kind, tags, content, sig, owner"
 
     /**
+     * The document-summary in event.sd holding exactly [SUMMARY_FIELDS]: a query that
+     * would name them is sent as `select *` on this class instead ([onSummaryClass]).
+     */
+    const val SUMMARY_EVENT = "nip01"
+
+    /** The `select …` a read built here starts with, naming [SUMMARY_FIELDS]. */
+    private const val SELECT_EVENT = "select $SUMMARY_FIELDS from "
+
+    /**
+     * [vq] as it goes on the wire: a read naming its fields in YQL becomes `select *` on the
+     * summary class holding exactly those fields, which the query container neither parses a
+     * field list for nor filters each hit by (event.sd, `nip01`). The answer's fields are the
+     * same. [eventSummary] false (a schema predating `nip01`) leaves a full read as built. An
+     * [idTimeOnly] read keeps its two-attribute list: filtering two attributes costs next to
+     * nothing, and walks are told apart from full reads by it. Any other query is sent as it is.
+     */
+    fun onSummaryClass(
+        vq: VespaQuery,
+        eventSummary: Boolean,
+    ): VespaQuery {
+        if (!eventSummary || "presentation.summary" in vq.params || !vq.yql.startsWith(SELECT_EVENT)) return vq
+        return vq.copy(yql = "select * from " + vq.yql.substring(SELECT_EVENT.length), params = vq.params + ("presentation.summary" to SUMMARY_EVENT))
+    }
+
+    /**
      * The attribute-only document-summary in event.sd serving the existence
      * check ([buildExistence]) — keep in sync with the schema.
      */

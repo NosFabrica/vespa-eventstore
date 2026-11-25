@@ -1476,6 +1476,186 @@ the trade is still the simulation above.
   against 10 plus a round trip. Decide it on a production-sized store with
   `VESPA_ID_FIRST=0`; nothing here changes its default.
 
+### One query or id-first, per read (2026-11-24)
+
+The two bullets above say the same thing from both ends: id-first pays where a
+read's fetch pulls many documents it will throw away (74 hits at the wide slack:
+off gained nothing in memory, and on the 44M-doc corpus every overfetched hit was
+a cold document read), and costs where the fetch is small (one 20-hit query
+against a 20-hit `idtime` query plus a 10-id hydrate: +60–75% REQ/s off). So the
+choice is made per read. Every query of the read (speculative attempts, carried
+pages, the `[T,T]` tie read, a match-phase rerun, the fallback) runs in the one
+mode, and both are exact, so the page does not change (`VespaEventIndexTest`, "a
+tie-heavy boundary serves the same page in both modes" and its neighbours;
+`RecencyStrategyIT` runs every strategy in every mode against the page computed
+from the corpus).
+
+**The rule: one query, unless the page is large or the shape was cut before.** A
+read eligible for id-first is served DIRECT, its page queries asking for documents,
+when its first query plans at most `VESPA_ID_FIRST_MAX_DIRECT_HITS` hits (default
+**200**; its limit plus the slack `TieSlackMemory` holds for the shape, leased once per
+read so the decision and the fetch agree) and its shape has not been cut before (a
+LEARNED slack of `TIE_SLACK`, 64, or more: the slack a boundary second wider than the
+overfetch teaches). Inside a direct read every `[T,T]` tie read, and any later query
+planned past the cap, asks for ids only, and the members the page keeps of those are
+read by id (`VespaEventIndex.completeDocuments`): a crowded second costs its ids,
+never its documents. Nothing is presumed about a shape with nothing learned: it
+starts direct. `0` keeps every eligible read id-first; `VESPA_ID_FIRST=0` still turns
+id-first off.
+
+How it got here, in three builds. The first cut was size alone (32 hits). The second
+guessed density (a cold shape with no author/tag filter presumed busy, a learned
+wide slack dense) and kept those id-first, because a direct read's `[T,T]` read
+fetched the whole tie group as documents. The third reads that group as ids, which
+removes the reason to guess; the measurements below then showed the one case one
+query still loses (a shape cut on every read) and that is the learned `cutBefore`
+check, nothing presumed.
+
+The first cut was size alone (32 hits: every limit-100 page id-first). The A/B
+below is what moved it: one build, the knob alone between arms (`idfirst` = 0,
+`size-32` = 32, `direct` = `Int.MAX_VALUE`), through vespa-relay, nostr-bench REQ
+at 200 clients (cold: 50) on the 4-core sandbox, two runs per arm; every arm
+served identical pages (`pages.mjs`, 65 REQs).
+
+| REQ/s, two runs | idfirst | size-32 | direct |
+|---|---|---|---|
+| hot, one author, limit 10 (20 hits) | 1,218 / 1,298 | 1,902 / 1,866 | 1,881 / 1,974 |
+| hot, one author, limit 100 (≤164 hits) | 517 / 539 | 540 / 551 | 886 / 875 |
+| hot, global `kinds:[1]` limit 10, ~2,000 notes per second | 141 / 146 | 143 / 152 | 74 / 72 |
+| cold (page cache dropped, Vespa restarted), 100k 2 KB notes, limit 10 | 138 / 139 | 172 / 174 | 185 / 171 |
+| cold, limit 100 | 63 / 62 | — | 71 / 70 |
+| warm after the cold pass, limit 100 | 111 / 119 | — | 134 / 134 |
+
+One query won every page whose boundary second fit its slack, at both sizes, hot
+and cold (its p99 was higher cold at limit 10: 177/192 against 146/122 ms, the
+documents read up front). It lost only where the boundary was dense: the `[T,T]`
+read of a 2,000-note second fetched the whole tie group as documents, at half
+the throughput. Size was the wrong proxy for that: the dense read plans 74 hits,
+the profitable limit-100 read up to 164. The cap of 200 covers what was measured;
+larger pages stay id-first, whose hydrate reads its chunks concurrently, until
+measured.
+
+**The density build, measured (superseded).** One build again, three arms
+(`idfirst` = 0, `density` = the default rule, `direct` = `Int.MAX_VALUE`), two
+runs each, pages identical across arms (65 REQs):
+
+| REQ/s, two runs | idfirst | density | direct |
+|---|---|---|---|
+| hot, nostr-bench `#t` limit 10, 200 clients | 1,019 / 1,080 | 1,566 / 1,716 | 1,789 / 1,682 |
+| hot, same, limit 100 | 489 / 542 | 810 / 840 | 892 / 834 |
+| hot, global `kinds:[1]` limit 10 | 188 / 189 | 184 / 185 | 193 / 177 |
+| cold, 100k 2 KB notes, `#t` limit 10, 8 clients | 108 / 120 | 131 / 145 | 128 / 140 |
+| warm after it | 254 / 242 | 313 / 370 | 335 / 315 |
+| cold, limit 100 | 65 / 67 | 64 / 73 | 66 / 69 |
+| warm after it | 119 / 124 | 127 / 125 | 128 / 130 |
+
+The density arm booked only `recency.fetch.direct` on the hot `#t` reads, the
+direct arm's choice; the gap between them is run-to-run spread. The default now
+keeps the one-query gain on the pages the size threshold had left id-first
+(limit 100: +55–65% hot).
+
+The dense global feed did NOT reproduce the earlier loss (direct 193/177, level
+with id-first). So a second check controlled the density: 20 seconds of exactly
+2,000, 300 and 30 notes per second (kinds 1, 7, 16; one author each), read
+global and per author, limit 10, 50 clients:
+
+| REQ/s, two runs | idfirst | density | direct |
+|---|---|---|---|
+| global, 2,000 per second | 76 / 120 | 109 / 126 | 113 / 96 |
+| global, 300 per second | 285 / 380 | 375 / 402 | 365 / 271 |
+| global, 30 per second | 910 / 1,053 | 1,182 / 1,313 | 1,247 / 1,321 |
+| one author, 2,000 per second | 138 / 146 | 126 / 126 | 116 / 81 |
+| one author, 300 per second | 384 / 431 | 378 / 409 | 381 / 295 |
+
+Two things this settles. A global feed whose seconds are sparse (30) starts
+id-first as a cold non-selective shape and moves to one query once its slack
+narrows: density tracks direct there (+25%). On dense boundaries the modes are
+close, and direct is the noisier (81–116 against 138–146 for the dense author);
+nothing measured makes id-first lose there, so dense shapes stay id-first. Where
+the first A/B saw direct at half throughput is not pinned down: its boundary
+second was whatever the seed's last second held.
+
+**The final rule, measured.** Same harness, three arms of one build: `idfirst` (0),
+`default` (the rule above) and `no cap` (`Int.MAX_VALUE`, the rule without the hit
+cap), two runs each; every arm served identical pages (65 REQs).
+
+| REQ/s, two runs | idfirst | default | no cap |
+|---|---|---|---|
+| hot, nostr-bench `#t` limit 10, 200 clients | 1,239 / 1,075 | 1,621 / 1,710 | 1,543 / 1,762 |
+| hot, same, limit 100 | 493 / 472 | 755 / 740 | 751 / 759 |
+| hot, global `kinds:[1]` limit 10 | 140 / 135 | 136 / 137 | 133 / 135 |
+| cold, 100k 2 KB notes, `#t` limit 10, 8 clients | 108 / 108 | 127 / 126 | 112 / 128 |
+| warm after it | 254 / 240 | 311 / 308 | 293 / 293 |
+| cold, limit 100 | 59 / 55 | 68 / 65 | 69 / 67 |
+| warm after it | 109 / 110 | 135 / 121 | 137 / 140 |
+
+(The cold rows ran on the build before the `cutBefore` check, which changes nothing
+for a sparse `#t` shape.) The controlled corpus (20 seconds of exactly 2,000, 300
+and 30 notes per second), second run of each arm; the first run of every arm right
+after the load read low for whichever arm went first:
+
+| REQ/s | idfirst | default | no cap |
+|---|---|---|---|
+| global, 2,000 per second | 114 | 126 | 126 |
+| global, 300 per second | 380 | 372 | 375 |
+| global, 30 per second | 1,028 | 1,289 | 1,227 |
+| one author, 2,000 per second | 145 | 143 | 148 |
+| one author, 300 per second | 399 | 402 | 425 |
+
+Without the `cutBefore` check (the run before it) the author at 300 per second ran
+320–335 against 402–409 id-first, and the hot global feed 181/209 against 209/250:
+a shape cut on every read takes its `[T,T]` query in either mode, so one query saved
+nothing and its page query read ~64 documents it threw away. With it those are level
+with id-first, and every sparse page keeps its gain: +43% (limit 10) and +55%
+(limit 100) hot, +17% cold, +25% on a quiet global feed.
+
+What this has NOT measured: a store larger than memory. Every run here fits in the
+page cache once warm, and on the 44M-doc corpus every overfetched document was a cold
+read; a direct read overfetches its slack (at most 64 for a shape not cut before) as
+documents. Measure there before trusting the default on such a store; `0` restores
+id-first.
+
+Watching it live: each read eligible for id-first books one zero-time
+`IngestStats` counter, `recency.fetch.direct` or `recency.fetch.idfirst`.
+
+### The query container's own cost (2026-11-25)
+
+Every query costs the query container ~800 µs of CPU whatever its size (above), and
+under 200-client REQ load through vespa-relay it was the largest single consumer:
+820 µs per REQ against the relay's 491 and proton's 391, on a machine with no idle
+core left. Nothing tried from outside had moved it, so this time the container
+itself was profiled (JFR on `default/container.0`, 25 s under load, 3,824 samples):
+
+| where the container's CPU went | share |
+|---|---|
+| parsing the YQL (`YqlParser.parse`) | 34% |
+| … of which the `select id, pubkey, …` field list | ~11% |
+| `FieldFilter`: applying that field list, which decodes every field of every hit to a Java string | 19% |
+| rendering the JSON | ~14% |
+| language detection on the query terms (OpenNLP) | 3% |
+
+The field list was paid for twice: parsed on every query, then applied to every hit
+by decoding its fields, where an unfiltered hit is rendered straight from its stored
+bytes. So a full read is now sent as `select *` on a summary class holding exactly
+those fields (`nip01` in event.sd; `EventYql.onSummaryClass`, applied as the request is
+written). A schema deployed before `nip01` refuses the first such read 400; it is sent
+again naming its fields, and so is every read after (`SchemaFallbacks`). The `idtime`
+reads keep their two-attribute list: filtering two attributes costs next to nothing.
+
+Measured through vespa-relay, the same seeded store, two runs each, identical pages
+(65 REQs):
+
+| | before | `nip01` |
+|---|---|---|
+| query container CPU per REQ | 921 / 835 µs | 768 / 738 µs |
+| REQ/s, limit 10, 200 clients | 1,796 / 2,016 | 2,027 / 2,084 |
+| REQ/s, limit 100, 200 clients | 812 / 843 | 877 / 933 |
+
+Not taken: setting the query language to skip detection (3%). On a free-text search
+the language picks the stemming, and a fixed one would change what a NIP-50 search
+matches; on a recency read the terms are pubkeys and tag values, where it would be
+safe, but that is a second rule for a small share.
+
 ### Small batches take the bulk path (2026-11-23)
 
 `NostrSemanticsStore.batchInsert` sent batches under `BULK_MIN` (16) through the

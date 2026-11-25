@@ -59,6 +59,7 @@ class EngineTuningTest {
                     "VESPA_QUERY_PLANNER" to "no",
                     "VESPA_RECENCY_STRATEGY" to " Match_Phase ",
                     "VESPA_ID_FIRST" to "0",
+                    "VESPA_ID_FIRST_MAX_DIRECT_HITS" to "0",
                     "VESPA_RECENCY_MEMORY" to "false",
                     "VESPA_BODY_EDGE" to "yes",
                     "VESPA_ADDRESS_KEYED" to "1",
@@ -85,6 +86,7 @@ class EngineTuningTest {
         assertEquals(false, t.queryPlanning)
         assertEquals(RecencyStrategy.MATCH_PHASE, t.recencyStrategy)
         assertEquals(false, t.idFirst)
+        assertEquals(0, t.idFirstMaxDirectHits)
         assertEquals(false, t.recencyMemory)
         assertEquals(true, t.bodyEdgeFeed)
         assertEquals(true, t.addressKeyed)
@@ -120,6 +122,7 @@ class EngineTuningTest {
                         "VESPA_VISIT_CONCURRENCY" to "101",
                         "VESPA_FEED_COMPRESSION" to "zstd",
                         "VESPA_ID_FIRST" to "maybe",
+                        "VESPA_ID_FIRST_MAX_DIRECT_HITS" to "-1",
                         "VESPA_RECENCY_STRATEGY" to "fastest",
                         "VESPA_QUERY_FANOUT" to "0",
                         "VESPA_ACCESS_LOG" to "json",
@@ -127,10 +130,10 @@ class EngineTuningTest {
                 )
             }
         val m = e.message!!
-        for (key in listOf("VESPA_FEED_BATCH='off'", "VESPA_DEDUP_CHUNK='5OO'", "VESPA_VISIT_CONCURRENCY='101'", "VESPA_FEED_COMPRESSION='zstd'", "VESPA_ID_FIRST='maybe'", "VESPA_RECENCY_STRATEGY='fastest'", "VESPA_QUERY_FANOUT='0'", "VESPA_ACCESS_LOG='json'")) {
+        for (key in listOf("VESPA_FEED_BATCH='off'", "VESPA_DEDUP_CHUNK='5OO'", "VESPA_VISIT_CONCURRENCY='101'", "VESPA_FEED_COMPRESSION='zstd'", "VESPA_ID_FIRST='maybe'", "VESPA_ID_FIRST_MAX_DIRECT_HITS='-1'", "VESPA_RECENCY_STRATEGY='fastest'", "VESPA_QUERY_FANOUT='0'", "VESPA_ACCESS_LOG='json'")) {
             assertTrue(key in m, "$key in: $m")
         }
-        assertTrue("8 bad setting(s)" in m, m)
+        assertTrue("9 bad setting(s)" in m, m)
         assertFailsWith<IllegalArgumentException>("past the feed chunk a batch is split again") { EngineTuning.fromEnv(mapOf("VESPA_FEED_BATCH" to "4097")) }
         assertEquals(EngineTuning.MAX_FEED_BATCH, EngineTuning.fromEnv(mapOf("VESPA_FEED_BATCH" to "4096")).feedBatch)
     }
@@ -141,6 +144,8 @@ class EngineTuningTest {
         assertFailsWith<IllegalArgumentException> { EngineTuning(dedupChunk = 0) }
         assertFailsWith<IllegalArgumentException> { EngineTuning(expirySweepPage = 0) }
         assertFailsWith<IllegalArgumentException> { EngineTuning(accessLog = "json") }
+        assertFailsWith<IllegalArgumentException> { EngineTuning(idFirstMaxDirectHits = -1) }
+        assertEquals(0, EngineTuning(idFirstMaxDirectHits = 0).idFirstMaxDirectHits, "0 is a setting: always id-first")
     }
 
     @Test
@@ -148,8 +153,9 @@ class EngineTuningTest {
         assertEquals(100, EngineTuning.DEFAULT_FEED_BATCH)
         assertEquals(4_096, EngineTuning.MAX_FEED_BATCH)
         assertEquals(500, EngineTuning.DEFAULT_DEDUP_CHUNK)
+        assertEquals(200, EngineTuning.DEFAULT_ID_FIRST_MAX_DIRECT_HITS)
         assertEquals(EngineTuning.VARIABLES.size, EngineTuning.VARIABLES.toSet().size, "each variable once")
-        assertEquals(24, EngineTuning.VARIABLES.size)
+        assertEquals(25, EngineTuning.VARIABLES.size)
     }
 
     /** A per-store setting reaches the store it opens: feedBatch 0 leaves the batch path unbuilt. */
