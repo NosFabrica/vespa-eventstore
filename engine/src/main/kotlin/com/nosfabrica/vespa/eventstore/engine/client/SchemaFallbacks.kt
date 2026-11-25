@@ -90,6 +90,20 @@ internal class SchemaFallbacks {
         dedupSummaryAvailable = false
     }
 
+    /**
+     * The `nip01` summary a full read is sent on as `select *` ([EventYql.onSummaryClass]).
+     * Missing on a schema deployed before it: the first such read is refused 400, marks it,
+     * and is sent again naming its fields, as every read is from then on.
+     */
+    @Volatile var eventSummaryAvailable = true
+        private set
+
+    fun markEventSummaryMissing() {
+        eventSummaryAvailable = false
+    }
+
+    fun isMissingEventSummary(e: IllegalArgumentException): Boolean = e.message?.contains("400") == true && e.message?.contains(EventYql.SUMMARY_EVENT) == true
+
     /** The attribute-only `idtime` summary the id-first fetch resolves pages with (VespaEventIndex.recallSummaries). */
     @Volatile var idTimeSummaryAvailable = true
         private set

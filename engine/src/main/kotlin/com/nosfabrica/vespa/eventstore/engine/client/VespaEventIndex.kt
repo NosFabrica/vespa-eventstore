@@ -2842,6 +2842,22 @@ class VespaEventIndex(
      * with hundreds of ids or authors builds YQL far past any sane URL length.
      */
     private suspend fun queryBody(
+        built: VespaQuery,
+        hits: Int,
+    ): VespaHttp.HttpResp {
+        val vq = EventYql.onSummaryClass(built, fallbacks.eventSummaryAvailable)
+        if (vq === built || vq.params["presentation.summary"] != EventYql.SUMMARY_EVENT) return queryBodyAsIs(vq, hits)
+        return try {
+            queryBodyAsIs(vq, hits)
+        } catch (e: IllegalArgumentException) {
+            if (!fallbacks.isMissingEventSummary(e)) throw e
+            fallbacks.markEventSummaryMissing()
+            queryBodyAsIs(built, hits)
+        }
+    }
+
+    /** [queryBody]'s request, for [vq] exactly as given. */
+    private suspend fun queryBodyAsIs(
         vq: VespaQuery,
         hits: Int,
     ): VespaHttp.HttpResp {

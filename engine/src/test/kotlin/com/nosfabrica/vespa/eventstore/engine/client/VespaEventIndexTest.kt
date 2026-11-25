@@ -1237,6 +1237,50 @@ class VespaEventIndexTest {
             }
         }
 
+    /**
+     * A FULL READ IS SENT ON ITS SUMMARY CLASS. Naming the event's fields in YQL cost the query
+     * container a field list to parse and a filter that decodes every field of every hit; the
+     * read goes out as `select *` on `nip01` instead, and the page is the same, whole.
+     */
+    @Test
+    fun `a full read is sent as select star on the nip01 summary`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            seedStrategyCorpus(now)
+            val q = EventQuery(kinds = listOf(1), authors = listOf(BUSY), limit = 10, nowSecs = now)
+            val before = mock.searchRequests.size
+            val page = index.search(q)
+            val sent = mock.searchRequests.drop(before)
+            assertTrue(sent.isNotEmpty() && sent.all { it.getValue("yql").startsWith("select * from event where ") && it["presentation.summary"] == "nip01" }, "$sent")
+            assertEquals(reference.search(q).map { it.id }, page.map { it.id })
+            assertEquals(reference.search(q).map { it.sig to it.tags }, page.map { it.sig to it.tags }, "whole events")
+        }
+
+    /** A serving schema without `nip01` costs one refused read: it is sent again naming its fields, as every read is after. */
+    @Test
+    fun `a schema without the nip01 summary falls back to naming the fields`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            seedStrategyCorpus(now)
+            mock.rejectEventSummary = true
+            try {
+                VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.MATCH_PHASE).use { old ->
+                    val q = EventQuery(kinds = listOf(1), authors = listOf(BUSY), limit = 10, nowSecs = now)
+                    var before = mock.searchRequests.size
+                    assertEquals(reference.search(q).map { it.id }, old.search(q).map { it.id }, "served")
+                    var sent = mock.searchRequests.drop(before)
+                    assertEquals(1, sent.count { it["presentation.summary"] == "nip01" }, "one refused read: $sent")
+                    assertTrue(sent.last().getValue("yql").startsWith("select ${EventYql.SUMMARY_FIELDS} from "), "then the fields, named: $sent")
+                    before = mock.searchRequests.size
+                    old.search(q)
+                    sent = mock.searchRequests.drop(before)
+                    assertTrue(sent.none { it["presentation.summary"] == "nip01" }, "and never asked for nip01 again: $sent")
+                }
+            } finally {
+                mock.rejectEventSummary = false
+            }
+        }
+
     /** A serving schema without `idtime` is remembered, and every read goes back to documents-first. */
     @Test
     fun `id-first falls back on a schema without the idtime summary`() =
