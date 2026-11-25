@@ -174,7 +174,7 @@ open class NostrSemanticsStoreTest {
     /** ReplaceableModule tie-break: equal created_at, LOWEST id wins. */
     @Test
     fun `replaceable ties keep the lowest id`() =
-        runBlocking {
+        runBlocking<Unit> {
             val high = MetadataEvent("f".repeat(64), alice, 100, emptyArray(), "{}", "")
             val low = MetadataEvent("0".repeat(64), alice, 100, emptyArray(), "{}", "")
             store.insert(high)
@@ -620,7 +620,7 @@ open class NostrSemanticsStoreTest {
     /** EventIndexesModule pubkey_owner_hash: a gift-wrap is OWNED by its p-tag recipient. */
     @Test
     fun `gift wraps obey their recipient not their signer`() =
-        runBlocking {
+        runBlocking<Unit> {
             val throwaway = "c3".repeat(32)
             val wrap = GiftWrapEvent(id(), throwaway, next(), arrayOf(arrayOf("p", alice)), "sealed", "")
             store.insert(wrap)

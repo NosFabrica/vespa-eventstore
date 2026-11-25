@@ -114,7 +114,7 @@ class TrustKeyingMigrationTest {
 
     @Test
     fun `a store with no reputation documents has nothing to migrate and is marked at once`() =
-        runBlocking {
+        runBlocking<Unit> {
             val done = migration.run()
             assertEquals(TrustKeyingMigration.Migration(0, 0, refused = false), done)
             assertNotNull(reputations.get(TrustKeyingMigration.MARKER_KEY))

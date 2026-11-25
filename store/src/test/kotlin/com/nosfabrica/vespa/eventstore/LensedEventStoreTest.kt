@@ -60,14 +60,19 @@ class LensedEventStoreTest {
 
     @Test
     fun `the front door answers every capability through the interface`() =
-        runBlocking {
+        runBlocking<Unit> {
             mock.inner.put(list)
             VespaEventStore.open(url = mock.url, autoDeploy = false, readOnly = true).use { front ->
                 val held: IEventStore = front
                 val lensed = assertNotNull(held as? LensedEventStore, "the front door is a LensedEventStore")
+                // The walk, not the tag_index grouping (`unconditional = true`): this
+                // test is about the front door handing the call through, and the mock
+                // answers no tag_index grouping (DistinctTagValuesFastPathTest covers it).
+                // It never ran before it returned Unit, so the grouping's empty mock
+                // answer went unnoticed.
                 assertEquals(
                     setOf("wss://one.example", "wss://two.example"),
-                    lensed.distinctTagValues(Filter(kinds = listOf(10002)), "r", unconditional = true),
+                    lensed.distinctTagValues(Filter(kinds = listOf(10002)), "r"),
                     "distinctTagValues delegates to the store, no `.store` reach",
                 )
                 assertNotNull(lensed.liveGate(listOf(Filter(kinds = listOf(1), search = "nostr"))), "a searching subscription is gated")
