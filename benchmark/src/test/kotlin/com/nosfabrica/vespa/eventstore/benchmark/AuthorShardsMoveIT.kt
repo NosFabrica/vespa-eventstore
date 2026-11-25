@@ -127,6 +127,9 @@ class AuthorShardsMoveIT {
                         assertTrue(deployer.deployIfChanged(url, VespaApp.zipBytes(null, mv.overlap)), "the overlap only widens: the guard lets it through")
                         assertEquals(AuthorShards.clusters(3), deployer.activeContentClusters())
 
+                        // The event the test removes from the destination below: the writer leaves it alone, so the
+                        // diff must find it missing whatever else the writer does.
+                        val damaged = oracle.values.first { it.pubkey in moving }.id
                         val seq = AtomicInteger(10_000)
                         val writes = AtomicInteger()
                         // Stopped by this flag, never by cancel(): a cancellation can land after a write
@@ -148,7 +151,7 @@ class AuthorShardsMoveIT {
                                         }
 
                                         in 6..7 -> {
-                                            oracle.keys.randomOrNull(rnd)?.let { id ->
+                                            oracle.keys.filter { it != damaged }.randomOrNull(rnd)?.let { id ->
                                                 writer.remove(id)
                                                 oracle.remove(id)
                                             }
@@ -168,7 +171,17 @@ class AuthorShardsMoveIT {
                         assertExact(reader, oracle, "overlap, before the copy: the pending cluster is read by no one")
                         val copied = mv.copy()
                         println("move: copied $copied, ${writes.get()} writes so far")
+                        // The copy runs inside Vespa and OVERWRITES, so a racing write can leave the
+                        // destination short, stale or holding a deleted document. The copy is too
+                        // quick here for the writer to race it reliably, so the test does all three
+                        // to the destination itself, and the first diff must find and repair each.
+                        val destination = AuthorShards.clusterName(2)
+                        val extraId = "f".repeat(63) + "0"
+                        val stale = moving.first()
+                        damage(url, destination, damaged, extraId, stale)
                         var diff = mv.diff(repair = true)
+                        println("move: first diff, after damaging the destination: $diff")
+                        assertTrue(diff.missing >= 1 && diff.differing >= 1 && diff.extra >= 1, "the diff finds what the copy can leave wrong: $diff")
                         var passes = 1
                         while (!diff.clean && passes < 6) {
                             println("move: repair pass $passes fixed $diff")
@@ -176,6 +189,9 @@ class AuthorShardsMoveIT {
                             passes++
                         }
                         assertExact(reader, oracle, "overlap, after the copy: still no document twice")
+                        assertTrue(docIn(url, destination, "event", damaged) != null, "the removed event was repaired into the destination")
+                        assertEquals(null, docIn(url, destination, "event", extraId), "the document the source lacks was removed")
+                        assertTrue(BOGUS_SERVICE !in docIn(url, destination, "reputation", stale).toString(), "the stale reputation document was rewritten from the source")
 
                         // ---- cut-over: stores first, then the narrowing deploy ----
                         VespaEventIndex(url, tuning = ClientTuning(authorBuckets = to.spec())).use { after ->
@@ -219,6 +235,59 @@ class AuthorShardsMoveIT {
                 }
             }
         }
+    }
+
+    /**
+     * What a write racing an overwriting copy can leave in [cluster], done on purpose with
+     * `route=<cluster>` (document-API puts are POSTs; a PUT is an update): [missing] removed,
+     * [extraId] put (an event by [missing]'s author under an id the source never held, as a delete
+     * the copy undid would leave), and [stale]'s reputation document replaced by one holding a
+     * cell the source never had.
+     */
+    private fun damage(
+        url: String,
+        cluster: String,
+        missing: String,
+        extraId: String,
+        stale: String,
+    ) {
+        // A minimal event by the same author: events are compared by id, and the author places it.
+        val pubkey = docIn(url, cluster, "event", missing)!!["fields"]!!.jsonObject["pubkey"]!!.jsonPrimitive.content
+        send("POST", "$url/document/v1/event/event/docid/$extraId?route=$cluster", "{\"fields\":{\"id\":\"$extraId\",\"pubkey\":\"$pubkey\",\"kind\":1,\"created_at\":1700000000}}")
+        send("DELETE", "$url/document/v1/event/event/docid/$missing?route=$cluster", null)
+        send(
+            "POST",
+            "$url/document/v1/reputation/reputation/docid/$stale?route=$cluster",
+            "{\"fields\":{\"pubkey\":\"$stale\",\"influence_scores\":{\"cells\":[{\"address\":{\"user\":\"$BOGUS_SERVICE\"},\"value\":7}]}}}",
+        )
+    }
+
+    /** [id] of [type] as [cluster] holds it now, or null. */
+    private fun docIn(
+        url: String,
+        cluster: String,
+        type: String,
+        id: String,
+    ): kotlinx.serialization.json.JsonObject? {
+        val r = HTTP.send(HttpRequest.newBuilder(URI.create("$url/document/v1/$type/$type/docid/$id?cluster=$cluster")).GET().build(), HttpResponse.BodyHandlers.ofString())
+        if (r.statusCode() == 404) return null
+        check(r.statusCode() == 200) { "get $id in $cluster: ${r.statusCode()} ${r.body().take(300)}" }
+        return Json.parseToJsonElement(r.body()).jsonObject.takeIf { "fields" in it }
+    }
+
+    private fun send(
+        method: String,
+        url: String,
+        body: String?,
+    ) {
+        val req =
+            HttpRequest
+                .newBuilder(URI.create(url))
+                .header("Content-Type", "application/json")
+                .method(method, body?.let { HttpRequest.BodyPublishers.ofString(it) } ?: HttpRequest.BodyPublishers.noBody())
+                .build()
+        val r = HTTP.send(req, HttpResponse.BodyHandlers.ofString())
+        check(r.statusCode() == 200) { "$method $url: ${r.statusCode()} ${r.body().take(300)}" }
     }
 
     /** Reads through [index] equal [oracle] exactly: every id once, the count the same, an author-scoped read too. */
@@ -311,6 +380,9 @@ class AuthorShardsMoveIT {
         const val QUERY_PORT = 8080
         const val CONFIG_PORT = 19071
         val HTTP: HttpClient = HttpClient.newHttpClient()
+
+        /** A service key no fixture or writer ever scores with. */
+        val BOGUS_SERVICE = "ab".repeat(32)
         val LENS = "c".repeat(64)
 
         fun hex(seed: String): String = MessageDigest.getInstance("SHA-256").digest(seed.encodeToByteArray()).joinToString("") { "%02x".format(it) }

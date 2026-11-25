@@ -2410,18 +2410,38 @@ class VespaEventIndex(
      * `max(created_at)` aggregator) is refused: each content cluster applies the limit before
      * answering, so the merged root ([GroupingResults.mergeRoots]) would hold up to K times the
      * groups or hits asked for, and could miss one that is n+1st in every cluster. Refusing is
-     * honest where a trimmed answer would only look right.
+     * honest where a trimmed answer would only look right. So is a count of distinct values of a
+     * field other than the author's, except in the one shape statistics use,
+     * `all(group(F) output(count()))`, which is answered exactly from the merged groups instead
+     * ([ShardedGrouping]).
      */
     suspend fun group(
         query: EventQuery,
         pipeline: String,
         source: String = EventYql.EVENT_SOURCE,
     ): JsonObject {
-        require(!authorClusters.sharded || !GROUP_LIMIT.containsMatchIn(pipeline)) {
+        if (!authorClusters.sharded) {
+            val vq = EventYql.buildGrouping(query, pipeline, source) ?: return EMPTY_GROUPING_ROOT
+            return queryRoot(vq, hits = 0) ?: error("vespa answered a grouping with no root")
+        }
+        require(!GROUP_LIMIT.containsMatchIn(pipeline)) {
             "a grouping limit (max(n)) cannot be answered exactly across ${authorClusters.serving.size} author-shard clusters: each applies it alone"
         }
-        val vq = EventYql.buildGrouping(query, pipeline, source) ?: return EMPTY_GROUPING_ROOT
-        return queryRoot(vq, hits = 0) ?: error("vespa answered a grouping with no root")
+        return when (val plan = ShardedGrouping.plan(pipeline)) {
+            ShardedGrouping.Plan.AsIs -> {
+                val vq = EventYql.buildGrouping(query, pipeline, source) ?: return EMPTY_GROUPING_ROOT
+                queryRoot(vq, hits = 0) ?: error("vespa answered a grouping with no root")
+            }
+
+            is ShardedGrouping.Plan.Distinct -> {
+                val vq = EventYql.buildGrouping(query, plan.pipeline, source) ?: return EMPTY_GROUPING_ROOT
+                ShardedGrouping.exactDistinct(queryRoot(vq, hits = 0) ?: error("vespa answered a grouping with no root"))
+            }
+
+            is ShardedGrouping.Plan.Refused -> {
+                throw IllegalArgumentException(plan.reason)
+            }
+        }
     }
 
     /**

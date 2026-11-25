@@ -114,6 +114,25 @@ K > 1, rather than return an answer that only looks right. The `max(expr)` aggre
 limit and passes. Roots merge only when their ids match exactly: a second grouping in one query is
 `group:root:1`, a different tree.
 
+**A count of distinct values does not add either.** An `output(count())` beside a `group(F)`
+counts the distinct values of F. Each cluster counts its own, so a value present in two clusters
+counts twice: vespa-relay's `distinct(kind)` read 16 for 8 kinds on two clusters. It adds
+correctly only when the values are split by cluster: F is `pubkey`, or the count sits in an
+`each(…)` under a `group(pubkey)`. `ShardedGrouping` (behind `VespaEventIndex.group`, sharded only)
+handles the rest:
+- **`all(group(F) output(count()))`**, the shape statistics use, is answered EXACTLY. It runs as
+  `all(group(F) output(count()) each(output(count())))`, the groups merge by value across
+  clusters, and their number replaces the count. The groups are dropped, so the answer has the
+  shape Vespa gives the original pipeline: a bare root holding `count()` (`AuthorShardsIT`
+  compares the two). The sharded answer is the more accurate one. Vespa's own count is
+  2–4% off at ~55 k pubkeys, and for a multi-value field it is wrong outright: `tag_index` read 1
+  in a cluster holding 2 values, where the store reads the corpus's 3. It costs one group per
+  distinct value, as the matching `each(output(count()))` statistic already does.
+- **Every other group-level count over a non-author field is refused**, naming the field and the
+  pipeline to count instead.
+
+One cluster is untouched: the pipeline goes to Vespa as it came.
+
 ## What was verified
 
 - `AuthorShardsIT` (2 clusters):
@@ -121,6 +140,9 @@ limit and passes. Roots merge only when their ids match exactly: a second groupi
     else, including cell-update-born documents and a non-hex marker.
   - The gate: a trusted author in each shard passes, a low one in each drops.
   - Pages, COUNT, the per-author and distinct-tag groupings.
+  - A distinct count: one kind in both clusters reads 1, not the 2 a summed merge gives, in
+    Vespa's own response shape. Three tag values read 3, where Vespa itself answers 1 per
+    cluster for that array field. A non-rewritable distinct count is refused.
   - Id walks, a streamed visit over both clusters at once, the page walk across the cluster
     boundary (and a foreign token refused), and the reputation walk.
   - Author-scoped recall, COUNT, pages and the gate.
@@ -226,11 +248,12 @@ collection.
    only receives is **pending**: no query or visit reads it. Then deploy the overlap package. It
    only widens what clusters keep, so the guard lets it through over data. Every new write now
    lands in both clusters.
-2. **`copy()`**: the moving buckets' events and reputation documents, put into the new cluster
-   only where absent. A newer write that already landed there is never overwritten by the older
-   copy.
+2. **`copy()`**: the moving buckets' events and reputation documents copied into the new
+   cluster inside Vespa, by a document-API visit with `destinationCluster`. No document passes
+   through the tool. The copy overwrites, so a newer write that already landed there can be
+   replaced by the older version, or a delete undone. Step 3 is what makes it exact.
 3. **`diff(repair = true)` until clean.** A write racing the copy can leave the new cluster
-   short. The source is complete and receives every write, so it is the reference. Each
+   short or stale. The source is complete and receives every write, so it is the reference. Each
    candidate difference is read again from both clusters before it counts, because two
    snapshots taken seconds apart under live writes always disagree a little.
 4. **Switch every store to the final map.** The new cluster serves. Until step 6 the old owner
@@ -238,27 +261,57 @@ collection.
    that window.
 5. **Deploy the final package.** It narrows the old owner. The store's guard refuses this;
    the move passes `allowNarrowing` only after step 3 is clean.
-6. **`cleanup()`** removes the moved documents from the old owner; `remaining()` confirms none
-   are left.
+6. **`cleanup()`** removes the moved documents from the old owner, by a document-API `DELETE`
+   by selection in that cluster; `remaining()` confirms none are left.
 
 `AuthorShardsMoveIT` runs it end to end: 2 → 3 clusters on one host, 300 authors with hash keys,
 1,200 events, and a writer adding events, deleting some and changing reputation cells (in the
-moving buckets too) throughout: 1,961 writes in the recorded run. Against an in-test oracle it checks:
+moving buckets too) throughout: 449 writes in the last recorded run. Against an in-test oracle it checks:
 - every phase: reads serve every live event once, never twice, and nothing deleted;
 - after the move: each event and reputation document sits only in its new owner's cluster;
 - every moved author's cell equals the last value written during the move;
 - the trust gate reads the moved authors' trust in their new cluster;
 - the store's own guard refused the narrowing deploy.
 
-In that run, one repair pass fixed 10 reputation documents. In each, a live cell update
-had created a partial document in the new cluster before the copy reached it: the race step 3
-exists for.
+With the first cut's put-if-absent copy, one repair pass fixed 10 reputation documents. In
+each, a live cell update had created a partial document in the new cluster before the copy
+reached it: the race step 3 exists for. The copy inside Vespa finishes before the writer
+can race it reliably (~40 writes in), so the IT now damages the new cluster itself after the copy.
+It removes one moved event, adds one the source never held, and plants a cell the source never
+had. The first diff must report exactly those (`missing=1 differing=1 extra=1`), and each must
+be repaired. With the extra-document repair switched off, the IT fails.
+
+**How fast** (`./gradlew :benchmark:moveSpeedProbe`, one 4-core host, a fresh Vespa per run,
+400,000 events by 40,000 authors plus their reputation documents, one cluster split in two,
+~218,700 documents moving, no live writes):
+
+| step | first cut | pipelined writes | inside Vespa (now) |
+|---|---|---|---|
+| `copy` | 85.6 s (2,554 docs/s) | 86.0 s (2,543 docs/s) | **20.1 s (10,880 docs/s)** |
+| `diff` | 60.9 s | 26.7 s | 27.5 s |
+| `cleanup` | 79.0 s (2,768 docs/s) | 79.1 s (2,764 docs/s) | **39.1 s (5,593 docs/s)** |
+| all three | 225.5 s | 191.8 s | **86.7 s (2.6× faster)** |
+
+- **The first attempt, writes pipelined across pages instead of awaited per page, changed
+  nothing for copy and cleanup.** Two reference rates in the same run said why. The host feeds
+  ~5,700 docs/s through the store's own feed path, and visits the moving buckets at ~13,600 docs/s
+  with no writes. So neither Vespa's writes nor its reads were the limit: the tool's own round
+  trip per document was, reading each one out and putting it back.
+- **The copy and cleanup now run inside Vespa**: a visit with `destinationCluster`, and a
+  `DELETE` by selection. The copy's put-if-absent guard is gone with it. The diff, which always
+  runs after the copy, repairs whatever that lets a racing write undo (`AuthorShardsMoveIT`
+  checks it under live writes).
+- **The diff got 2.3× faster** from fewer, larger batches: each batch re-reads both clusters, so
+  it now sizes them from the copy's count against a fixed memory budget.
+- At the copy's 10,880 docs/s, a bucket of production (~945 M events, 1/256 per bucket, ~3.7 M
+  documents) copies in ~6 minutes on hardware like this. That is a projection from one host,
+  not a measurement.
 
 **Limits of this tool:**
 - It only moves onto new clusters. A move onto a cluster that already serves would be read
   twice while it fills.
-- It holds a batch of buckets' destination ids in memory during `diff`.
-- It writes one document at a time through the feed client, pipelined per page.
+- It holds a batch of buckets' destination ids in memory during `diff`, sized to a fixed budget.
+- Only the diff's repairs go through the client, one document at a time.
 - It has run on one host with a small corpus, never on production scale. Plan a staging dry
   run to learn how long a real bucket takes.
 
@@ -293,12 +346,30 @@ type's own metrics.
 
 - **The follower counts are half of the TA memory**, and their number type is not what costs.
   A mapped tensor pays per cell ADDRESS, and the schema stores every (subject, service) address
-  twice, once per tensor. Moving to `bfloat16` would save 7% for a schema migration: not
-  worth it.
-- **The lever, not yet measured**: one mixed tensor holding both values under one address,
-  `tensor<float>(user{}, v[2])`. It should come near halving the TA memory, which pushes the
-  author-shard threshold out about 2×. It needs every rank expression that reads the two
-  tensors rewritten, and the reputation documents rebuilt from the cards.
+  twice, once per tensor. Moving the follower counts alone to `bfloat16` would save 7% for a
+  schema migration: not worth it.
+- **One mixed tensor, measured** (`./gradlew :benchmark:tensorLayoutProbe`, the same 3.6 M
+  cells in each layout, a minimal one-type application per fresh Vespa, 2026-11-25):
+
+  | layout | document type memory | per cell | of which the attribute | disk | transaction log |
+  |---|---|---|---|---|---|
+  | two tensors, `int8` + `float` (today) | 149.6 MB | 41.5 B | 16.7 B | 66.5 MB | 69.1 MB |
+  | one `tensor<float>(user{}, v[2])` | 130.7 MB | 36.3 B (−13%) | 12.8 B | 54.7 MB | 61.1 MB |
+  | one `tensor<bfloat16>(user{}, v[2])` | 104.2 MB | 28.9 B (−30%) | 9.7 B | 44.1 MB | 49.6 MB |
+
+  - **Not the ~2× guessed above.** The attribute, where the duplicated address lives, is only
+    ~40% of the type's memory. The rest is the document store and metadata, which hold the
+    cells' values whatever the layout.
+  - **The mixed float tensor saves 13%**, because its two floats cost more than today's `int8`
+    plus one float.
+  - **Mixed `bfloat16` saves 30% of memory and a third of disk.** That pushes the author-shard
+    threshold out by ~1.4×. It holds every rank 0..100 exactly, and a follower count to ~0.4%.
+    That is enough for the log scale ranking reads it on, but it is not exact.
+  - **The cost**: every rank expression reading `influence_scores` or `follower_counts` must be
+    rewritten to `attribute(trust){v:0}` / `{v:1}`, the projection must write one field, and every
+    reputation document must be rebuilt from the cards. That is a schema migration, decided
+    against the shard split it postpones, not a quick win. Attribute numbers move ±10% between
+    runs with Vespa's background compaction; the type totals were read once memory settled.
 - **Churn**: 5 rounds of ~600 k cell rewrites (a provider re-publishing) left document disk flat,
   while the transaction log grew from 75 MB to 130 MB and memory 13%. Here disk plus log is
   about 1× memory; production's 38 GiB of disk against 4.4 GiB of memory is about 9×.
@@ -342,7 +413,8 @@ The run also found:
 - under enrolment, the move's repair step does most of the TA copying;
 - the transaction log, not the documents, is what grows on disk;
 - the lensed feed gets ~3× slower on two clusters sharing one host;
-- vespa-relay's `distinct(kind)` statistic doubles on two clusters.
+- vespa-relay's `distinct(kind)` statistic doubled on two clusters. The store now answers it
+  exactly (above).
 
 ## What is NOT known yet
 

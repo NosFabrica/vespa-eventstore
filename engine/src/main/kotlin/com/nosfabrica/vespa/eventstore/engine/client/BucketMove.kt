@@ -52,27 +52,26 @@ import java.util.concurrent.atomic.AtomicLong
  *     written to their destination, which serves nothing yet and so is PENDING — read by no one.
  *     Then the overlap package deploys; it only widens what clusters keep, so the deploy guard
  *     lets it through over data. From here on every new write lands in both clusters.
- *  2. [copy]: each moving bucket's events and reputation documents, read from the source
- *     cluster, put into the destination only where ABSENT (`condition=false`, `create=true`, sent
- *     with `route=<destination>`), so a newer write that already landed there is never
- *     overwritten by the older copy.
- *  3. [diff] with repair, until clean: a write racing the copy can leave the destination short
- *     (a cell update creating a reputation document before the copy reaches it, a delete landing
- *     between the copy's read and its put). The source is complete and keeps receiving every
- *     write, so it is the reference: what the destination lacks or holds differently is copied,
- *     what it holds and the source does not is removed (`route=<destination>`).
+ *  2. [copy]: each moving bucket's events and reputation documents copied from the source
+ *     cluster into the destination INSIDE Vespa (a document-API visit with `destinationCluster`).
+ *     It overwrites, so a write racing it can be undone in the destination: step 3 is not optional.
+ *  3. [diff] with repair, until clean: a write racing the copy can leave the destination wrong
+ *     (a cell update overwritten by the older copy, a document partly created by a cell update,
+ *     a delete undone by the copy). The source is complete and keeps receiving every write,
+ *     so it is the reference: what the destination lacks or holds differently is copied, what it
+ *     holds and the source does not is removed (`route=<destination>`).
  *  4. Every store switches to [to]: the destinations serve. Until step 6 the sources still hold
  *     copies, so a read naming both may meet a document twice; a sharded client drops repeated
  *     hits by id, and a COUNT over-reports for that window.
  *  5. The final package deploys. It NARROWS the sources, which the guard refuses unless told the
  *     copy was verified (`SchemaDeployer.checkShardChange(allowNarrowing = true)`).
- *  6. [cleanup]: the moved documents removed from their source with `route=<source>`, which
- *     reaches that cluster alone whatever its selection now says (measured), instead of waiting
- *     for garbage collection (hourly by default). [remaining] confirms none are left.
+ *  6. [cleanup]: the moved documents removed from their source by a document-API `DELETE` by
+ *     selection in that cluster, instead of waiting for garbage collection (hourly by default).
+ *     [remaining] confirms none are left.
  *
- * Holds, per bucket, the destination's ids (and reputation documents) in memory during [diff]:
- * at production scale a bucket is ~1/256 of a cluster, so this is a prototype's shape, not a
- * production tool's. Writes go through the feed client, one document at a time, pipelined.
+ * Holds, per batch of buckets, the destination's ids (and reputation documents) in memory during
+ * [diff], batches sized to a fixed budget from what [copy] counted. Copy and cleanup run inside
+ * Vespa; only [diff]'s repairs go through the feed client, one document at a time.
  */
 class BucketMove(
     baseUrl: String,
@@ -130,15 +129,25 @@ class BucketMove(
             Type(REPUTATION, REPUTATION, "id.specific", compareFields = true),
         )
 
-    /** Step 2: the moving buckets' documents into their destinations, where absent. */
+    /**
+     * Step 2: the moving buckets' documents copied into their destinations INSIDE Vespa: a
+     * document-API visit of the source with `destinationCluster`, which puts each selected
+     * document into the destination from the content nodes, with no document passing through this
+     * client. The first cut read every document here and put it back where absent; on one host
+     * that moved ~2,600 documents/s while the host fed ~5,900 and visited ~13,500
+     * (`MoveSpeedProbe`, `docs/author-shards.md`).
+     *
+     * A server-side copy OVERWRITES. A write that reached the destination after the copy read its
+     * source can be replaced by the older version, and a delete can be undone. That is safe
+     * only because [diff] runs after the copy, always: the source received every write and is the
+     * reference, and the destination is pending, read by no one, until [diff] is clean.
+     */
     suspend fun copy(): Counts =
         counts { type, buckets, src, dst ->
-            val n = AtomicLong()
-            visit(type, src, buckets, "[document]") { docs ->
-                // A page's puts in flight together: the feed client pipelines them over HTTP/2.
-                n.addAndGet(coroutineScope { docs.map { d -> async { put(type, d, dst, ifAbsent = true) } }.awaitAll() }.count { it }.toLong())
-            }
-            n.get()
+            val n = writeVisit(type, src, buckets, "&destinationCluster=${URLEncoder.encode(AuthorShards.clusterName(dst), "UTF-8")}", delete = false)
+            // Sizes [diff]'s batches; a document API that reported no count leaves the conservative default.
+            if (n > 0) seen[Triple(src, dst, type.doctype)] = n
+            n
         }
 
     /**
@@ -155,7 +164,18 @@ class BucketMove(
         var extra = 0L
         for ((pair, all) in pairs) {
             val (src, dst) = pair
-            for (buckets in all.chunked(BATCH)) {
+            // As few batches as the memory budget allows: each batch re-reads both clusters whole,
+            // and a batch holds its destination's documents in memory. Sized from what copy()
+            // counted; without that, the conservative BATCH.
+            val known = types.mapNotNull { seen[Triple(src, dst, it.doctype)] }
+            val batch =
+                if (known.size < types.size) {
+                    BATCH
+                } else {
+                    val perBucket = known.max().toDouble() / all.size
+                    (DIFF_BUDGET / perBucket.coerceAtLeast(1.0)).toInt().coerceIn(1, all.size)
+                }
+            for (buckets in all.chunked(batch)) {
                 for (type in types) {
                     val fieldSet = if (type.compareFields) "[document]" else "[id]"
                     val there = ConcurrentHashMap<String, String>()
@@ -197,13 +217,67 @@ class BucketMove(
 
     private enum class Fix { MISSING, DIFFERING, EXTRA }
 
-    /** Step 6: the moved documents removed from their sources, which serve them no longer. */
-    suspend fun cleanup(): Counts =
-        counts { type, buckets, src, _ ->
-            val n = AtomicLong()
-            visit(type, src, buckets, "[id]") { docs -> n.addAndGet(coroutineScope { docs.map { d -> async { remove(type, idOf(d), src) } }.awaitAll() }.count { it }.toLong()) }
-            n.get()
+    /**
+     * Step 6: the moved documents removed from their sources, which serve them no longer: a
+     * document-API `DELETE` by selection in the source cluster, removed by the content nodes with
+     * nothing passing through this client (the first cut removed them one by one from here, at
+     * ~3,100 documents/s). Garbage collection may remove some first, as the narrowed selection
+     * allows; the count is what this call removed.
+     */
+    suspend fun cleanup(): Counts = counts { type, buckets, src, _ -> writeVisit(type, src, buckets, "", delete = true) }
+
+    /**
+     * A visit of [buckets]' documents of [type] in [cluster] that WRITES inside Vespa ([VespaHttp.writeVisit]):
+     * [SLICES] slices at once, each followed to its end. The documents it touched, as the
+     * document API counts them.
+     */
+    private suspend fun writeVisit(
+        type: Type,
+        cluster: Int,
+        buckets: List<Int>,
+        extra: String,
+        delete: Boolean,
+    ): Long {
+        val base = visitBase(type, cluster, buckets) + extra
+        val n = AtomicLong()
+        coroutineScope {
+            (0 until SLICES)
+                .map { slice ->
+                    async {
+                        val sliced = "$base&sliceId=$slice"
+                        var continuation: String? = null
+                        while (true) {
+                            val resp = http.writeVisit(continuation?.let { "$sliced&continuation=$it" } ?: sliced, delete)
+                            require(resp.statusCode() < 400) {
+                                "move ${if (delete) "delete" else "copy"} of ${type.doctype} in ${AuthorShards.clusterName(cluster)}: ${resp.statusCode()} ${resp.body().take(300)}"
+                            }
+                            val env = Json.parseToJsonElement(resp.body()).jsonObject
+                            env["documentCount"]
+                                ?.jsonPrimitive
+                                ?.content
+                                ?.toLongOrNull()
+                                ?.let { n.addAndGet(it) }
+                            continuation = env["continuation"]?.jsonPrimitive?.content ?: break
+                        }
+                    }
+                }.awaitAll()
         }
+        return n.get()
+    }
+
+    /** The document-API visit url over [buckets]' documents of [type] in [cluster], sliced, before its `sliceId`. */
+    private fun visitBase(
+        type: Type,
+        cluster: Int,
+        buckets: List<Int>,
+    ): String =
+        "${api.next()}/document/v1/${type.namespace}/${type.doctype}/docid" +
+            "?cluster=${URLEncoder.encode(AuthorShards.clusterName(cluster), "UTF-8")}" +
+            "&selection=${URLEncoder.encode(to.bucketTest(type.keyField, buckets), "UTF-8")}" +
+            "&timeout=$SERVER_TIMEOUT_SECONDS&slices=$SLICES"
+
+    /** What [copy] moved per (source, destination, type): [diff] sizes its batches from it. */
+    private val seen = ConcurrentHashMap<Triple<Int, Int, String>, Long>()
 
     /** The moving buckets' documents still in their sources: zero after [cleanup]. */
     suspend fun remaining(): Counts =
@@ -245,13 +319,7 @@ class BucketMove(
         fieldSet: String,
         onPage: suspend (List<JsonObject>) -> Unit,
     ) {
-        val selection = to.bucketTest(type.keyField, buckets)
-        val base =
-            "${api.next()}/document/v1/${type.namespace}/${type.doctype}/docid" +
-                "?cluster=${URLEncoder.encode(AuthorShards.clusterName(cluster), "UTF-8")}" +
-                "&selection=${URLEncoder.encode(selection, "UTF-8")}" +
-                "&fieldSet=${URLEncoder.encode(fieldSet, "UTF-8")}" +
-                "&wantedDocumentCount=$PAGE&timeout=$SERVER_TIMEOUT_SECONDS&slices=$SLICES"
+        val base = visitBase(type, cluster, buckets) + "&fieldSet=${URLEncoder.encode(fieldSet, "UTF-8")}&wantedDocumentCount=$PAGE"
         coroutineScope {
             (0 until SLICES)
                 .map { slice ->
@@ -330,6 +398,9 @@ class BucketMove(
 
         /** Buckets per visit: each visit evaluates its selection over the whole source cluster. */
         const val BATCH = 16
+
+        /** Documents one diff batch may hold in memory (ids, plus whole documents for reputation): ~200 MB of ids. */
+        const val DIFF_BUDGET = 2_000_000.0
 
         /** Concurrent slices of one visit: within the ~64-session ceiling that wedged a small node's document API (VespaVisits). */
         const val SLICES = 8

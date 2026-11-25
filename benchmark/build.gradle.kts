@@ -405,3 +405,21 @@ tasks.register<JavaExec>("growthSimulation") {
     workingDir = projectDir
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "4g"
 }
+
+// One trust tensor or two: memory per cell in each layout, the same cells. See TensorLayoutProbe.kt.
+tasks.register<JavaExec>("tensorLayoutProbe") {
+    group = "verification"
+    description = "Reputation attribute memory for two mapped tensors vs one mixed tensor (float, bfloat16), against a fresh Vespa"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.TensorLayoutProbe")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
+}
+
+// How fast a bucket move is with nothing else running, on a fixed corpus. See MoveSpeedProbe.kt.
+tasks.register<JavaExec>("moveSpeedProbe") {
+    group = "verification"
+    description = "Times BucketMove's copy, diff and cleanup splitting one cluster into two, against a fresh Vespa"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.MoveSpeedProbe")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
+}

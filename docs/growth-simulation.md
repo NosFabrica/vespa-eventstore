@@ -227,16 +227,20 @@ span clusters.**
 - For `pubkey` the count disagrees with the number of groups on BOTH topologies (56,152 against
   54,042 on one cluster, 55,167 against 54,048 on two). Vespa estimates large distinct counts,
   so that one is not the split.
-- A sharded store should refuse a group-level `count()` the way it refuses `max(n)`, or
-  vespa-relay should count `countsBy` groups instead. Not fixed yet.
+- **Fixed since** (`docs/author-shards.md`, "A count of distinct values does not add
+  either"): a sharded store answers `all(group(F) output(count()))` exactly, from the groups
+  merged across clusters, and refuses any other group-level count over a non-author field.
+  vespa-relay needs no change. This run's numbers predate the fix.
 
 ## What this does not show
 
 - Separate hosts. Every cluster shared four cores, so the read costs above are worst-case for
   the topology and the timings are for this host.
 - Production scale. 202 k events and ~1.2 M trust cells, against production's ~945 M events and
-  4.4 GiB of TAs per node. The move tool's throughput here (~1,400 events/s copied) would need
-  days at production size.
+  4.4 GiB of TAs per node. The move tool's throughput here (~1,400 events/s copied, under
+  enrolment) would need days at production size. That was the first cut: the copy and cleanup
+  now run inside Vespa, and copied 4.3× faster on a quiet host (`docs/author-shards.md`, "How
+  fast"). This simulation has not been re-run with it.
 - Long-running behavior: transaction-log pruning, lid-space compaction on the source, and
   memory over hours rather than 10 minutes.
 

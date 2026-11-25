@@ -185,6 +185,53 @@ class AuthorShardsIT {
             "a tag value both clusters hold, and one each",
         )
 
+        // ---- a distinct count: exact across clusters, in Vespa's own shape ----
+        // Every note is kind 1, in both clusters: each cluster counts its one kind, and a merge
+        // that adds roots (as it rightly does for a COUNT) reads 2.
+        val kindPipeline = "all(group(kind) output(count()))"
+        val rawKinds = rawGroupingRoots(queryUrl, kindPipeline)
+        assertEquals(SHARDS, rawKinds.size, "one root per cluster as Vespa answers")
+        assertEquals(listOf(1L, 1L), rawKinds.map { rootCount(it) }, "each cluster counts its own distinct values")
+        val kinds =
+            index
+                .group(EventQuery(kinds = listOf(1)), kindPipeline)["children"]!!
+                .jsonArray
+                .single()
+                .jsonObject
+        assertEquals(1L, rootCount(kinds), "the store's count is the merged groups'")
+        assertEquals(shapeOf(rawKinds.first()), shapeOf(kinds), "and comes back in the shape Vespa answers the pipeline with")
+        // `t:shared` is in both clusters, `only-0`/`only-1` in one each: 3 values. Vespa's own
+        // answer for this multi-value field is 1 per cluster (measured), not even its 2.
+        val tagPipeline = "all(group(tag_index) output(count()))"
+        assertEquals(listOf(1L, 1L), rawGroupingRoots(queryUrl, tagPipeline).map { rootCount(it) }, "Vespa's own count of an array field's values")
+        assertEquals(
+            3L,
+            rootCount(
+                index
+                    .group(EventQuery(kinds = listOf(1)), tagPipeline)["children"]!!
+                    .jsonArray
+                    .single()
+                    .jsonObject,
+            ),
+            "the store's: every value once",
+        )
+        assertEquals(
+            authors.size.toLong(),
+            rootCount(
+                index
+                    .group(EventQuery(kinds = listOf(1)), "all(group(pubkey) output(count()))")["children"]!!
+                    .jsonArray
+                    .single()
+                    .jsonObject,
+            ),
+            "authors never meet across clusters: summed as they are",
+        )
+        val refusedCount =
+            assertFailsWith<IllegalArgumentException> {
+                index.group(EventQuery(kinds = listOf(1)), "all(group(kind) each(group(tag_index) output(count())))")
+            }
+        assertTrue("`tag_index`" in refusedCount.message.orEmpty(), refusedCount.message)
+
         // ---- the visits: every cluster, once ----
         val walked = ArrayList<String>()
         index.visitIds(EventQuery(kinds = listOf(1))) { page ->
@@ -276,6 +323,38 @@ class AuthorShardsIT {
         } while (continuation != null)
         return out
     }
+
+    /** The grouping roots Vespa itself answers [pipeline] with over the notes: one per content cluster, unmerged. */
+    private fun rawGroupingRoots(
+        queryUrl: String,
+        pipeline: String,
+    ): List<kotlinx.serialization.json.JsonObject> {
+        val yql = URLEncoder.encode("select * from event where kind = 1 limit 0 | $pipeline", "UTF-8")
+        val body = HTTP.send(HttpRequest.newBuilder(URI.create("$queryUrl/search/?yql=$yql&grouping.defaultMaxGroups=-1")).GET().build(), HttpResponse.BodyHandlers.ofString())
+        check(body.statusCode() == 200) { "grouping: ${body.statusCode()} ${body.body().take(300)}" }
+        return Json
+            .parseToJsonElement(body.body())
+            .jsonObject["root"]!!
+            .jsonObject["children"]!!
+            .jsonArray
+            .map { it.jsonObject }
+            .filter { it["id"]?.jsonPrimitive?.content?.startsWith("group:root") == true }
+    }
+
+    /** The `count()` a grouping root carries itself. */
+    private fun rootCount(root: kotlinx.serialization.json.JsonObject): Long =
+        root["fields"]!!
+            .jsonObject["count()"]!!
+            .jsonPrimitive.content
+            .toLong()
+
+    /** [e]'s structure: object keys and ids, every number replaced, so two answers compare by shape alone. */
+    private fun shapeOf(e: kotlinx.serialization.json.JsonElement): String =
+        when (e) {
+            is kotlinx.serialization.json.JsonObject -> e.entries.sortedBy { it.key }.joinToString(",", "{", "}") { (k, v) -> "$k:" + if (k == "id" || k == "label") v.toString() else shapeOf(v) }
+            is kotlinx.serialization.json.JsonArray -> e.joinToString(",", "[", "]") { shapeOf(it) }
+            is kotlinx.serialization.json.JsonPrimitive -> if (e.isString) "s" else "n"
+        }
 
     private suspend fun awaitCount(
         index: VespaEventIndex,
