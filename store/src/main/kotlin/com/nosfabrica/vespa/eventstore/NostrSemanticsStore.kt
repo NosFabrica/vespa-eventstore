@@ -29,6 +29,7 @@ import com.nosfabrica.vespa.eventstore.engine.metrics.withActivity
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.engine.query.PhraseRuns
+import com.nosfabrica.vespa.eventstore.engine.text.IndexableChars
 import com.nosfabrica.vespa.eventstore.ingest.BulkMixedInsert
 import com.nosfabrica.vespa.eventstore.ingest.BulkRecordInsert
 import com.nosfabrica.vespa.eventstore.ingest.Deletions
@@ -921,7 +922,15 @@ class NostrSemanticsStore(
                 val floor = EventYql.gateFloor(q)
                 val text =
                     LiveGate.Text(
-                        terms = LiveGate.Text.words(q.search),
+                        // The words the page was read with, cut as EventYql cuts them
+                        // ([IndexableChars.searchWords]: the first words within the word,
+                        // token and length caps): a word the engine never asked for must
+                        // not refuse a live note the page served.
+                        terms =
+                            q.search
+                                ?.let(IndexableChars::searchWords)
+                                .orEmpty()
+                                .flatMap(LiveGate.Text::words),
                         phrases =
                             q.phrases
                                 .flatMap(PhraseRuns::pieces)
