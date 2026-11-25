@@ -1690,8 +1690,9 @@ prefix: nearly every relay REQ) now carries a `SelectForm` (`EventYql.selectWher
 mirroring `filterClauses` clause for clause) and goes to the engine as `select`; YQL
 stays the query's description and the fallback. An engine that refuses `select` with a
 400 (one predating `select.fields`, Vespa 8.680.18) is asked the same query as YQL at
-once, and `SchemaFallbacks.selectAvailable` sends YQL from then on
-(`query.select.refused` counts it). `VESPA_SELECT_QUERIES=0` sends YQL. `EventYqlTest`
+once, and `SchemaFallbacks.selectAvailable` parks `select` for five minutes, then the next
+read tries it again (`query.select.refused` counts each park). The where-node is rendered
+only when a read is really sent as `select`. `VESPA_SELECT_QUERIES=0` sends YQL. `EventYqlTest`
 renders every shape's where-node back to the YQL clause `build` writes;
 `SelectQueryIT` reads 33 shapes both ways against a real Vespa under two strategies
 and requires the same ids in the same order. The unit tests' mock engine answers

@@ -29,8 +29,31 @@ package com.nosfabrica.vespa.eventstore.engine.client
  * by retrying smaller parts of a batch (vespa-relay's ingest bisection) gains nothing from it:
  * every part fails the same way. Thrown at once by the batch write path ([VespaBatchFeed]), not
  * after re-putting each document through the feed client, whose retries are what made a refused
- * batch slow.
+ * batch slow; a write that only the feed client can make ([refusalOf]) throws it after those.
+ *
+ * Consumers outside the store test for it with `isStoreRefusingWrites`, the store's own facade.
  */
 class EngineRefusesWrites(
     message: String,
-) : IllegalStateException(message)
+    cause: Throwable? = null,
+) : IllegalStateException(message, cause)
+
+/**
+ * [e] as [EngineRefusesWrites] when it is the feed client's failure for a feed block, else [e]
+ * itself. The feed client retries the document API's 507 before it gives up, so this path is slow,
+ * but its failure still says what it is: the engine, not the document.
+ */
+internal fun refusalOf(e: Throwable): Throwable =
+    if (e !is EngineRefusesWrites && e.message?.contains(FEED_BLOCKED) == true) {
+        EngineRefusesWrites("the engine is refusing writes (507): its feed is blocked for disk or memory", e)
+    } else {
+        e
+    }
+
+/**
+ * How a feed block reads in the feed client's failure, for disk and memory alike. Verbatim from Vespa
+ * 8.763 under a disk block: `(<document id>) [UNKNOWN(251009) @ tcp/vespa:19115/default]:
+ * ReturnCode(NO_SPACE, External feed is blocked due to resource exhaustion: in content cluster
+ * 'content': disk on node 0 [vespa] is 95.7% full …)`.
+ */
+private const val FEED_BLOCKED = "External feed is blocked"

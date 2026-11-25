@@ -415,17 +415,39 @@ data class VespaQuery(
  * container 14% less CPU per `#t` read and 20% less per 200-author read, with proton's share
  * unchanged (benchmark/README.md, "The query container's own cost").
  *
- * [where] is the JSON text of the where-node (`true`, one clause, or `{"and":[...]}`); [fields]
- * is the summary field list, null for every field of the summary class the request names;
- * [newestFirst] is `order by created_at desc` (sent as `sorting=-created_at`); [limit] is the
- * YQL `limit`, sent as `hits`.
+ * [where] is the JSON text of the where-node (`true`, one clause, or `{"and":[...]}`), RENDERED
+ * WHEN FIRST ASKED, so a read sent as YQL (select off, or parked after a refusal) never pays for
+ * it: an author recall's where runs to tens of kilobytes. Null only if [EventYql.selectWhere]
+ * cannot write a query [EventYql.build] could, which [EventYql.selectable] rules out; the read
+ * then goes as YQL. [fields] is the summary field list, null for every field of the summary class
+ * the request names; [newestFirst] is `order by created_at desc` (sent as `sorting=-created_at`);
+ * [limit] is the YQL `limit`, sent as `hits`. Equal when all four are.
  */
-data class SelectForm(
-    val where: String,
+class SelectForm private constructor(
+    private val rendered: Lazy<String?>,
     val fields: List<String>?,
     val newestFirst: Boolean,
     val limit: Int?,
-)
+) {
+    constructor(
+        query: EventQuery,
+        fields: List<String>?,
+        newestFirst: Boolean,
+        limit: Int?,
+    ) : this(lazy(LazyThreadSafetyMode.PUBLICATION) { EventYql.selectWhere(query) }, fields, newestFirst, limit)
+
+    /** The where-node's JSON text; see the class KDoc. */
+    val where: String? get() = rendered.value
+
+    /** The same query naming [fields] (a summary rewrite), sharing one rendering of [where]. */
+    fun withFields(fields: List<String>?): SelectForm = SelectForm(rendered, fields, newestFirst, limit)
+
+    override fun equals(other: Any?): Boolean = other is SelectForm && where == other.where && fields == other.fields && newestFirst == other.newestFirst && limit == other.limit
+
+    override fun hashCode(): Int = ((where.hashCode() * 31 + fields.hashCode()) * 31 + newestFirst.hashCode()) * 31 + (limit ?: 0)
+
+    override fun toString(): String = "SelectForm(where=$where, fields=$fields, newestFirst=$newestFirst, limit=$limit)"
+}
 
 /** The shape of a query carrying no clause worth naming. */
 const val SHAPE_PLAIN = "plain"

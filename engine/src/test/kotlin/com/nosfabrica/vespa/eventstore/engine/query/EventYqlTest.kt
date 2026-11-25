@@ -72,7 +72,7 @@ class EventYqlTest {
                     .substringAfter(" from event where ")
                     .substringBefore(" order by ")
                     .substringBefore(" limit ")
-            assertEquals(where, renderWhere(Json.parseToJsonElement(form.where)), "where: $q")
+            assertEquals(where, renderWhere(Json.parseToJsonElement(assertNotNull(form.where, "rendered: $q"))), "where: $q")
             assertEquals(vq.yql.contains(" order by created_at desc"), form.newestFirst, "order: $q")
             assertEquals(q.limit, form.limit, "limit: $q")
             assertEquals(EventYql.SUMMARY_FIELD_LIST, form.fields)
@@ -81,6 +81,15 @@ class EventYqlTest {
         assertNull(EventYql.build(EventQuery(kinds = listOf(1), notSearch = listOf("spam"), limit = 10))!!.select)
         assertNull(EventYql.build(EventQuery(authorWeights = mapOf(a to 5), limit = 10))!!.select)
         assertNull(EventYql.build(EventQuery(idPrefix = "ab", limit = 10))!!.select)
+        // A tag value's quote, backslash, tab, LF and CR are escaped, so the engine reads the value typed.
+        val awkward = "a\"b\\c\td\ne\rf"
+        val node = Json.parseToJsonElement(assertNotNull(EventYql.build(EventQuery(tags = mapOf("t" to listOf(awkward)), limit = 1))!!.select!!.where))
+        assertEquals(
+            "t:$awkward",
+            node.jsonObject["contains"]!!
+                .jsonArray[1]
+                .jsonPrimitive.content,
+        )
         // The summary rewrites carry the form along: every field of `nip01`, or the two attributes.
         val read = EventYql.build(EventQuery(kinds = listOf(1), limit = 10))!!
         assertNull(EventYql.onSummaryClass(read, eventSummary = true).select!!.fields)

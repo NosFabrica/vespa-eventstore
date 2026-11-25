@@ -176,7 +176,7 @@ class VespaEventIndex(
     /**
      * Whether a text-free read is sent in Vespa's JSON `select` form instead of YQL, which the
      * query container parses at a fixed cost per request ([SelectForm], measured there).
-     * `VESPA_SELECT_QUERIES=0` sends YQL; an engine that refuses `select` turns it off by itself
+     * `VESPA_SELECT_QUERIES=0` sends YQL; an engine that refuses `select` parks it for a while
      * ([SchemaFallbacks.selectAvailable]).
      */
     private val selectQueries: Boolean = tuning.selectQueriesOrEnv(),
@@ -410,7 +410,7 @@ class VespaEventIndex(
                 // Await the rest before reacting: they are already in flight,
                 // and leaving futures unawaited would surface later as
                 // unhandled completions on an unrelated call.
-                if (!fallbacks.isMissingFedColumn(e.message)) throw e
+                if (!fallbacks.isMissingFedColumn(e.message)) throw refusalOf(e)
                 refused = e
             }
         }
@@ -425,7 +425,7 @@ class VespaEventIndex(
                 retry.forEach { it.await() }
                 return
             } catch (e: Throwable) {
-                if (++attempt > FED_COLUMN_GENERATIONS || !fallbacks.isMissingFedColumn(e.message)) throw e
+                if (++attempt > FED_COLUMN_GENERATIONS || !fallbacks.isMissingFedColumn(e.message)) throw refusalOf(e)
                 retry.forEach { runCatching { it.await() } }
             }
         }
@@ -451,9 +451,11 @@ class VespaEventIndex(
     override suspend fun putAll(docs: List<EventDoc>) {
         // Batched first when it is on: whatever it does not confirm stored goes the feed client's
         // way below, which keeps that path's retries and schema-fallback net for those documents.
-        // A lone document gains nothing from a batch and takes the feed client directly.
+        // A lone document too: the batch handler answers a feed block at once (EngineRefusesWrites),
+        // where the feed client retries each 507 before failing, which held a single publish for
+        // seconds and then answered it as an event the store could not take.
         val rest =
-            batchFeed?.takeIf { docs.size > 1 }?.let { batches ->
+            batchFeed?.let { batches ->
                 batches.putAll(
                     docs,
                     docId = ::docIdOf,
@@ -502,7 +504,7 @@ class VespaEventIndex(
                 break
             } catch (e: Throwable) {
                 // Each refusal names one unknown column; near, edge and stem are three.
-                if (++refusals > FED_COLUMN_GENERATIONS || !fallbacks.isMissingFedColumn(e.message)) throw e
+                if (++refusals > FED_COLUMN_GENERATIONS || !fallbacks.isMissingFedColumn(e.message)) throw refusalOf(e)
             }
         }
         // A transport/engine failure completes the future exceptionally (never
@@ -572,7 +574,7 @@ class VespaEventIndex(
                             else -> failure = failure ?: IllegalStateException("vespa conditional re-put of ${pending[i].id} returned an unknown result")
                         }
                     } catch (e: Throwable) {
-                        if (fallbacks.isMissingFedColumn(e.message)) refused += pending[i] else failure = failure ?: e
+                        if (fallbacks.isMissingFedColumn(e.message)) refused += pending[i] else failure = failure ?: refusalOf(e)
                     }
                 }
                 failure?.let { throw it }
@@ -2868,7 +2870,7 @@ class VespaEventIndex(
      * [queryBody]'s request, for [vq] exactly as given: in its JSON `select` form when it has one
      * ([VespaQuery.select]) and the engine takes it, else as YQL. An engine that refuses `select`
      * (400: one predating `select.fields`, Vespa 8.680.18) is asked the same query as YQL at once;
-     * if that answers, `select` is off for this client from then on, and said so once. A YQL that
+     * if that answers, `select` is parked ([SchemaFallbacks.selectAvailable]), booked once a park. A YQL that
      * fails too is that failure, exactly as it was before `select` existed, so every fallback
      * keyed on an engine's error message still sees its message.
      */
@@ -2876,18 +2878,16 @@ class VespaEventIndex(
         vq: VespaQuery,
         hits: Int,
     ): VespaHttp.HttpResp {
-        val form = vq.select
-        if (form != null && selectQueries && fallbacks.selectAvailable) {
+        // The where is rendered here, last, so a read that goes as YQL never pays for it.
+        val form = vq.select?.takeIf { selectQueries && fallbacks.selectAvailable && it.where != null }
+        if (form != null) {
             val resp = http.post(searchUrl(), requestBody(vq, hits, form))
             if (resp.statusCode() != 400) {
                 require(resp.statusCode() < 400) { "vespa search ${resp.statusCode()}: ${resp.body().take(300)}" }
                 return resp
             }
             val viaYql = http.post(searchUrl(), requestBody(vq, hits, null))
-            if (viaYql.statusCode() < 400 && fallbacks.selectAvailable) {
-                fallbacks.markSelectRefused()
-                IngestStats.timed(SELECT_REFUSED_STAGE) { }
-            }
+            if (viaYql.statusCode() < 400 && fallbacks.markSelectRefused()) IngestStats.timed(SELECT_REFUSED_STAGE) { }
             require(viaYql.statusCode() < 400) { "vespa search ${viaYql.statusCode()}: ${viaYql.body().take(300)}" }
             return viaYql
         }
@@ -2916,7 +2916,7 @@ class VespaEventIndex(
                 } else {
                     // `from event` is model.restrict, `order by` is sorting, and YQL's `limit`
                     // (which wins over the hits parameter there) is the hits sent here.
-                    sink.writeUtf8("{\"select\":{\"where\":").writeUtf8(form.where)
+                    sink.writeUtf8("{\"select\":{\"where\":").writeUtf8(checkNotNull(form.where))
                     form.fields?.let { fields ->
                         sink.writeUtf8(",\"fields\":[")
                         fields.forEachIndexed { i, f -> (if (i > 0) sink.writeByte(','.code) else sink).writeJsonString(f) }
@@ -3279,7 +3279,7 @@ class VespaEventIndex(
         /** The [IngestStats] stage every [RecencyStrategy.SPECULATIVE] read books under; see [outcome]. */
         const val SPECULATIVE_STAGE = "recency.speculative"
 
-        /** Booked once when the engine refuses a `select` query and reads go as YQL from then on. */
+        /** Booked once each time a refused `select` query parks it and reads go as YQL for a while. */
         const val SELECT_REFUSED_STAGE = "query.select.refused"
 
         /** The [IngestStats] stage under which each read eligible for id-first books the mode it took ([recallSummaries]). */

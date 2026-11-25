@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.engine.query.FuzzyWordGroup
 import com.nosfabrica.vespa.eventstore.engine.text.StemText
+import java.util.concurrent.atomic.AtomicReference
 
 /** Whether [this] recalls through one of the observer-gate profiles. */
 internal fun EventQuery.usesGatedProfile(): Boolean = ranking == EventYql.RANK_RECENCY_GATED || ranking == EventYql.RANK_RECENCY_GATED_EXACT
@@ -42,7 +43,10 @@ internal fun EventQuery.usesGatedProfile(): Boolean = ranking == EventYql.RANK_R
  * ungated (the pre-gate behavior), consistent with how every other missing
  * trust input degrades.
  */
-internal class SchemaFallbacks {
+internal class SchemaFallbacks(
+    /** Milliseconds on a monotonic clock, for [selectAvailable]'s park; only ever subtracted. */
+    private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
+) {
     companion object {
         /**
          * What the document API answers when the schema lacks a fed field —
@@ -52,6 +56,13 @@ internal class SchemaFallbacks {
          * and write predicates cannot share one string.
          */
         const val NOT_IN_DOCUMENT_TYPE = "is not defined in document type"
+
+        /**
+         * How long a refused `select` stays parked ([selectAvailable]): five minutes, as long as
+         * VespaBatchFeed parks its batch path, so an engine without `select` costs one extra
+         * request per interval and an upgraded one has it back within one.
+         */
+        const val SELECT_RETRY_AFTER_MS = 300_000L
 
         /**
          * The YQL parser's wording for a column the serving schema lacks —
@@ -103,16 +114,26 @@ internal class SchemaFallbacks {
     }
 
     /**
-     * Whether the engine takes Vespa's JSON `select` query (VespaEventIndex.queryBodyAsIs). It
-     * flips for good the first time a `select` is refused with a 400 and the same query then
-     * answers as YQL: an engine predating `select.fields` (Vespa 8.680.18), or one that does not
-     * take a form the store writes. Reads go as YQL from then on, as they did before `select`.
+     * Whether the engine takes Vespa's JSON `select` query (VespaEventIndex.queryBodyAsIs). A
+     * `select` refused with a 400 whose YQL twin then answers PARKS it for [SELECT_RETRY_AFTER_MS]:
+     * reads go as YQL, as they did before `select`, and the first read after the park tries it
+     * again. Parked, not off for good: the refusal may be one container of a rolling upgrade that
+     * still predates `select.fields` (Vespa 8.680.18), and a client that gave up then would pay
+     * YQL's parse cost until it restarted.
      */
-    @Volatile var selectAvailable = true
-        private set
+    val selectAvailable: Boolean get() = selectParkedUntil.get()?.let { clock() - it >= 0 } ?: true
 
-    fun markSelectRefused() {
-        selectAvailable = false
+    /** When `select` may be tried again, on [clock]; null until a refusal parks it. */
+    private val selectParkedUntil = AtomicReference<Long?>(null)
+
+    /**
+     * Parks `select` ([selectAvailable]). True for the one call that parked it, so a refusal met by
+     * many reads in flight at once is booked once per park, not once per read.
+     */
+    fun markSelectRefused(): Boolean {
+        val current = selectParkedUntil.get()
+        if (current != null && clock() - current < 0) return false
+        return selectParkedUntil.compareAndSet(current, clock() + SELECT_RETRY_AFTER_MS)
     }
 
     fun isMissingEventSummary(e: IllegalArgumentException): Boolean = e.message?.contains("400") == true && e.message?.contains(EventYql.SUMMARY_EVENT) == true

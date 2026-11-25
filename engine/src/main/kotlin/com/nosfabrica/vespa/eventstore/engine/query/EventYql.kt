@@ -25,10 +25,6 @@ import com.nosfabrica.vespa.eventstore.engine.tuning.ProcessKnobs
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.tags.isIndexableTagName
 import com.vitorpamplona.quartz.utils.Hex
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * Builds YQL over the `event` schema from an [EventQuery]. Returns null when
@@ -376,7 +372,7 @@ object EventYql {
         return vq.copy(
             yql = "select * from " + vq.yql.substring(SELECT_EVENT.length),
             params = vq.params + ("presentation.summary" to SUMMARY_EVENT),
-            select = vq.select?.copy(fields = null),
+            select = vq.select?.withFields(null),
         )
     }
 
@@ -397,7 +393,7 @@ object EventYql {
         vq.copy(
             yql = vq.yql.replaceFirst("select $SUMMARY_FIELDS from ", "select id, created_at from "),
             params = vq.params + ("presentation.summary" to SUMMARY_IDTIME),
-            select = vq.select?.copy(fields = ID_TIME_FIELDS),
+            select = vq.select?.withFields(ID_TIME_FIELDS),
         )
 
     // Attribute-only projections for snapshot walks — see buildIdTime.
@@ -730,7 +726,7 @@ object EventYql {
             sampled = q.sampled,
             acceptsPartial = q.acceptsPartial,
             shape = clauseShape(q),
-            select = selectWhere(q)?.let { SelectForm(it, SUMMARY_FIELD_LIST, newestFirst, q.limit) },
+            select = if (selectable(q)) SelectForm(q, SUMMARY_FIELD_LIST, newestFirst, q.limit) else null,
         )
     }
 
@@ -1211,62 +1207,146 @@ object EventYql {
     }
 
     /**
+     * Whether [q] has a `select` form ([SelectForm]): a text-free read with no weighted key set and
+     * no id prefix. Cheap, so [build] decides with it and leaves [selectWhere]'s rendering until a
+     * read is really sent that way. For a query [build] writes, [selectWhere] then renders.
+     */
+    internal fun selectable(q: EventQuery): Boolean = isTextFree(q) && q.idWeights.isEmpty() && q.authorWeights.isEmpty() && q.idPrefix == null
+
+    /**
      * [q]'s WHERE as the JSON text of a Vespa `select` where-node ([SelectForm]), or null when it
-     * has no such form here: a read with free text (search, phrases, exclusions), a weighted key
-     * set or an id prefix stays YQL-only, and so does one [filterClauses] proves matches nothing.
+     * has no such form here: a read that is not [selectable], or one [filterClauses] proves matches
+     * nothing.
      *
      * MIRRORS [filterClauses]' text-free branches clause for clause, with the same value rules
      * ([hexIn]'s lowercase-validate-dedupe, [tagClause]'s unquotable-value rule), so the two forms
      * match the same documents: `EventYqlTest` renders this back to YQL and compares it with
      * [build]'s, and `SelectQueryIT` reads every shape both ways against a real Vespa. A clause
      * added there wants its form here, or reads with it silently stay YQL (never a wrong answer).
+     *
+     * Written straight into one buffer sized up front, as [hexIn] writes its clause: an author
+     * recall's node runs to tens of kilobytes, and a tree of JSON elements per key cost an object
+     * per key and a second copy of the text.
      */
     internal fun selectWhere(q: EventQuery): String? {
-        if (!isTextFree(q) || q.idWeights.isNotEmpty() || q.authorWeights.isNotEmpty() || q.idPrefix != null) return null
-        val clauses = ArrayList<JsonElement>()
+        if (!selectable(q)) return null
+        // One clause per constraint present (each either writes one or makes the query null), so the
+        // `and` wrapper is known before the first is written.
+        var clauses = q.tags.size + q.tagsAll.size
+        if (q.ids.isNotEmpty()) clauses++
+        if (q.kinds.isNotEmpty()) clauses++
+        if (q.authors.isNotEmpty()) clauses++
+        if (q.owners.isNotEmpty()) clauses++
+        if (q.since != null) clauses++
+        if (q.until != null) clauses++
+        if (q.expiresBefore != null) clauses++
+        if (q.notExpiredAt != null) clauses++
+        if (clauses == 0) return "true"
+        val out = StringBuilder(64 + 68 * (q.ids.size + q.authors.size + q.owners.size) + 8 * q.kinds.size + 32 * (q.tags.size + q.tagsAll.size))
+        var written = 0
 
-        fun hexes(values: List<String>): JsonArray? {
-            val set = LinkedHashSet<String>(values.size * 2)
-            values.forEach { v -> v.lowercase().let { if (Hex.isHexKey(it)) set += it } }
-            return if (set.isEmpty()) null else JsonArray(set.map(::JsonPrimitive))
+        fun next(): StringBuilder = if (written++ > 0) out.append(',') else out
+
+        if (clauses > 1) out.append("{\"and\":[")
+        if (q.ids.isNotEmpty() && !appendHexIn(next(), "id", q.ids)) return null
+        if (q.kinds.isNotEmpty()) {
+            next().append("{\"in\":[\"kind\"")
+            q.kinds.forEach { out.append(',').append(it) }
+            out.append("]}")
         }
-
-        fun inClause(
-            field: String,
-            values: JsonArray,
-        ) = JsonObject(mapOf("in" to JsonArray(listOf(JsonPrimitive(field)) + values)))
-
-        fun contains(term: String) = JsonObject(mapOf("contains" to JsonArray(listOf(JsonPrimitive("tag_index"), JsonPrimitive(term)))))
-
-        fun range(
-            field: String,
-            op: String,
-            value: Long,
-        ) = JsonObject(mapOf("range" to JsonArray(listOf(JsonPrimitive(field), JsonObject(mapOf(op to JsonPrimitive(value)))))))
-
-        if (q.ids.isNotEmpty()) clauses += inClause("id", hexes(q.ids) ?: return null)
-        if (q.kinds.isNotEmpty()) clauses += inClause("kind", JsonArray(q.kinds.map(::JsonPrimitive)))
-        if (q.authors.isNotEmpty()) clauses += inClause("pubkey", hexes(q.authors) ?: return null)
-        if (q.owners.isNotEmpty()) clauses += inClause("owner", hexes(q.owners) ?: return null)
+        if (q.authors.isNotEmpty() && !appendHexIn(next(), "pubkey", q.authors)) return null
+        if (q.owners.isNotEmpty() && !appendHexIn(next(), "owner", q.owners)) return null
         for ((name, values) in q.tags) {
             if (!isIndexableTagName(name) || values.isEmpty()) return null
             val usable = values.filter(::isQuotable)
             if (usable.isEmpty()) return null
-            clauses += if (usable.size > 1) inClause("tag_index", JsonArray(usable.map { JsonPrimitive("$name:$it") })) else contains("$name:${usable[0]}")
+            if (usable.size > 1) {
+                next().append("{\"in\":[\"tag_index\"")
+                usable.forEach { appendTagTerm(out.append(','), name, it) }
+                out.append("]}")
+            } else {
+                appendContains(next(), name, usable[0])
+            }
         }
         for ((name, values) in q.tagsAll) {
             if (!isIndexableTagName(name) || values.isEmpty() || !values.all(::isQuotable)) return null
-            clauses += if (values.size == 1) contains("$name:${values[0]}") else JsonObject(mapOf("and" to JsonArray(values.map { contains("$name:$it") })))
+            if (values.size == 1) {
+                appendContains(next(), name, values[0])
+            } else {
+                next().append("{\"and\":[")
+                values.forEachIndexed { i, v -> appendContains(if (i > 0) out.append(',') else out, name, v) }
+                out.append("]}")
+            }
         }
-        q.since?.let { clauses += range("created_at", ">=", it) }
-        q.until?.let { clauses += range("created_at", "<=", it) }
-        q.expiresBefore?.let { clauses += range("expires_at", "<", it) }
-        q.notExpiredAt?.let { clauses += range("expires_at", ">", it) }
-        return when (clauses.size) {
-            0 -> "true"
-            1 -> clauses[0].toString()
-            else -> JsonObject(mapOf("and" to JsonArray(clauses))).toString()
+        q.since?.let { appendRange(next(), "created_at", ">=", it) }
+        q.until?.let { appendRange(next(), "created_at", "<=", it) }
+        q.expiresBefore?.let { appendRange(next(), "expires_at", "<", it) }
+        q.notExpiredAt?.let { appendRange(next(), "expires_at", ">", it) }
+        if (clauses > 1) out.append("]}")
+        return out.toString()
+    }
+
+    /** `{"in":["<field>","<hex>",…]}` over [values] as [hexIn] keeps them; false when none is valid hex (no match). */
+    private fun appendHexIn(
+        out: StringBuilder,
+        field: String,
+        values: List<String>,
+    ): Boolean {
+        val hexes = LinkedHashSet<String>(values.size * 2)
+        values.forEach { v -> v.lowercase().let { if (Hex.isHexKey(it)) hexes += it } }
+        if (hexes.isEmpty()) return false
+        out.append("{\"in\":[\"").append(field).append('"')
+        hexes.forEach { out.append(",\"").append(it).append('"') }
+        out.append("]}")
+        return true
+    }
+
+    private fun appendContains(
+        out: StringBuilder,
+        name: String,
+        value: String,
+    ) {
+        appendTagTerm(out.append("{\"contains\":[\"tag_index\","), name, value).append("]}")
+    }
+
+    private fun appendRange(
+        out: StringBuilder,
+        field: String,
+        op: String,
+        value: Long,
+    ) {
+        out
+            .append("{\"range\":[\"")
+            .append(field)
+            .append("\",{\"")
+            .append(op)
+            .append("\":")
+            .append(value)
+            .append("}]}")
+    }
+
+    /**
+     * `"<name>:<value>"` as a JSON string. [isQuotable] already holds every value here to tab, LF, CR
+     * and the characters from space up, so those three, the quote and the backslash are all that
+     * need escaping.
+     */
+    private fun appendTagTerm(
+        out: StringBuilder,
+        name: String,
+        value: String,
+    ): StringBuilder {
+        out.append('"').append(name).append(':')
+        for (c in value) {
+            when (c) {
+                '"' -> out.append("\\\"")
+                '\\' -> out.append("\\\\")
+                '\t' -> out.append("\\t")
+                '\n' -> out.append("\\n")
+                '\r' -> out.append("\\r")
+                else -> out.append(c)
+            }
         }
+        return out.append('"')
     }
 
     /**

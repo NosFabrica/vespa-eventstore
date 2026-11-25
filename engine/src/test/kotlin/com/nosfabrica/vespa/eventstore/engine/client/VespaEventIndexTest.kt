@@ -886,18 +886,26 @@ class VespaEventIndexTest {
                 assertFailsWith<EngineRefusesWrites> { index.putAll(docs) }
                 assertEquals(before, mock.documentPutAttempts.get(), "nothing re-put through the feed client")
                 assertTrue(System.nanoTime() - started < 5_000_000_000L, "answered at once, not after the feed client's retries")
-                assertTrue(runCatching { index.putAll(listOf(doc(kind = 1, at = 2_000L))) }.isFailure, "a lone document still fails")
+                // A lone document takes the batch path too, so it is answered as fast and in the same words.
+                val lone = System.nanoTime()
+                assertFailsWith<EngineRefusesWrites> { index.putAll(listOf(doc(kind = 1, at = 2_000L))) }
+                assertEquals(before, mock.documentPutAttempts.get(), "a lone document is not re-put through the feed client either")
+                assertTrue(System.nanoTime() - lone < 5_000_000_000L, "a lone document answered at once")
+                // A write only the feed client makes still waits out its retries, but its failure names the engine.
+                val refused = assertFailsWith<EngineRefusesWrites> { index.put(doc(kind = 1, at = 3_000L)) }
+                assertTrue(refused.cause?.message?.contains("External feed is blocked") == true, refused.cause?.message)
             }
         }
 
     /**
      * AN ENGINE THAT REFUSES `select` COSTS ONE REQUEST. A text-free read goes as Vespa's JSON
      * `select` first; refused with a 400 (this mock, like an engine predating `select.fields`),
-     * the same query is asked as YQL at once, served, and every later read goes as YQL. With
+     * the same query is asked as YQL at once, served, and every later read goes as YQL while
+     * `select` is parked (SchemaFallbacksTest holds the park's end). With
      * `VESPA_SELECT_QUERIES` off nothing tries `select` at all.
      */
     @Test
-    fun `a refused select query falls back to yql once and for good`() =
+    fun `a refused select query falls back to yql and parks select`() =
         runBlocking {
             val now = System.currentTimeMillis() / 1000
             seedStrategyCorpus(now)
@@ -1866,9 +1874,9 @@ class VespaEventIndexTest {
                 batched.putAll(docs)
                 assertEquals(3, mock.batchRequests, "250 documents are three requests")
                 for (d in docs) assertEquals(d.id, batched.get(d.id)?.id)
-                // A lone document gains nothing from a batch: it takes the feed client.
+                // A lone document is batched too: the handler answers a feed block at once, the feed client after its retries.
                 batched.putAll(listOf(doc()))
-                assertEquals(3, mock.batchRequests)
+                assertEquals(4, mock.batchRequests)
             } finally {
                 batched.close()
             }
