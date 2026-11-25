@@ -117,11 +117,18 @@ internal class GuardOwners(
 
     /**
      * How many kind 5 and kind 62 writes (and the erasures they stand for) this process has made
-     * to this index so far, counted when each one ENDS, landed or failed. A guard read taken after
-     * reading this number is still exact under the writer lock as long as the number has not
-     * moved: whatever this process wrote since would have moved it, and a foreign writer's guard
-     * could race a locked read just the same. [BulkRecordInsert] reads its guards that way, beside
-     * its dedup, and reads them again under the lock only when the number moved.
+     * to this index so far, counted when each one ENDS, landed or failed, plus every publish of
+     * rebuilt filters ([refresh], and the first load). A guard read taken after reading this number
+     * is still exact under the writer lock as long as the number has not moved: whatever this
+     * process wrote since would have moved it, and a foreign writer's guard could race a locked
+     * read just the same. [BulkRecordInsert] reads its guards that way, beside its dedup, and reads
+     * them again under the lock only when the number moved.
+     *
+     * WHY A REBUILD COUNTS. Under [WriterTopology.SHARED] the rebuild is how a foreign guard
+     * reaches this store: an owner unflagged when the early read ran was skipped by it (nothing
+     * queried), and a rebuild that flags them before the commit means the locked read would query
+     * them. Without the count the commit kept the empty early read and stored an event the
+     * foreign tombstone covers, inside the very rebuild that was meant to honour it.
      */
     fun guardWrites(): Long = writes.get()
 
@@ -240,6 +247,8 @@ internal class GuardOwners(
                 buffered.vanishers.forEach(fresh.vanishers::add)
                 blooms = fresh
                 noting = null
+                // New filters can flag an owner an early guard read skipped: see [guardWrites].
+                writes.incrementAndGet()
             }
         }
     }
@@ -270,6 +279,9 @@ internal class GuardOwners(
                 buffered.vanishers.forEach(b.vanishers::add)
                 blooms = b
                 noting = null
+                // Every publish counts, the first one too (as in [refresh]), so no early read can
+                // straddle a filter change; it costs one batch a locked re-read, once per process.
+                writes.incrementAndGet()
             }
             startRefresher()
             return b

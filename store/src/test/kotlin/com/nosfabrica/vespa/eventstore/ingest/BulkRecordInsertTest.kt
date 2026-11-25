@@ -30,6 +30,7 @@ import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.ingest.Rejections
 import com.nosfabrica.vespa.eventstore.mapping.toDoc
+import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.normalizeRelayUrl
@@ -333,6 +334,33 @@ class BulkRecordInsertTest {
                 "got $outcome",
             )
             assertEquals(null, index.get(target.id))
+        }
+
+    /**
+     * Under [WriterTopology.SHARED] a rebuild of the guard filters is how a FOREIGN writer's
+     * tombstone reaches this store. One that lands between a narrow batch's plan and its commit
+     * changes what the early guard read should have queried (the owner was unflagged when it was
+     * read, so nothing was), so the commit must read again: the rebuild counts as a guard write.
+     */
+    @Test
+    fun `a guard rebuild between plan and commit voids the early guard read`() =
+        runBlocking {
+            val index = InMemoryEventIndex()
+            val guards = GuardOwners(index, WriterTopology.SHARED, refreshMillis = 0, override = null)
+            val bulk = BulkRecordInsert(index, relayUrl, guards, nowSecs = { System.currentTimeMillis() / 1000 })
+            bulk.commit(bulk.plan(padding(2))) // loads the filters: nobody flagged
+
+            val target = note(at = 1_000_000_000)
+            val batch = padding(20) + target
+            val plan = bulk.plan(batch)
+            // Another process stores a tombstone covering the target; this store's rebuild picks it up.
+            index.put(deletion(target.id, at = 1_000_000_500).toDoc())
+            guards.refresh()
+
+            val outcome = bulk.commit(plan)[batch.indexOf(target)]
+            guards.close()
+            assertEquals(IEventStore.InsertOutcome.Rejected(Rejections.DELETED), outcome)
+            assertEquals(null, index.get(target.id), "the rebuild flagged the owner, so the covered event must not be stored")
         }
 
     /**
