@@ -8,7 +8,27 @@ mavenPublish = "0.37.0"
 # FROM MAGPIE, so the published POM names com.vitorpamplona.quartz:quartz-jvm:<pin> and a consumer of
 # this store needs Magpie serving quartz's groups (settings.gradle.kts); it needs no JitPack.
 #
-# 2.25.2 = vitorpamplona/quartz's release 2.25.2 (the v2.25.2 tag ddc66ff18, quartz main's head), 66
+# 2.27.0 = vitorpamplona/quartz's release 2.27.0 (the v2.27.0 tag 762cf50d8), 7 commits over 2.25.2 (below)
+# plus 5 merges, which it descends from; 2.26.0 between them was never pinned. Nothing this store calls
+# changes contract:
+#  - SEARCH. No SearchableEvent or nip50Search diff. No reindex.
+#  - STORE CONTRACT. StoreConformance gains "count union with the empty filter" (STORE-F07 + F10:
+#    `[{kinds:[1],since}, {}]` counts everything); this store already answered it so (the random-filter
+#    diff against quartz's SQLite store found the bug there, quartz#155). IEventStore's
+#    liveNegentropySnapshot KDoc: LiveEventStore takes it only for an unauthenticated NEG-OPEN, and a
+#    store gating even those returns null; this store does not override it (null), so every NEG-OPEN
+#    keeps the gated scan path.
+#  - RELAY SERVER (vespa-relay constructs it). LiveEventStore keeps up to 8 NEG-OPEN snapshots (2M ids
+#    together, 30 s TTL), shares one walk between concurrent opens of a key, and, for a store other than
+#    quartz's own, drops every snapshot on each accepted write unless the app passes writeIsFilterLocal
+#    (quartz#154).
+#  - QUARTZ'S SQLITE STORE (the parity reference): a union holding `{}` matches everything in query,
+#    count and the negentropy snapshot; delete still reads it as nothing (quartz#155).
+#  - Also in the range, nothing this store calls: EsploraClient on every platform behind an HTTP
+#    transport (nipBC, quartz#158).
+#  - The distributed skill (.claude/skills/quartz) has no diff in the range.
+#
+# Prev 2.25.2 = vitorpamplona/quartz's release 2.25.2 (the v2.25.2 tag ddc66ff18, quartz main's head), 66
 # commits over 4456c57f06 (below) plus 13 merges, which it descends from; 2.25.0 (v2.25.0 = 2e60d4eb9)
 # and 2.25.1 (untagged) between them were never pinned. Back from JitPack to a release. Nothing this
 # store calls changes contract:
@@ -454,7 +474,7 @@ mavenPublish = "0.37.0"
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "2.25.2"
+quartz = "2.27.0"
 coroutines = "1.11.0"
 serialization = "1.12.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.

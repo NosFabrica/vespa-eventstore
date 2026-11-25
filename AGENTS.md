@@ -33,7 +33,7 @@ Three repos, one direction of dependency: quartz ← vespa-eventstore ← its co
   (`TrustChain`, `SchemaDeployException.serving`, a raw grouping root), never the decision.
 - **Skills that describe quartz come from quartz.** `.claude/skills/quartz/` is quartz's
   distributed skill, installed unmodified from `quartz/agent-skill/quartz/` at the commit this
-  store pins (now v2.25.2; `SKILL.md` plus `references/nip85-trusted-assertions.md` and
+  store pins (now v2.27.0; `SKILL.md` plus `references/nip85-trusted-assertions.md` and
   `references/search-and-stores.md`); it replaced the copies of `nostr-expert`,
   `event-store-semantics`, `searchable-events`, `nip85-trusted-assertions` and
   `quartz-integration` this repo used to carry. Refresh it at every quartz bump, from a
