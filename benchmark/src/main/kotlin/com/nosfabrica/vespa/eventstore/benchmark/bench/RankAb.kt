@@ -279,11 +279,119 @@ object RankAb {
             // surfaces once it can compete at all.
             "hybrid_4000" to mapOf("_nn" to 100.0, "w_sem_tier" to 4000.0),
             "hybrid_23000" to mapOf("_nn" to 100.0, "w_sem_tier" to 23000.0),
+            // ---- THE INTENT-AWARE LADDER (docs/embedding-experiment.md §8) ----
+            // `_intent` sets query(topical) per topic: 1 = ORACLE (the case
+            // file's own `intent` label: 1 for "topical", else 0), the ceiling
+            // any classifier can reach; 2 = the ENTITY PROBE ([entityProbe]), a
+            // classifier the store could run. The topical knobs act only where
+            // topical > 0, so navigational, prefix and fuzzy topics are scored
+            // by the shipped ladder in every one of these.
+            //
+            // The ladder alone: names capped at the body rung, naming-field
+            // precision boosts off. No embedding.
+            "intent_cap_550" to mapOf("_intent" to 1.0, "topical_cap" to 550.0),
+            "intent_cap_4000" to mapOf("_intent" to 1.0, "topical_cap" to 4000.0),
+            // The ladder plus dense recall, the semantic rung and aboutness.
+            "intent_hybrid" to
+                mapOf("_intent" to 1.0, "topical_cap" to 550.0, "_nn_topical" to 100.0, "w_sem_tier_topical" to 550.0, "w_sem_mult_topical" to 1.0),
+            "intent_hybrid_mult_3" to
+                mapOf("_intent" to 1.0, "topical_cap" to 550.0, "_nn_topical" to 100.0, "w_sem_tier_topical" to 550.0, "w_sem_mult_topical" to 3.0),
+            "intent_hybrid_cap_4000" to
+                mapOf("_intent" to 1.0, "topical_cap" to 4000.0, "_nn_topical" to 100.0, "w_sem_tier_topical" to 4000.0, "w_sem_mult_topical" to 1.0),
+            // The ladder plus aboutness, no new recall: what re-ranking alone buys.
+            "intent_mult_1" to mapOf("_intent" to 1.0, "topical_cap" to 550.0, "w_sem_mult_topical" to 1.0),
+            // §8.2: names NOT capped; only the perfect-match rung dropped for a
+            // topical query. The first cut (above) flattened articles TITLED the
+            // topic along with entities NAMED it; perfect_match separates the two.
+            "intent_perfect_off" to mapOf("_intent" to 1.0, "topical_cap" to 1e12, "topical_drop_precision" to 0.0),
+            "intent_perfect_off_mult" to
+                mapOf("_intent" to 1.0, "topical_cap" to 1e12, "topical_drop_precision" to 0.0, "w_sem_mult_topical" to 1.0),
+            "intent_perfect_off_hybrid" to
+                mapOf(
+                    "_intent" to 1.0,
+                    "topical_cap" to 1e12,
+                    "topical_drop_precision" to 0.0,
+                    "_nn_topical" to 100.0,
+                    "w_sem_tier_topical" to 550.0,
+                    "w_sem_mult_topical" to 1.0,
+                ),
+            "probe_perfect_off" to mapOf("_intent" to 2.0, "topical_cap" to 1e12, "topical_drop_precision" to 0.0),
+            "probe_perfect_off_hybrid" to
+                mapOf(
+                    "_intent" to 2.0,
+                    "topical_cap" to 1e12,
+                    "topical_drop_precision" to 0.0,
+                    "_nn_topical" to 100.0,
+                    "w_sem_tier_topical" to 550.0,
+                    "w_sem_mult_topical" to 1.0,
+                ),
+            // The same, decided by the probe instead of the label.
+            "probe_cap_550" to mapOf("_intent" to 2.0, "topical_cap" to 550.0),
+            "probe_hybrid" to
+                mapOf("_intent" to 2.0, "topical_cap" to 550.0, "_nn_topical" to 100.0, "w_sem_tier_topical" to 550.0, "w_sem_mult_topical" to 1.0),
         )
 
     private fun configOf(name: String): Map<String, Double> = CONFIGS[name] ?: SEMANTIC_CONFIGS.getValue(name)
 
-    private fun isSemantic(overrides: Map<String, Double>) = overrides.keys.any { it.startsWith("w_sem") || it == "_nn" }
+    private fun isSemantic(overrides: Map<String, Double>) = overrides.keys.any { it.startsWith("w_sem") || it.startsWith("_nn") }
+
+    /** [overrides] with query(topical) set for [topic] when the config asks for intent (`_intent`). */
+    private fun withIntent(
+        base: String,
+        overrides: Map<String, Double>,
+        topic: Topic,
+        profile: String,
+        nowSecs: Long?,
+    ): Map<String, Double> {
+        val topical =
+            when (overrides["_intent"]?.toInt()) {
+                null -> return overrides
+                1 -> if (topic.intent == "topical") 1.0 else 0.0
+                else -> probeCache.getOrPut(topic.key) { entityProbe(base, topic, profile, nowSecs) }
+            }
+        return overrides + ("topical" to topical)
+    }
+
+    private val probeCache = LinkedHashMap<String, Double>()
+
+    /**
+     * THE ENTITY PROBE: a query is NAVIGATIONAL (0.0) when someone the reader
+     * trusts IS named it — a profile (kind 0) or an app (kind 31990) whose
+     * naming field is the whole query (perfect_match), by an author at or over
+     * [PROBE_TRUST] under the lens — and TOPICAL (1.0) otherwise. A page
+     * restricted to profiles is navigational by construction. One extra
+     * kind-restricted query, which the store could send before the search.
+     * It never reads the case file's label: [probeReport] compares the two.
+     */
+    private fun entityProbe(
+        base: String,
+        topic: Topic,
+        profile: String,
+        nowSecs: Long?,
+    ): Double {
+        if (topic.kinds.isNotEmpty() && topic.kinds.all { it == 0 }) return 0.0
+        val named =
+            search(base, topic.query, profile, topic.observer, 20, emptyMap(), nowSecs, listOf(0, 31990))
+                .filter { it.perfect >= 0.999 && it.trust >= PROBE_TRUST }
+        return if (named.isEmpty()) 1.0 else 0.0
+    }
+
+    /** The trust an entity's author needs for its name to make a query navigational. */
+    private const val PROBE_TRUST = 30.0
+
+    /** How the probe's verdicts agree with the case file's labels: printed whenever a probe ran. */
+    private fun probeReport(topics: List<Topic>) {
+        if (probeCache.isEmpty()) return
+        println("\n=== entity probe vs the case file's intent (1 = topical) ===")
+        var agree = 0
+        for (t in topics) {
+            val probe = probeCache[t.key] ?: continue
+            val label = if (t.intent == "topical") 1.0 else 0.0
+            if (probe == label) agree++
+            println("  ${if (probe == label) "  " else "XX"} probe ${probe.toInt()}  label ${label.toInt()} (${t.intent})  ${t.key}")
+        }
+        println("  agreement $agree/${probeCache.size}")
+    }
 
     @JvmStatic
     fun main(args: Array<String>) {
@@ -434,7 +542,7 @@ object RankAb {
                     }
                     topics.map { run[it.key].orEmpty().take(hits) }
                 } else {
-                    topics.map { search(vespa, it.query, profile, it.observer, hits, configOf(config), nowSecs, it.kinds) }
+                    topics.map { search(vespa, it.query, profile, it.observer, hits, withIntent(vespa, configOf(config), it, profile, nowSecs), nowSecs, it.kinds) }
                 }
         }
         opts["--write-runs"]?.let { dir -> writeRuns(Path.of(dir), topics, pages) }
@@ -492,6 +600,7 @@ object RankAb {
         println("age = median created_at age of the top-$AGE_DEPTH hits: what a recency config buys, and what it must not")
         println("pay for in positions — a config that trades a pinned case for fresher results has lost.")
         if (names.size > 1) compareToBaseline(names, topics, quality)
+        probeReport(topics)
 
         // ---- --pool: what the assessors have to judge next ----------------
         // The union of every config's top `--pool-depth` that no judgment
@@ -977,6 +1086,8 @@ object RankAb {
         val scattered: Double = 0.0,
         val coverage: Double = 0.0,
         val perfect: Double = 0.0,
+        // The author's trust under the lens (match feature user_score), for the entity probe.
+        val trust: Double = 0.0,
         // For the quality columns: the author-share guardrail and the --pool worksheet.
         val pubkey: String = "",
         val content: String = "",
@@ -1073,7 +1184,9 @@ object RankAb {
         // scores a dense-only hit on the semantic rung alone. One profile, one
         // request shape, so the two pages' relevances are the same scale and
         // merge by score; a document on both keeps its higher one.
-        val targetHits = overrides["_nn"]?.toInt()?.takeIf { it > 0 && semantic } ?: return lexical
+        // `_nn_topical`: dense recall for a topical query only (query(topical) > 0).
+        val nn = overrides["_nn"] ?: overrides["_nn_topical"]?.takeIf { (overrides["topical"] ?: 0.0) > 0.0 }
+        val targetHits = nn?.toInt()?.takeIf { it > 0 && semantic } ?: return lexical
         val filters = EventYql.build(eq.copy(search = null, phrases = emptyList())) ?: return lexical
         val dense =
             fetch(
@@ -1141,6 +1254,7 @@ object RankAb {
                     scattered = feature("scattered_match"),
                     coverage = feature("naming_coverage"),
                     perfect = feature("perfect_match"),
+                    trust = feature("user_score"),
                     pubkey = str("pubkey").orEmpty(),
                     content = str("content").orEmpty(),
                     tags = str("tags") ?: "[]",

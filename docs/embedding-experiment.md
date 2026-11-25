@@ -1,6 +1,6 @@
 # The embedding experiment: does dense retrieval improve search?
 
-Status: **harness built, first run done, pool unjudged (414 rows).** Nothing here ships. The experiment
+Status: **two rounds run (§7, §8). The win so far is an intent-aware ladder with no embedding in it. Pools unjudged.** Nothing here ships. The experiment
 package is built from a COPY of `engine/app`, and the shipped schema is unchanged.
 
 ## 1. The question
@@ -198,3 +198,85 @@ separate it.
    a minimum text length for the semantic rung, or a larger model.
 3. Grow the multilingual stratum. Three topics cannot carry a verdict, and they are the ones
    that moved most.
+
+## 8. The intent-aware ladder (2026-11-25)
+
+§7.1 found that the ladder, not recall, decides topical pages. This round makes the ladder
+depend on query intent: `query(topical)`, 0..1, set per query. Every topical knob scales with it
+and is inert at 0, so a query read as navigational is ranked exactly as shipped. The knobs are
+in `build_app.py`'s docstring, and the configs are in `RankAb.SEMANTIC_CONFIGS` (`intent_*`,
+`probe_*`).
+
+Two ways to set `topical`:
+
+- **Oracle** (`_intent` 1): the case file's own label, 1 for `topical`. This is the ceiling: no
+  classifier does better.
+- **Entity probe** (`_intent` 2, `RankAb.entityProbe`): one extra query for kinds 0 and 31990
+  under the lens. The query is navigational when a profile or app whose naming field IS the
+  query (`perfect_match`) belongs to an author at trust ≥ 30. It agrees with the labels on
+  **32 of 54** topics. Its costly misses are topics that a trusted account is also named
+  after: `bitcoin`, `nostr`, `crypto`, `art` and `proof of work` read as navigational. Its
+  other misses (prefix, fuzzy, multilingual read as topical) cost little here, because the
+  knobs that survived (§8.2) touch only the perfect-match rung, which those queries rarely
+  reach.
+
+### 8.1 First cut: cap the name rungs. Worse.
+
+`intent_cap_550` / `_4000` cap the first-phase text score for a topical query and drop all
+three naming-field precision boosts. On judged documents, topical goes to −0.265 (cap 550) and
+−0.011 (cap 4000). Only **15–47%** of a topical top 10 is judged, against 98% for the baseline,
+so the number is mostly unjudged documents. The pages are not ambiguous, though. The name rung
+holds two different things:
+
+- entities NAMED the word, like an app or a calendar event called exactly "Coffee";
+- articles TITLED with the topic, like "On Freedom of Speech" (grade 3).
+
+The cap flattened both. Passing mentions took their place: "noooooo not the coffeeeeeee", a
+`nostr:nprofile…` URI, five copies of one quote. The embedding (`intent_hybrid`, ×1 aboutness)
+recovered only part of it (topical −0.115), because e5 scores short notes high.
+
+### 8.2 Second cut: drop only the perfect-match rung, for topical queries only
+
+`perfect_match` is what separates the two: it fires when the naming field IS the query, which
+an entity named "Coffee" has and an article titled "On Freedom of Speech" does not. §9 of
+`search-evaluation.md` measured dropping that rung for every query (`perfect_off`: topical
++0.126, navigational −0.053). Gating it by intent keeps the topical half and avoids the
+navigational loss.
+
+| config (vs production; 53 graded topics) | Δ nDCG@10 | 95% CI | W/T/L | topical (24) | navigational (14) | prefix (6) | topical judged@10 | mean grade of judged top-10 docs |
+|---|---:|---|---:|---:|---:|---:|---:|---:|
+| `baseline` | −0.006 | [−0.015, +0.002] | 4/39/10 | +0.002 | −0.010 | −0.006 | 0.98 | 1.80 |
+| **`intent_perfect_off`** (oracle, no embedding) | **+0.023** | [−0.003, +0.052] | 16/25/12 | **+0.068** | −0.010 | −0.006 | 0.76 | **1.90** |
+| `intent_perfect_off_mult` (+ aboutness ×1) | −0.018 | [−0.032, −0.004] | 9/25/19 | −0.023 | −0.010 | −0.006 | 0.84 | 1.74 |
+| `intent_perfect_off_hybrid` (+ dense recall + semantic rung) | −0.018 | same as `_mult` | 9/25/19 | −0.023 | −0.010 | −0.006 | 0.84 | 1.74 |
+| `probe_perfect_off` (the probe, no embedding) | +0.010 | [−0.011, +0.033] | 13/28/12 | +0.030 | −0.010 | −0.016 | — | — |
+| `probe_perfect_off_hybrid` | −0.016 | [−0.032, −0.001] | 11/23/19 | −0.012 | −0.009 | −0.050 | 0.89 | 1.76 |
+
+What it says:
+
+1. **The gain is the intent-aware ladder, and it needs no embedding.** `intent_perfect_off`
+   lifts topical +0.068 and leaves every other stratum exactly where `baseline` has it. Its
+   judged documents grade higher than the baseline's (1.90 against 1.80), so the unjudged
+   quarter of its top 10 is not hiding the gain.
+2. **On top of it, the embedding subtracts.** The aboutness multiplier reorders 22 topics,
+   costs topical about 0.09 against `intent_perfect_off`, and lowers the judged grade
+   (1.74). Dense recall adds **nothing**: with names no longer capped, a dense-only hit on the
+   body rung never reaches a top 10 (`_hybrid`'s pages equal `_mult`'s on every topic). The
+   short-text bias seen in §7.1 is the likely mechanism: e5-small puts a one-line mention
+   close to the query.
+3. **The probe keeps under half of the oracle's gain** (topical +0.030 against +0.068),
+   because it reads `bitcoin` and `nostr` as navigational. A better classifier is worth up
+   to the difference.
+
+### 8.3 What is owed
+
+- **Grades.** `intent_perfect_off` is the candidate. Its unjudged rows are in the round's
+  pool (597 rows over 8 configs). Grading only the `intent_perfect_off` and
+  `probe_perfect_off` rows is enough to read it. Model grades are fine here: that config has
+  no model in its ranking, so §5.3's human-only rule applies to the embedding configs alone.
+- **A classifier.** The probe's misses are trusted accounts named after a topic. Candidates:
+  require that entity to also be the page's dominant answer, or compare body frequency against
+  name frequency on production statistics (`name_df.json` has only the name half).
+- **The embedding, if revisited:** a larger model, a minimum text length or a substance prior
+  before the aboutness signal, and grading the §7 pool. As built, it does not earn its RAM
+  (§6).
