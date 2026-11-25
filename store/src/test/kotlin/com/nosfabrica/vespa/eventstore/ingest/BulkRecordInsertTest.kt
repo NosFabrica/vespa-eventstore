@@ -145,6 +145,24 @@ class BulkRecordInsertTest {
         )
     }
 
+    /**
+     * A second copy of an id in one batch takes the FIRST copy's verdict, as the per-event path
+     * gives it: a copy of a blocked or `replaced:` event is not stored either, so answering it
+     * `duplicate:` (OK true) told the client an event was stored that never was. A copy of an
+     * accepted event is the duplicate it always was.
+     */
+    @Test
+    fun `an in-batch copy takes the first copy's verdict`() {
+        val covered = note()
+        val newer = Event(id(), alice, next(), 0, emptyArray(), "{\"v\":2}", "")
+        val older = Event(id(), alice, newer.createdAt - 100, 0, emptyArray(), "{\"v\":1}", "")
+        val fresh = note()
+        assertBulkMatchesSequential(
+            prelude = listOf(deletion(covered.id, at = covered.createdAt + 10), newer),
+            batch = padding(16) + listOf(covered, covered, older, older, fresh, fresh),
+        )
+    }
+
     @Test
     fun `addressable supersession resolves in run order`() {
         val subject = "9f".repeat(32)

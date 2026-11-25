@@ -125,7 +125,42 @@ internal class BulkRecordInsert(
         val earlyGuards: Map<String, Pair<List<EventDoc>, List<EventDoc>>>? = null,
         /** [GuardOwners.guardWrites] read before [earlyGuards]: [commit] reuses them only if it has not moved. */
         val guardWritesAtRead: Long = -1,
+        /**
+         * Each later copy of an id in the batch (row -> the row of its first copy). Its outcome
+         * holds a placeholder until [copied] gives it the first copy's verdict.
+         */
+        val copies: Map<Int, Int> = emptyMap(),
     )
+
+    /**
+     * [outcomes] with every later copy of an id given its first copy's verdict, as the
+     * per-event path would answer it: a copy of an accepted event is a duplicate, and a copy of
+     * one rejected or failed is rejected or failed the same way. Answered `duplicate:` (OK true)
+     * from stage A, a copy of a blocked or `replaced:` event told the client it was stored.
+     * A first copy still undecided ([plan], before the commit) leaves its copies' placeholders.
+     */
+    private fun copied(
+        copies: Map<Int, Int>,
+        outcomes: Array<IEventStore.InsertOutcome?>,
+    ) {
+        for ((copy, first) in copies) {
+            val verdict = outcomes[first] ?: continue
+            outcomes[copy] = if (verdict is IEventStore.InsertOutcome.Accepted) IEventStore.InsertOutcome.Rejected(Rejections.DUPLICATE) else verdict
+        }
+    }
+
+    /** [commit]'s answer: an undecided row is the store's failure, and copies follow their first ([copied]). */
+    private fun answer(
+        plan: Plan,
+        outcome: Array<IEventStore.InsertOutcome?>,
+    ): List<IEventStore.InsertOutcome> {
+        // A row this run never decided is the STORE's fault, not the event's:
+        // Failed tells the caller to re-offer it, where Rejected would say
+        // dropping it is safe.
+        val final = Array<IEventStore.InsertOutcome?>(outcome.size) { outcome[it] ?: IEventStore.InsertOutcome.Failed(Rejections.INSERT_FAILED) }
+        copied(plan.copies, final)
+        return final.map { it!! }
+    }
 
     /**
      * The LOCK-FREE half: stages A–B, reads whose staleness is harmless (see
@@ -137,9 +172,11 @@ internal class BulkRecordInsert(
         fun alive() = events.indices.filter { outcome[it] == null }
 
         // Stage A — no I/O: ephemeral accepted-not-stored, expired rejected,
-        // in-run duplicate ids rejected, unstorable text rejected before it
-        // can throw in the feed client.
-        val seen = HashSet<String>()
+        // in-run repeated ids set aside for their first copy's verdict,
+        // unstorable text rejected before it can throw in the feed client.
+        // id -> the row of its first copy; a later copy is recorded in `copies`.
+        val seen = HashMap<String, Int>()
+        val copies = HashMap<Int, Int>()
         // One instant for the whole batch, as the per-event path reads one per event.
         val now = nowSecs()
         events.forEachIndexed { i, e ->
@@ -152,7 +189,10 @@ internal class BulkRecordInsert(
                     outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.EXPIRED)
                 }
 
-                !seen.add(e.id) -> {
+                // A placeholder, so the copy is not written twice: [copied] gives it the first
+                // copy's verdict once that is known.
+                seen.putIfAbsent(e.id, i) != null -> {
+                    copies[i] = seen.getValue(e.id)
                     outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.DUPLICATE)
                 }
 
@@ -201,7 +241,10 @@ internal class BulkRecordInsert(
             val survived = if (alive().isEmpty()) 0.0 else 1.0
             survivingShare += SURVIVING_WEIGHT * (survived - survivingShare)
         }
-        return Plan(events, outcome, earlyGuards, guardWritesAtRead)
+        // Copies of an event the plan already decided (stored, unstorable) are settled now, so a
+        // batch the plan decides whole still skips the commit.
+        copied(copies, outcome)
+        return Plan(events, outcome, earlyGuards, guardWritesAtRead, copies)
     }
 
     /**
@@ -340,7 +383,7 @@ internal class BulkRecordInsert(
             }
             if (toPut.isNotEmpty()) index.putAll(toPut.values.map { it.toDoc() })
             alive().forEach { i -> outcome[i] = IEventStore.InsertOutcome.Accepted }
-            return outcome.map { it ?: IEventStore.InsertOutcome.Failed(Rejections.INSERT_FAILED) }
+            return answer(plan, outcome)
         }
 
         // Read-then-supersede (default): the stored versions of every touched
@@ -429,10 +472,7 @@ internal class BulkRecordInsert(
         owed.clear(groups.keys)
         owed.settle(index, events)
         alive().forEach { i -> outcome[i] = IEventStore.InsertOutcome.Accepted }
-        // A row this run never decided is the STORE's fault, not the event's:
-        // Failed tells the caller to re-offer it, where Rejected would say
-        // dropping it is safe.
-        return outcome.map { it ?: IEventStore.InsertOutcome.Failed(Rejections.INSERT_FAILED) }
+        return answer(plan, outcome)
     }
 
     /**
