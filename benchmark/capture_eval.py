@@ -63,15 +63,16 @@ async def req(ws, sub, filt, budget=90):
 async def main():
     cases, outdir = sys.argv[1], sys.argv[2]
     # Topic key = the case's `id`, else its query: the same key rankAb and the
-    # judgments use. Per-case `observer`/`kinds` overrides are not captured
-    # here (no case sets them yet); extend this when one does.
+    # judgments use. A case's `kinds` restricts both REQs, so a tab-shaped
+    # topic (`kinds: [30040]`, a publications tab) captures the page that tab
+    # serves. Per-case `observer` overrides are still not captured.
     topics = []
     for c in json.load(open(cases)):
         if c.get("skip") == "true":
             continue
         key = c.get("id") or c["query"]
         if key not in [t[0] for t in topics]:
-            topics.append((key, c["query"]))
+            topics.append((key, c["query"], c.get("kinds") or []))
     stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     async with websockets.connect(RELAY, ssl=ssl.create_default_context(), max_size=32 << 20, open_timeout=45) as ws:
         corpus, seen = [], set()
@@ -87,11 +88,12 @@ async def main():
             print(f"  {label}: {len(events)} got, +{fresh} (total {len(corpus)})", file=sys.stderr)
 
         add(await req(ws, "l", {"kinds": [10040], "authors": [OBSERVER], "search": "include:spam"}), "10040")
-        for i, (key, q) in enumerate(topics):
-            page = await req(ws, f"q{i}", {"search": f"{q} observer:{OBSERVER}", "limit": PAGE})
+        for i, (key, q, kinds) in enumerate(topics):
+            only = {"kinds": kinds} if kinds else {}
+            page = await req(ws, f"q{i}", {**only, "search": f"{q} observer:{OBSERVER}", "limit": PAGE})
             run[key] = page
-            add(page, f"{q!r} lensed")
-            add(await req(ws, f"p{i}", {"search": f"{q} include:spam", "limit": UNRANKED}), f"{q!r} unranked")
+            add(page, f"{key!r} lensed")
+            add(await req(ws, f"p{i}", {**only, "search": f"{q} include:spam", "limit": UNRANKED}), f"{key!r} unranked")
         authors = sorted({e["pubkey"] for e in corpus})
         for i in range(0, len(authors), 400):
             cards = {"kinds": [30382], "authors": [PROVIDER], "#d": authors[i:i + 400], "search": "include:spam", "limit": 400}

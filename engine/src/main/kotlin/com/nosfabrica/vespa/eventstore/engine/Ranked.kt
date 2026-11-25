@@ -56,4 +56,15 @@ data class Ranked<T>(
      * number that must not decide it (`event.sd` §13).
      */
     val textScore: Double? = null,
+    /**
+     * The author's follower count under the query's lens: `event.sd`'s
+     * verified_followers match-feature (the `30382:followers` service). Null
+     * where [textScore] is, and for a lens that names no followers service.
+     *
+     * WHO NEEDS IT: the topical-intent probe (store `search/QueryIntent`). A
+     * profile named the query makes it navigational only when it is NOTABLE,
+     * because trust saturates: "Coffee", "art" and "privacy" are each the name
+     * of a trust-75+ account with a few hundred followers.
+     */
+    val followers: Double? = null,
 )

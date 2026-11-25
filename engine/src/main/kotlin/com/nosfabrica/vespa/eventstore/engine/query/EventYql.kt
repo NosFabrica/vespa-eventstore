@@ -686,6 +686,9 @@ object EventYql {
         // one profile whose recency_mult() reads it, so no other profile is sent
         // an input it does not declare.
         if (ranking == RANK_SEARCH) q.recencyWeight?.let { params[F_W_RECENCY] = it.toString() }
+        // The store's topical intent (EventQuery.topical), on the one profile
+        // that reads it, and only when it moves anything: 0 is the default.
+        if (ranking == RANK_SEARCH) q.topical?.takeIf { it > 0.0 }?.let { params[F_TOPICAL] = it.toString() }
         // Two-phase profiles only; the engine ignores it elsewhere.
         q.rerankCount?.let { params["ranking.rerankCount"] = it.toString() }
         // Harness overrides last, so a sweep can also move a feature the
@@ -1116,6 +1119,9 @@ object EventYql {
 
     /** [EventQuery.recencyWeight]'s parameter: the `search` profile's `query(w_recency)`. */
     private const val F_W_RECENCY = "ranking.features.query(w_recency)"
+
+    /** event.sd `search`: the topical intent ([EventQuery.topical]). */
+    private const val F_TOPICAL = "ranking.features.query(topical)"
 
     /** The text-weighting features a search term brings — meaningless on the recency profiles, which read no text signal. */
     private val TEXT_RANK_FEATURES = setOf(F_W_GRAM, F_N_WORDS, F_NOW_SECS)
