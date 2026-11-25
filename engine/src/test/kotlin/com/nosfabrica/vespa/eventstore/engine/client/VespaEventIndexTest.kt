@@ -2634,6 +2634,66 @@ class VespaEventIndexTest {
             }
         }
 
+    /**
+     * A BOUNDARY SECOND WIDER THAN THE DEPLOYED HITS CAP. The `[T,T]` read that resolves a cut
+     * boundary group asks for at most VESPA_UNBOUNDED_HITS, and a provider's bulk second holds
+     * far more: the engine answered with the cap's worth of ITS members, and the page kept the
+     * lowest ids of that subset, not of the second. A capped tie read is now cut, and resolved
+     * lowest ids first by id prefix, as the id walk resolves a dense second — in every mode and
+     * under every strategy.
+     */
+    @Test
+    fun `a tie group wider than the hits cap keeps the lowest ids of the whole second`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            val provider = "dc".repeat(32)
+            seedBulk((0 until 200).map { hashedDoc(kind = 30382, pubkey = provider, at = now - 100) })
+            val q = EventQuery(kinds = listOf(30382), authors = listOf(provider), limit = 10, nowSecs = now)
+            val expected = reference.search(q).map { it.id }
+            mock.refuseHitsAbove = 48
+            mock.scrambleTieOrder = true
+            try {
+                for (strategy in RecencyStrategy.entries) {
+                    val tuning = ClientTuning(unboundedHits = 48)
+                    val builds =
+                        mapOf(
+                            "default" to VespaEventIndex(mock.url, tuning = tuning, recencyStrategy = strategy),
+                            "id-first" to VespaEventIndex(mock.url, tuning = tuning, recencyStrategy = strategy, idFirstMaxDirectHits = 0),
+                            "documents" to VespaEventIndex(mock.url, tuning = tuning, recencyStrategy = strategy, idFirst = false),
+                        )
+                    try {
+                        for ((name, build) in builds) {
+                            repeat(2) { read -> assertEquals(expected, build.search(q).map { it.id }, "$strategy $name read $read: the lowest ids of the boundary second") }
+                        }
+                    } finally {
+                        builds.values.forEach { it.close() }
+                    }
+                }
+            } finally {
+                mock.refuseHitsAbove = null
+                mock.scrambleTieOrder = false
+            }
+        }
+
+    /** The band pager's `[T,T]` read past the cap: a limit past the band landing inside a second wider than VESPA_UNBOUNDED_HITS. */
+    @Test
+    fun `a paged read inside a second wider than the hits cap keeps the lowest ids`() =
+        runBlocking {
+            val band = EventYql.MATCH_PHASE_BAND
+            val provider = "dd".repeat(32)
+            seedBulk((0 until band + 200).map { hashedDoc(kind = 30382, pubkey = provider, at = 9_000L) })
+            val q = EventQuery(kinds = listOf(30382), authors = listOf(provider), limit = band + 25)
+            val expected = reference.search(q).map { it.id }
+            mock.scrambleTieOrder = true
+            try {
+                VespaEventIndex(mock.url, tuning = ClientTuning(unboundedHits = band + 50)).use { capped ->
+                    assertEquals(expected, capped.search(q).map { it.id }, "the lowest ids of the boundary second")
+                }
+            } finally {
+                mock.scrambleTieOrder = false
+            }
+        }
+
     /** A walk the observer gates: the lens [EventYql.gateFloor] reads, on the recency-gated profile a lensed termless read takes. */
     private fun gated(q: EventQuery) = q.copy(observer = "0b".repeat(32), rankKey = "0c".repeat(32), minRank = 10.0, ranking = EventYql.RANK_RECENCY_GATED)
 

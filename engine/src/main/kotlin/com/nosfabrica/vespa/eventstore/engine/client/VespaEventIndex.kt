@@ -1167,21 +1167,63 @@ class VespaEventIndex(
                 // — a [t,t] window is tiny) or the rerun would resurrect
                 // below-floor authors into the boundary group.
                 val tieRanking = if (q.usesGatedProfile()) EventYql.RANK_RECENCY_GATED_EXACT else EventYql.RANK_UNRANKED
+                val newer = hits.filter { it.createdAt > t }
                 // Under a direct read the group is read as ids: a crowded second costs
                 // its ids, and only the members the page keeps are read whole.
-                val ties =
-                    recallRoot(q.copy(since = t, until = t, limit = null, ranking = tieRanking), idOnly || direct != null)
-                        ?.children
-                        ?.mapNotNull { it.fields }
-                        ?.filter { it.id.isNotEmpty() }
-                        ?: emptyList()
+                val group = tieGroup(q.copy(since = t, until = t, limit = null, ranking = tieRanking), limit - newer.size, idOnly || direct != null)
+                val ties = group.members
                 // Members already in hand whole stay whole: nothing to read for them again.
                 val whole = if (direct == null) null else hits.filter { it.createdAt == t && it.sig.isNotEmpty() }.associateBy { it.id }
-                hits = hits.filter { it.createdAt > t } + (if (whole.isNullOrEmpty()) ties else ties.map { whole[it.id] ?: it })
-                if (teaches && tracker?.seen != true) slackMemory?.learn(slackShape!!, lease!!, hits.size - limit, cut = true)
+                hits = newer + (if (whole.isNullOrEmpty()) ties else ties.map { whole[it.id] ?: it })
+                if (teaches && tracker?.seen != true) slackMemory?.learn(slackShape!!, lease!!, newer.size + group.size - limit, cut = true)
             }
         }
         return hits.sortedWith(SUMMARY_NEWEST_FIRST).take(limit)
+    }
+
+    /** A boundary second as [tieGroup] read it: the [members] a page may keep, and how many the second holds ([size], at least that many). */
+    private class TieGroup(
+        val members: List<VespaSummary>,
+        val size: Int,
+    )
+
+    /**
+     * The members of ONE boundary second — [second] is a `[T,T]` read with no limit — that a
+     * page still needing [need] of them can keep: the whole group when the engine served it
+     * whole, else its [need] lowest ids. [idsOnly]: the read is projected to ids (id-first, or a
+     * direct read's tie read), and so are the members.
+     *
+     * An unlimited read asks for VESPA_UNBOUNDED_HITS ([unboundedHits]), the deployed cap a
+     * multi-node cluster sets, and a provider's bulk second is far wider than any cap: the
+     * engine answers with the cap's worth of ITS members, and a page that kept the lowest ids
+     * of that subset served the wrong events. So an answer AT the cap, or one the engine says
+     * is short of the group (`totalCount` past what came back), is CUT, and the group is read
+     * by id prefix ([visitTieByIdPrefix]) lowest ids first, until [need] have arrived — the id
+     * walk's resolution of a dense second ([newestExact]), with its one inexact corner: a
+     * second the prefix budget cannot split goes to a scan whose pages come in document order.
+     * A cut group read for documents ([idsOnly] false) has its kept members read by id.
+     */
+    private suspend fun tieGroup(
+        second: EventQuery,
+        need: Int,
+        idsOnly: Boolean,
+    ): TieGroup {
+        val root = recallRoot(second, idsOnly) ?: return TieGroup(emptyList(), 0)
+        val ties = root.children.mapNotNull { it.fields }.filter { it.id.isNotEmpty() }
+        val total = root.fields.totalCount
+        // At the cap with no count saying it is whole, or a count saying it is not.
+        val cut = total > ties.size || (ties.size >= unboundedHits && total < ties.size)
+        if (!cut || need <= 0) return TieGroup(ties, maxOf(ties.size, total))
+        IngestStats.timed("recency.ties.dense") { }
+        val cap = minOf(denseCap(idPageSize), unboundedHits)
+        val lowest = ArrayList<DocRef>()
+        visitTieByIdPrefix(second, withDTag = false, cap = cap) { page ->
+            lowest += page
+            lowest.size < need
+        }
+        val kept = lowest.sortedWith(DOCREF_NEWEST_FIRST).take(need).map { VespaSummary(id = it.id, createdAt = it.createdAt) }
+        val members = if (idsOnly) kept else hydrate(kept, second.acceptsPartial)
+        return TieGroup(members, maxOf(ties.size, total, lowest.size))
     }
 
     /** [q]'s [RecencyWindowMemory.Shape], anchored as [speculativeAttempts] anchors it. */
@@ -1496,7 +1538,8 @@ class VespaEventIndex(
      * strictly-newer docs already fill the limit; the residual cost — a page
      * that lands INSIDE a group far wider than the limit reads the whole group —
      * is inherited from [recallSummaries] and is the price of never truncating
-     * a tie silently.
+     * a tie silently. A group wider than the deployed hits cap cannot come back
+     * whole at all, and is read lowest ids first instead ([tieGroup]).
      */
     private suspend fun pagedRecency(
         q: EventQuery,
@@ -1523,7 +1566,11 @@ class VespaEventIndex(
             // group cannot contain a hit and is not worth reading — which is
             // what keeps the unbounded window below off the common path.
             if (out.size >= limit) break
-            recallPage(q.copy(since = boundary, until = boundary, limit = null), planned = false, idOnly = idOnly).forEach { out[it.id] = it }
+            // The group whole, or — wider than the deployed hits cap — the lowest ids the
+            // limit still needs ([tieGroup]); recallPage's unlimited read kept the cap's worth
+            // of the engine's members. Projected as recallPage projects an unlimited read.
+            val ids = idOnly || currentCoroutineContext()[DirectRead] != null
+            tieGroup(q.copy(since = boundary, until = boundary, limit = null), limit - out.size, ids).members.forEach { out[it.id] = it }
             // Strictly past the group just taken in full — `boundary - 1` is what
             // makes the cursor terminate on a corpus that shares one timestamp.
             if (boundary <= (q.since ?: Long.MIN_VALUE)) break
@@ -2378,10 +2425,12 @@ class VespaEventIndex(
     ): Boolean {
         var queries = tiePrefixQueries
         val unresolved = ArrayList<String>()
+        // A read that already carries an id prefix splits below it, never beside it.
+        val root = second.idPrefixHex() ?: ""
 
         suspend fun bucket(prefix: String): Boolean {
             // The root is the group the caller already read past the cap.
-            if (prefix.isNotEmpty()) {
+            if (prefix != root) {
                 val ids =
                     try {
                         idTimeRetrying(second.copy(idPrefix = prefix, limit = cap), withDTag, "walk.ties.prefix")
@@ -2404,7 +2453,7 @@ class VespaEventIndex(
             return true
         }
 
-        if (!bucket("")) return false
+        if (!bucket(root)) return false
         if (unresolved.isEmpty()) return true
         IngestStats.timed("walk.ties.prefix.budget") { }
         var carryOn = true
