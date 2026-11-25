@@ -50,12 +50,15 @@ import com.nosfabrica.vespa.eventstore.engine.query.VespaQuery
 import com.nosfabrica.vespa.eventstore.engine.requirePlainReplaceable
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.utils.Hex
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -459,8 +462,21 @@ class VespaEventIndex(
      * running ([batchWrites]) and no other direct put is in flight: nothing pending can be
      * overtaken. A write issued after it is behind it, since [put] returns only once it is
      * stored. A 507 is a feed block and throws [EngineRefusesWrites] at once; anything else but
-     * a 2xx — a refused column, pushback, a transport failure — goes the feed client's way instead, which owns the retries and the schema-fallback net; a put
-     * repeats the same document, so landing twice is harmless.
+     * a 2xx — a refused column, pushback, a transport failure — goes the feed client's way
+     * instead, which owns the retries and the schema-fallback net. A transport failure after the
+     * request left may still have been applied, so the feed client then puts the same document
+     * again: the same as its own retry of a put on a reset connection, and harmless, since a put
+     * repeats the same document.
+     *
+     * A CANCELLED caller (a client gone, a `withTimeout`) does not end the put: the request may
+     * already be at the engine, which applies it whether or not anyone still waits. Cancelled
+     * mid-flight, it used to clear [directPutBusy] and return while the engine could still apply
+     * it, so a write to the same docid issued after [put] returned — the store's next write
+     * under its lock — could land first and be undone by it (DirectPutTest). The feed client
+     * keeps a cancelled caller's operation and orders the next one on its docid behind it; this
+     * path does the same by waiting for the engine's answer under [NonCancellable], bounded by
+     * the server-side [FEED_TIMEOUT] (plus [DIRECT_PUT_MARGIN] for the answer to arrive), and
+     * then throws the cancellation.
      */
     private suspend fun putDirect(doc: EventDoc): Boolean {
         if (!directWriteIdle() || !directPutBusy.compareAndSet(false, true)) return false
@@ -473,17 +489,25 @@ class VespaEventIndex(
             val url = "${documentEndpoint()}/document/v1/$EVENT_NAMESPACE/$EVENT_DOCTYPE/docid/$segment?timeout=${FEED_TIMEOUT.seconds}s"
             val body = doc.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge(), includeStem = fallbacks.stemFieldsAvailable)
             val resp =
-                try {
-                    http.postJsonOnce(url, body)
-                } catch (e: IOException) {
-                    return false
+                withContext(NonCancellable) {
+                    try {
+                        // Null past the bound: the engine did not answer, so whether it applied the
+                        // put is unknown, and the feed client puts it again, as on an IOException.
+                        withTimeoutOrNull(FEED_TIMEOUT.toMillis() + DIRECT_PUT_MARGIN.toMillis()) { http.postJsonOnce(url, body) }
+                    } catch (e: IOException) {
+                        null
+                    }
                 }
+            val stored = resp != null && resp.statusCode() in 200..299
+            if (stored) directPutsSent.incrementAndGet()
+            // The engine has answered (or the bound passed): a cancelled caller stops here, with
+            // nothing of this put left in flight.
+            currentCoroutineContext().ensureActive()
+            if (resp == null) return false
             // A feed block refuses every write, so the feed client's retries of it could only fail
             // after seconds: said at once, as the batch path says it (EngineRefusesWrites).
             if (resp.statusCode() == 507) throw EngineRefusesWrites("the engine is refusing writes (507): its feed is blocked for disk or memory")
-            if (resp.statusCode() !in 200..299) return false
-            directPutsSent.incrementAndGet()
-            return true
+            return stored
         } finally {
             directPutBusy.set(false)
         }
@@ -3673,6 +3697,13 @@ class VespaEventIndex(
 
         /** Every document write's deadline at the engine, the feed client's and [putDirect]'s alike. */
         val FEED_TIMEOUT: Duration = Duration.ofSeconds(30)
+
+        /**
+         * How long past [FEED_TIMEOUT] a [putDirect] waits for the engine's answer before it
+         * gives up on it: the engine answers a timed-out put itself, so this only covers the
+         * answer's way back (and a connection that died with nothing to say so).
+         */
+        val DIRECT_PUT_MARGIN: Duration = Duration.ofSeconds(5)
 
         /**
          * Operations enqueued per awaited chunk on every pipelined feed call.

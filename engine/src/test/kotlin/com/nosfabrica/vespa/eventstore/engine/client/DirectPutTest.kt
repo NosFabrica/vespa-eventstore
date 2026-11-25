@@ -25,13 +25,18 @@ import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import java.util.concurrent.CountDownLatch
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 
 /**
  * A lone put skips the feed client (and its dispatcher's millisecond sleep) only when nothing the
@@ -109,6 +114,33 @@ class DirectPutTest {
                 assertEquals(0, keyed.directPuts, "the feed client took the put")
                 assertNotNull(keyed.get(article.id), "and it is stored")
             }
+        }
+
+    @Test
+    fun `a cancelled direct put still orders the next write on its docid behind it`() =
+        runBlocking<Unit> {
+            // The store's writer lock: a write issued after another one returned is behind it.
+            val writes = Mutex()
+            val gate = CountDownLatch(1)
+            mock.holdWrites = gate
+            val d = doc()
+            val put = launch(Dispatchers.Default) { writes.withLock { index.put(d) } }
+            val deadline = System.nanoTime() + 10_000_000_000
+            while (mock.heldWrites < 1 && System.nanoTime() < deadline) Thread.sleep(10)
+            assertEquals(1, mock.heldWrites, "the direct put has reached the engine and is held there")
+
+            // Its caller gives up (a client gone, a withTimeout); the engine may still apply it.
+            put.cancel()
+            mock.holdWrites = null
+            val remove = launch(Dispatchers.Default) { writes.withLock { index.remove(d.id) } }
+            Thread.sleep(300)
+            assertFalse(remove.isCompleted, "the remove waits for the engine's answer to the put")
+            gate.countDown()
+            withTimeout(30_000) {
+                put.join()
+                remove.join()
+            }
+            assertNull(index.get(d.id), "so the remove, sent second, is what stands")
         }
 
     @Test
