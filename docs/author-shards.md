@@ -417,6 +417,23 @@ spread and sample, a throughput difference of about 5% or more would have shown.
 code agrees: on one cluster the new path adds a null check and one small object per query
 that names authors, and nothing else.
 
+**Re-run on 2026-11-25**, after the move, distinct-count and audit fixes, with the same method:
+`main` at `51fa05e` (quartz 2.25.2, the narrow-family cold read) against this branch with that
+`main` merged in. Raw rows: `benchmark/one_cluster_ab_results_2026-11-25.jsonl`.
+
+| | `main` | branch | difference | exact permutation p |
+|---|---|---|---|---|
+| q/s, 1 client (n = 6 + 6) | 46.8 (sd 2.1) | 48.8 (sd 3.1) | +4.2% | 0.23 |
+| q/s, 16 clients | 98.4 (sd 2.9) | 100.7 (sd 2.9) | +2.3% | 0.22 |
+
+No measurable difference again: the branch reads slightly ahead, and not significantly. Every
+class's median latency is equal or lower on the branch (−0.2% to −7.5%), with 0 errors on both
+sides, and proton memory after the runs is the same (868–886 MB). Nothing on the one-cluster
+path can make the branch faster, so read this as its cost being within the noise, a few percent,
+not as a gain. Both versions read faster than on 2026-11-24. That was a different engine run on
+a different day, and `main` changed in between, so only the comparison within one run means
+anything.
+
 An earlier design gave each run its own fresh Vespa (load, then measure) and read the branch
 8% slower at sixteen clients (p = 0.07, 5 pairs). The interleaved runs show that was the engine
 still flushing and compacting after its load, not the client. A per-run fresh engine is too
