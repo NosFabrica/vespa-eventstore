@@ -642,16 +642,24 @@ open class NostrSemanticsStoreTest {
             assertEquals(0, store.count(Filter(kinds = listOf(GiftWrapEvent.KIND))))
         }
 
-    /** NIP-62: history is erased "until its created_at" — INCLUSIVE (the spec; Quartz's trigger uses strict <). */
+    /**
+     * NIP-62's horizon as Quartz's STORE-D07 (and its SQLite trigger) draws it: the vanish erases
+     * the owner's history strictly BEFORE its created_at, and blocks new events up to and
+     * including it. An event already stored at the vanish's own second survives; one offered
+     * at that second afterwards is blocked.
+     */
     @Test
-    fun `vanish erases events up to and including its timestamp`() =
-        runBlocking {
+    fun `vanish erases events strictly before its timestamp and blocks new ones at it`() =
+        runBlocking<Unit> {
+            val before = note(at = 199)
             val atBoundary = note(at = 200)
             val after = note(at = 201)
+            store.insert(before)
             store.insert(atBoundary)
             store.insert(after)
             store.insert(RequestToVanishEvent(id(), alice, 200, arrayOf(arrayOf("relay", "ALL_RELAYS")), "", ""))
-            assertEquals(setOf(after.id), store.query<Event>(Filter(kinds = listOf(1))).map { it.id }.toSet())
+            assertEquals(setOf(atBoundary.id, after.id), store.query<Event>(Filter(kinds = listOf(1))).map { it.id }.toSet())
+            assertFailsWith<RejectedException> { store.insert(note(at = 200)) }
         }
 
     /** NIP-40: "Relays SHOULD NOT send expired events to clients, even if they are stored." */

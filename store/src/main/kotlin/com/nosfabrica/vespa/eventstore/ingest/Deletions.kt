@@ -171,12 +171,18 @@ internal class Deletions(
 
     /**
      * NIP-62 enforcement: when the request covers [relay], erase the owner's
-     * history "until its created_at" — INCLUSIVE, per the spec. The request
-     * itself is only stored after this runs, so it survives its own sweep.
+     * history STRICTLY BEFORE its created_at, as Quartz's STORE-D07 (and its
+     * SQLite trigger, `created_at < NEW.created_at`) draws the horizon: an
+     * event already stored at the request's own second survives it. Blocking
+     * stays INCLUSIVE ([isVanished], and the bulk guard's `<=`): an event at
+     * that second offered afterwards is refused, so the asymmetry is Quartz's.
+     * Every vanish erase runs through here: the per-event path, the mixed
+     * batch's replay over its snapshot and its erase of the real index. The
+     * request itself is only stored after this runs.
      */
     suspend fun applyVanish(ev: RequestToVanishEvent) {
         if (!ev.shouldVanishFrom(relay)) return
-        sweep(EventQuery(owners = listOf(ev.pubKey), until = ev.createdAt))
+        sweep(EventQuery(owners = listOf(ev.pubKey), until = ev.createdAt - 1))
     }
 
     /**

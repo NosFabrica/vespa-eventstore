@@ -147,14 +147,15 @@ internal class BulkMixedInsert(
         owed.settle(index, events.filter { it !is DeletionRequestEvent && it !is RequestToVanishEvent })
         // The vanishes' erase of what the snapshot never held. Per owner, the
         // newest ADMITTED vanish covering this relay decides it: each one
-        // erases the owner's stored history up to its own created_at, so for
-        // documents stored BEFORE this batch the union is the newest one's
-        // window, whatever the batch order. Applied after the removes and
-        // BEFORE the requests are put, which is what makes it exact: the
-        // replay already decided every event of this batch (an owner's event
-        // inside a window was erased or VANISHED there, so no record put above
-        // is inside one; the surviving request itself, which its own window
-        // covers, is put after). Paged by [sweepPage], so neither the read nor
+        // erases the owner's stored history strictly before its own created_at
+        // ([Deletions.applyVanish]), so for documents stored BEFORE this batch
+        // the union is the newest one's window, whatever the batch order.
+        // Applied after the removes and BEFORE the requests are put, which is
+        // what makes it exact: the replay already decided every event of this
+        // batch with the same rule (an owner's event inside a window was erased
+        // or VANISHED there, so no record put above is inside one, and one at
+        // the vanish's own second, ahead of it, is outside every window; an
+        // older request a newer window covers is put after). Paged by [sweepPage], so neither the read nor
         // the remove is ever the whole history, and a deployment that caps
         // unlimited hits cannot cut it short: the preload query this replaced
         // came back truncated there, and the vanish was reported Accepted over

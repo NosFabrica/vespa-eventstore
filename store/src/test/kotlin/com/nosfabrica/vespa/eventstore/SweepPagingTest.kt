@@ -244,14 +244,15 @@ class SweepPagingTest {
             val ownerReads = reads.filter { it.owners == listOf(alice) }
             assertTrue(ownerReads.isNotEmpty(), "the vanish sweeps the owner's history: $reads")
             assertTrue(
-                ownerReads.all { it.until == 6_010L && it.limit == PAGE },
+                // Strictly before the vanish's second (STORE-D07): until is inclusive.
+                ownerReads.all { it.until == 6_009L && it.limit == PAGE },
                 "bounded by the vanish's created_at and by the sweep page, never the whole history: $ownerReads",
             )
-            // And the semantics are untouched: everything at or before the
-            // vanish is gone, everything after it survives.
+            // And the semantics are untouched: everything before the vanish
+            // is gone, everything at its second or after it survives.
             val left = store.query<Event>(listOf(Filter(kinds = listOf(1)))).map { it.createdAt }
-            assertTrue(left.none { it <= 6_010L }, "the vanish still swept its window: $left")
-            assertEquals(BULK + CORPUS - 10, left.size, "and nothing outside it")
+            assertTrue(left.none { it < 6_010L }, "the vanish still swept its window: $left")
+            assertEquals(BULK + CORPUS - 9, left.size, "and nothing outside it")
         }
 
     private companion object {

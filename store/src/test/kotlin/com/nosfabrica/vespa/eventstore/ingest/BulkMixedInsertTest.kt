@@ -236,6 +236,34 @@ class BulkMixedInsertTest {
         }
 
     /**
+     * The mixed path's vanish horizon is the per-event one (STORE-D07): the owner's history is
+     * erased strictly before the vanish's created_at, both what was stored before the batch and
+     * what the batch put ahead of the vanish, and an event at that second offered after the
+     * vanish is blocked.
+     */
+    @Test
+    fun `a vanish in a mixed batch spares the owner's events at its own second`() =
+        runBlocking {
+            val index = InMemoryEventIndex()
+            val store = NostrSemanticsStore(index, relay = relayUrl)
+            val storedBefore = note(alice, at = 999)
+            val storedAt = note(alice, at = 1_000)
+            store.insert(storedBefore)
+            store.insert(storedAt)
+            val aheadAt = note(alice, at = 1_000)
+            val behindAt = note(alice, at = 1_000)
+            val batch = listOf(note(bob), aheadAt, vanish(alice, at = 1_000), behindAt)
+            val outcomes = store.batchInsert(batch)
+            assertEquals(IEventStore.InsertOutcome.Accepted, outcomes[1])
+            assertTrue(outcomes[3] is IEventStore.InsertOutcome.Rejected, "an event at the vanish's second, after it, is blocked: ${outcomes[3]}")
+            assertEquals(null, index.get(storedBefore.id), "history before the vanish is erased")
+            assertTrue(index.get(storedAt.id) != null, "a stored event at the vanish's second survives")
+            assertTrue(index.get(aheadAt.id) != null, "an event at that second put ahead of the vanish survives")
+            assertEquals(null, index.get(behindAt.id))
+            store.close()
+        }
+
+    /**
      * Parity with the per-event path around a vanish, with a sweep page far
      * below the history: events before it in the batch are admitted and then
      * erased, older ones after it are vanished, newer ones stay, a stored
