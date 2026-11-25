@@ -278,6 +278,48 @@ class SchemaDeployerTest {
         deployer.checkShardChange(base, packageWith(nodesPackage(listOf(0, 1, 2))))
     }
 
+    /** [DeployGuard] as a script runs it: its exit status, and what it said. */
+    private fun guard(vararg args: String): Triple<Int, String, String> {
+        val out = java.io.ByteArrayOutputStream()
+        val err = java.io.ByteArrayOutputStream()
+        val status = DeployGuard.run(arrayOf(*args), java.io.PrintStream(out), java.io.PrintStream(err))
+        return Triple(status, out.toString(), err.toString())
+    }
+
+    /**
+     * The guard for a package a script deploys (production's Helm hook): a directory or a zip,
+     * judged against the live package, 0 to deploy, 2 refused, 1 for anything it cannot judge.
+     */
+    @Test
+    fun theGuardCommandRefusesWhatWouldDeleteDataAndPassesTheRest() {
+        active = SchemaDeployer.files(packageWith(nodesPackage(listOf(0, 1, 2, 3, 4))))
+        storedTotal = 1_000
+        val dir =
+            java.nio.file.Files
+                .createTempDirectory("guard-app")
+                .toFile()
+        try {
+            java.io.File(dir, "services.xml").writeText(nodesPackage(listOf(0, 1, 2)))
+            java.io.File(dir, "schemas").mkdirs()
+            val (refused, _, said) = guard("--config-url", base, "--query-url", base, dir.path)
+            assertEquals(2, refused, said)
+            assertTrue("would drop node(s) [3, 4]" in said, said)
+            assertEquals(2, guard("--config-url", base, "--query-url", base, "--allow-narrowing", dir.path).first, "narrowing excuses buckets, never nodes")
+
+            val zip = java.io.File(dir, "same.zip").apply { writeBytes(packageWith(nodesPackage(listOf(0, 1, 2, 3, 4)))) }
+            assertEquals(0, guard("--config-url", base, "--query-url", base, zip.path).first, "an unchanged layout, as a zip")
+
+            storedTotal = 0
+            assertEquals(0, guard("--config-url", base, "--query-url", base, dir.path).first, "over an empty deployment anything goes")
+
+            assertEquals(1, guard("--query-url", base, dir.path).first, "no config server")
+            assertEquals(1, guard("--config-url", base, "--query-url", base, java.io.File(dir, "nope").path).first, "no package there")
+            assertEquals(1, guard("--config-url", base, "--query-url", base, "--bogus", dir.path).first)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
     private companion object {
         const val INSTANCE = "/application/v2/tenant/default/application/default/environment/prod/region/default/instance/default"
     }

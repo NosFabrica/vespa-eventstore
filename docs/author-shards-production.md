@@ -75,8 +75,8 @@ cleanup, which deletes the moved documents from `content` once they are verified
      bucket-map comment. That is `shardPackage`'s output for the chart's own `services.xml`;
      checked against production's real file, rendered from the chart with its live values
      (`SHARD_NODES="0,1,2,3,4;5@node-5,6@node-6"`).
-   - The chart running the store's deploy guard in its hook Job before it POSTs (see below:
-     "The guard on production").
+   - The chart running the store's deploy guard (`DeployGuard`) in its hook Job before it POSTs
+     (see below: "The guard on production").
    - A staging rehearsal of the whole sequence on a copy of real data.
 
 1. **Choose the map.** Run `./gradlew :benchmark:bucketReport` (read-only; hours on production,
@@ -126,7 +126,25 @@ Two of the guard's checks matter there:
   it.
 
 So the guard is worth running in the hook as soon as a store release carries it, sharding or
-not. That needs a guard entry point shipped in the store's jars (the relay image carries them;
-`shardPackage` lives in the benchmark module, which is not shipped), and an init step in the
-hook Job that runs it with the relay image's JRE against the live config server before the
-POST. That is a change to brainstorm-k8s, to be made by its owners.
+not. The store ships it as a command in the engine jar, which the relay image already carries
+(`DeployGuard`):
+
+```
+java -cp "/libs/*" com.nosfabrica.vespa.eventstore.engine.app.DeployGuard \
+  --config-url http://<vespa-0>:19071 --query-url http://<vespa-0>:8080 /work/app
+```
+
+- It reads the assembled package (the directory the hook zips, or the zip), compares it with
+  the package the config server has active, and counts the deployment's documents. All of it is
+  read-only.
+- Exit 0 means the package may deploy. Exit 2 means it would delete documents; the reason is on
+  stderr: buckets a cluster would stop keeping, or nodes it would drop. Exit 1 means it could not
+  judge (bad arguments, an unreadable package).
+- The hook should POST only on 0.
+- `--allow-narrowing` is for the bucket move's cut-over alone. It excuses buckets, never nodes.
+
+The hook's deploy container is Alpine with no Java, so the step belongs in a container running
+the relay image, which has a JRE and the jars: for example a second init container after the one
+that copies the jars, writing its verdict where the deploy step checks it, or the deploy step
+itself moved onto the relay image. That is a change to brainstorm-k8s, for its owners to make,
+once a store release with `DeployGuard` is pinned in vespa-relay.

@@ -498,6 +498,11 @@ With `garbage-collection="true"`, a cluster's selection is also what its nodes *
 package under which some cluster keeps fewer buckets would make the engine delete every
 document in the buckets it lost, and nothing re-feeds them.
 
+A deployment whose packages are deployed by a script, not the store (production's Helm hook),
+runs the same guard as a command, `DeployGuard`, shipped in the engine jar
+(`docs/author-shards-production.md`, "The guard on production"): exit 0 to deploy, 2 refused, 1
+when it cannot judge.
+
 `SchemaDeployer.checkShardChange` runs on every deploy path (`deployIfChanged`, and `open()` /
 `deploySchema` with `IF_ABSENT` or `IF_CHANGED`), whether or not the container answers: a
 crash-looping container says nothing about what its content nodes hold, and the first cut skipped
