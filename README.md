@@ -111,9 +111,9 @@ another provider) follows the list its next stored page would read.
 **Keeping NEG-OPEN snapshots across writes.** Quartz's `LiveEventStore` caches a
 NEG-OPEN's snapshot and drops it only on a write that could change the filter's set;
 `FilterLocality` is this store's half of that decision, and a relay passes both
-predicates straight through (`LiveEventStore(store, ingest, held,
-FilterLocality::writeIsFilterLocal)`, plus `FilterLocality::searchIsFilterLocal` where
-the quartz pin takes a search hook). `writeIsFilterLocal` is false for what can move the
+predicates straight through, as the last two arguments of quartz 2.28.0's five-argument
+constructor (`LiveEventStore(store, ingest, LiveEventStore.DEFAULT_MAX_HELD_BEFORE_EOSE,
+FilterLocality::writeIsFilterLocal, FilterLocality::searchIsFilterLocal)`). `writeIsFilterLocal` is false for what can move the
 gate — a card (30382), a provider list (10040), a vanish, and a deletion unless it names
 only addresses of other kinds — and every such write drops every snapshot.
 `searchIsFilterLocal` keeps a search filter's snapshot only where the search narrows by

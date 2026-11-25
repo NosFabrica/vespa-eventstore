@@ -31,9 +31,10 @@ import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 
 /**
  * WHICH WRITES AND WHICH SEARCHES LEAVE A CACHED NEG-OPEN SNAPSHOT VALID — this store's answer
- * to quartz's `LiveEventStore`, which a relay passes through unchanged:
- * `LiveEventStore(store, ingest, held, FilterLocality::writeIsFilterLocal)`, and
- * [searchIsFilterLocal] as its `searchIsFilterLocal` where the quartz pin takes one.
+ * to quartz's `LiveEventStore`, which a relay passes through unchanged as quartz 2.28.0's
+ * five-argument constructor's last two arguments:
+ * `LiveEventStore(store, ingest, LiveEventStore.DEFAULT_MAX_HELD_BEFORE_EOSE,
+ * FilterLocality::writeIsFilterLocal, FilterLocality::searchIsFilterLocal)`.
  *
  * Quartz keeps a NEG-OPEN's sealed snapshot across a write that its store rules say cannot
  * change the filter's set (the write matches no filter, supersedes or deletes nothing the filter
@@ -50,7 +51,7 @@ import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
  * those inputs. A token that starts reading anything else (a follow list, a report, a NIP-05,
  * corpus statistics) is rejected here, or the writes that feed it are.
  *
- * What neither can see, and quartz's snapshot TTL (30 s in 2.26.0) is the only bound on: state
+ * What neither can see, and quartz's snapshot TTL (30 s in 2.28.0) is the only bound on: state
  * that moves WITHOUT a write through this relay — another process feeding the same index
  * ([NostrSemanticsStore]'s `writers`; the provider map is then rebuilt on an interval), a 10040's
  * deferred trust walk draining after the write's `OK` (`DirtLedger`), an expiring card swept
@@ -89,7 +90,8 @@ object FilterLocality {
         }
 
     /**
-     * Quartz's `searchIsFilterLocal`: true when [filter]'s `search` only narrows the set its
+     * Quartz's `searchIsFilterLocal` (2.28.0), asked once per search filter of a NEG-OPEN the
+     * cache does not hold, never per write: true when [filter]'s `search` only narrows the set its
      * other fields select — by facts in each event, or by trust state [writeIsFilterLocal]
      * guards — and never makes the set depend on other writes. Then a snapshot of it is
      * reasoned about from its NIP-01 fields, as a plain filter's is.
