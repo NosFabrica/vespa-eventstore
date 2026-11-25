@@ -11,8 +11,7 @@ pluginManagement {
 // (com.vitorpamplona.negentropy) are released on Nostr + Blossom only: Magpie serves those groups,
 // trusting only the release key vitorpamplona.com names as `releases`, and gradle/magpie.lock pins
 // that key and every resolved version's files, as in quartz itself. A consumer of this store needs
-// the same groups through Magpie. While quartz itself is pinned to a commit, it comes from JitPack
-// (below) and Magpie serves only the other three.
+// the same groups through Magpie.
 plugins {
     id("com.vitorpamplona.magpie") version "0.2.3"
 }
@@ -28,33 +27,27 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        // Quartz is pinned to a commit JitPack builds (libs.versions.toml), and JitPack serves
-        // nothing else here. jitpack.yml is separate: it lets JitPack BUILD this store for
-        // vespa-relay.
-        exclusiveContent {
-            forRepository { maven { url = uri("https://jitpack.io") } }
-            filter {
-                includeGroup("com.github.vitorpamplona.quartz")
-            }
-        }
+        // Nothing here reads from JitPack. jitpack.yml is separate: it lets JitPack BUILD this
+        // store for vespa-relay.
     }
 }
 
 rootProject.name = "vespa-eventstore"
 
-// Quartz comes from JitPack (com.github.vitorpamplona.quartz:quartz), pinned to a commit in
-// gradle/libs.versions.toml; its releases come from Nostr + Blossom through Magpie
-// (com.vitorpamplona.quartz:quartz). To change it alongside this store — a Nostr rule
+// Quartz (com.vitorpamplona.quartz:quartz) comes from Nostr + Blossom through Magpie, pinned to a
+// release in gradle/libs.versions.toml. To change it alongside this store — a Nostr rule
 // this store needs that quartz lacks goes upstream first (AGENTS.md, "What goes
 // where") — point Gradle at a local checkout and it builds that checkout in
 // place of the published artifact, the way quartz's own -PcryptoKmpDir does:
 //   ./gradlew -PquartzDir=../quartz build
 // Every module that names libs.quartz then compiles and tests against the
 // checkout's :quartz JVM variant. The published POM still names the pin, so a
-// change that needs the new quartz waits for a quartz commit JitPack builds.
+// change that needs the new quartz waits for a quartz release.
 providers.gradleProperty("quartzDir").orNull?.let { dir ->
     includeBuild(dir) {
         dependencySubstitution {
+            // Both quartz groups: the Magpie release this build pins, and JitPack's
+            // com.github.vitorpamplona.quartz, which nothing names now but a commit pin would.
             for (group in listOf("com.vitorpamplona.quartz", "com.github.vitorpamplona.quartz")) {
                 substitute(module("$group:quartz")).using(project(":quartz"))
             }
