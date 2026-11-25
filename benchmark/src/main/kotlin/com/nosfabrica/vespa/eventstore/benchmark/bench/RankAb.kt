@@ -241,6 +241,50 @@ object RankAb {
             "recency_ceiling" to mapOf("w_recency" to 4.65, "recency_halflife" to 30.0),
         )
 
+    /**
+     * THE EMBEDDING EXPERIMENT (docs/embedding-experiment.md). These need the
+     * experiment package (`benchmark/embedding/build_app.py`): its `e5` embedder,
+     * its `embedding` field, and the `search` profile's `w_sem_*` knobs, all inert
+     * at their defaults. Against a stock cluster every one of them fails (no
+     * embedder to run `embed(e5, …)`), so they are run only when NAMED in
+     * `--configs`, never by the default all-configs sweep.
+     *
+     * A key starting `_` is the harness's own switch, never sent as a rank
+     * feature: `_nn` = targetHits for a SECOND, nearestNeighbor-only retrieval
+     * under the same filters, lens and profile, merged with the lexical page by
+     * score ([search]). That is the recall half of a hybrid; without it a config
+     * only re-orders what the word matcher already found.
+     */
+    val SEMANTIC_CONFIGS: Map<String, Map<String, Double>> =
+        mapOf(
+            // About-ness inside the bands: x(1 + w * sem_norm) on the second phase.
+            "sem_mult_1" to mapOf("w_sem_mult" to 1.0),
+            "sem_mult_3" to mapOf("w_sem_mult" to 3.0),
+            // The semantic rung on the lexical matches alone (no new recall): a
+            // weak match that is strongly on-topic may rise to it.
+            "sem_tier_550" to mapOf("w_sem_tier" to 550.0),
+            // Hybrid: dense recall (targetHits 100) plus the rung that gives a
+            // dense-only hit a place. 550 is the body rung (w_affil_tier_text);
+            // 300 sits under it, 1000 over it and under the weak rung (4000).
+            "hybrid_300" to mapOf("_nn" to 100.0, "w_sem_tier" to 300.0),
+            "hybrid_550" to mapOf("_nn" to 100.0, "w_sem_tier" to 550.0),
+            "hybrid_1000" to mapOf("_nn" to 100.0, "w_sem_tier" to 1000.0),
+            "hybrid_550_mult_1" to mapOf("_nn" to 100.0, "w_sem_tier" to 550.0, "w_sem_mult" to 1.0),
+            // Diagnostic, not candidates. On a one-word topical query the first
+            // page is the NAME rung (~130 000: every event, place and app named
+            // "Coffee"), so a dense hit at the body rung cannot reach it, and
+            // neither can a lexical body match (measured 2026-11-25,
+            // docs/embedding-experiment.md §7). These put the semantic rung on
+            // the weak (4000) and near (23000) rungs, to see what dense recall
+            // surfaces once it can compete at all.
+            "hybrid_4000" to mapOf("_nn" to 100.0, "w_sem_tier" to 4000.0),
+            "hybrid_23000" to mapOf("_nn" to 100.0, "w_sem_tier" to 23000.0),
+        )
+
+    private fun configOf(name: String): Map<String, Double> = CONFIGS[name] ?: SEMANTIC_CONFIGS.getValue(name)
+
+    private fun isSemantic(overrides: Map<String, Double>) = overrides.keys.any { it.startsWith("w_sem") || it == "_nn" }
+
     @JvmStatic
     fun main(args: Array<String>) {
         val opts =
@@ -303,8 +347,8 @@ object RankAb {
                 ?.associate { spec -> spec.substringBefore("=") to loadRun(Path.of(spec.substringAfter("="))) }
                 .orEmpty()
         val names = opts["--configs"]?.split(",") ?: (CONFIGS.keys.toList() + runs.keys)
-        names.firstOrNull { it !in CONFIGS && it !in runs }?.let {
-            System.err.println("unknown config '$it'; known: ${CONFIGS.keys + runs.keys}")
+        names.firstOrNull { it !in CONFIGS && it !in SEMANTIC_CONFIGS && it !in runs }?.let {
+            System.err.println("unknown config '$it'; known: ${CONFIGS.keys + SEMANTIC_CONFIGS.keys + runs.keys}")
             return
         }
         // The graded judgments (docs/search-evaluation.md). A missing file is
@@ -335,9 +379,9 @@ object RankAb {
         // MRR: just the page, side by side, from the same request the library
         // sends.
         opts["--dump"]?.let { text ->
-            for (config in names.filter { it in CONFIGS }) {
+            for (config in names.filter { it in CONFIGS || it in SEMANTIC_CONFIGS }) {
                 println("\n=== $config === $text")
-                dumpPage(search(vespa, text, profile, observer, hits, CONFIGS.getValue(config), nowSecs, kinds))
+                dumpPage(search(vespa, text, profile, observer, hits, configOf(config), nowSecs, kinds))
             }
             return
         }
@@ -390,7 +434,7 @@ object RankAb {
                     }
                     topics.map { run[it.key].orEmpty().take(hits) }
                 } else {
-                    topics.map { search(vespa, it.query, profile, it.observer, hits, CONFIGS.getValue(config), nowSecs, it.kinds) }
+                    topics.map { search(vespa, it.query, profile, it.observer, hits, configOf(config), nowSecs, it.kinds) }
                 }
         }
         opts["--write-runs"]?.let { dir -> writeRuns(Path.of(dir), topics, pages) }
@@ -983,35 +1027,83 @@ object RankAb {
         // shortcode rewriting, `sort:` / `filter:` (the profile and floor are
         // this harness's own knobs).
         val parsed = SearchQuery.parse(text)
-        val vq =
-            EventYql.build(
-                EventQuery(
-                    search = parsed.terms.ifEmpty { null },
-                    phrases = parsed.phrases,
-                    notSearch = parsed.notTerms + parsed.notPhrases,
-                    includeSpam = parsed.includeSpam,
-                    stemLanguage =
-                        parsed.language
-                            ?.lowercase()
-                            ?.substringBefore('-')
-                            ?.substringBefore('_')
-                            ?.takeIf { it in StemText.LANGUAGES },
-                    kinds = kinds,
-                    observer = observer,
-                    rankKey = observer?.let { lensOf(base, it).first },
-                    followersKey = observer?.let { lensOf(base, it).second },
-                    ranking = profile,
-                    minRank = observer?.let { if (parsed.includeSpam) 0.0 else 2.0 },
-                    nowSecs = nowSecs,
-                ),
-            ) ?: return emptyList()
+        val eq =
+            EventQuery(
+                search = parsed.terms.ifEmpty { null },
+                phrases = parsed.phrases,
+                notSearch = parsed.notTerms + parsed.notPhrases,
+                includeSpam = parsed.includeSpam,
+                stemLanguage =
+                    parsed.language
+                        ?.lowercase()
+                        ?.substringBefore('-')
+                        ?.substringBefore('_')
+                        ?.takeIf { it in StemText.LANGUAGES },
+                kinds = kinds,
+                observer = observer,
+                rankKey = observer?.let { lensOf(base, it).first },
+                followersKey = observer?.let { lensOf(base, it).second },
+                ranking = profile,
+                minRank = observer?.let { if (parsed.includeSpam) 0.0 else 2.0 },
+                nowSecs = nowSecs,
+            )
+        val vq = EventYql.build(eq) ?: return emptyList()
+        // `_`-prefixed keys are this harness's switches, not rank features.
+        val features = overrides.filterKeys { !it.startsWith("_") }
+        // The text the embedder sees: the words and quoted phrases as typed,
+        // never an extension (`observer:`, `include:spam`) or an excluded word.
+        val semText = (listOf(parsed.terms) + parsed.phrases).filter { it.isNotBlank() }.joinToString(" ")
+        val semantic = isSemantic(overrides) && semText.isNotBlank()
+
+        fun params(fromYql: Map<String, String>): Map<String, String> =
+            buildMap {
+                putAll(fromYql)
+                features.forEach { (k, v) -> put("ranking.features.query($k)", v.toString()) }
+                if (semantic) {
+                    put("sem_text", semText)
+                    put("input.query(q_emb)", "embed(e5, @sem_text)")
+                }
+            }
+        val lexical = fetch(base, withNameDf(base, vq.yql, parsed), vq.ranking, params(vq.params), hits)
+        // THE RECALL HALF of a hybrid (SEMANTIC_CONFIGS, `_nn`): the same
+        // filters, lens and profile with the words taken out and a
+        // nearestNeighbor item in their place. The lexical params ride along so
+        // every text feature reads exactly what it reads for a non-matching
+        // document (the typed-word count, the phrase run), and the profile then
+        // scores a dense-only hit on the semantic rung alone. One profile, one
+        // request shape, so the two pages' relevances are the same scale and
+        // merge by score; a document on both keeps its higher one.
+        val targetHits = overrides["_nn"]?.toInt()?.takeIf { it > 0 && semantic } ?: return lexical
+        val filters = EventYql.build(eq.copy(search = null, phrases = emptyList())) ?: return lexical
+        val dense =
+            fetch(
+                base,
+                filters.yql + " and ({targetHits:$targetHits}nearestNeighbor(embedding, q_emb))",
+                vq.ranking,
+                params(vq.params + filters.params),
+                hits,
+            )
+        return (lexical + dense)
+            .groupBy { it.id }
+            .map { (_, both) -> both.maxBy { it.relevance } }
+            .sortedByDescending { it.relevance }
+            .take(hits)
+    }
+
+    /** POST one query and parse its hits. */
+    private fun fetch(
+        base: String,
+        yql: String,
+        ranking: String,
+        params: Map<String, String>,
+        hits: Int,
+    ): List<Hit> {
         val body =
             buildJsonObject {
-                put("yql", withNameDf(base, vq.yql, parsed))
+                put("yql", yql)
                 put("hits", hits.toString())
-                put("ranking", vq.ranking)
-                vq.params.forEach { (k, v) -> put(k, v) }
-                overrides.forEach { (k, v) -> put("ranking.features.query($k)", v.toString()) }
+                put("ranking", ranking)
+                params.forEach { (k, v) -> put(k, v) }
             }.toString()
         val resp =
             HTTP.send(
