@@ -876,20 +876,28 @@ class VespaEventIndex(
     }
 
     /**
-     * A direct read's page, whole: the members a ids-only query brought in (an empty
-     * `sig`, which every stored event has) read by id, in place, by the same [hydrate]
-     * id-first uses. A page that needed none, the common case, costs nothing here.
+     * A direct read's page, whole: the members a ids-only query brought in ([isIdOnly])
+     * read by id, in place, by the same [hydrate] id-first uses. A page that needed none,
+     * the common case, costs nothing here.
      */
     private suspend fun completeDocuments(
         page: List<VespaSummary>,
         acceptsPartial: Boolean,
     ): List<VespaSummary> {
-        val missing = page.filter { it.sig.isEmpty() }
+        val missing = page.filter { it.isIdOnly() }
         if (missing.isEmpty()) return page
         val full = HashMap<String, VespaSummary>(missing.size * 2)
         for (hit in hydrate(missing, acceptsPartial)) full[hit.id] = hit
-        return page.mapNotNull { if (it.sig.isNotEmpty()) it else full[it.id] }
+        return page.mapNotNull { if (!it.isIdOnly()) it else full[it.id] }
     }
+
+    /**
+     * Whether [this] is an id-only hit (the attribute-only `idtime` summary: id and
+     * created_at) rather than a document. Told by its empty `pubkey`, which `idtime` never
+     * carries and every stored event has. NOT by an empty `sig`: the store keeps unsigned
+     * rumors, which decode with one, and a direct page holding a rumor read it again by id.
+     */
+    private fun VespaSummary.isIdOnly(): Boolean = pubkey.isEmpty()
 
     /**
      * What a recency read's FIRST query will ask for, taken once per read so the
@@ -1173,7 +1181,7 @@ class VespaEventIndex(
                 val group = tieGroup(q.copy(since = t, until = t, limit = null, ranking = tieRanking), limit - newer.size, idOnly || direct != null)
                 val ties = group.members
                 // Members already in hand whole stay whole: nothing to read for them again.
-                val whole = if (direct == null) null else hits.filter { it.createdAt == t && it.sig.isNotEmpty() }.associateBy { it.id }
+                val whole = if (direct == null) null else hits.filter { it.createdAt == t && !it.isIdOnly() }.associateBy { it.id }
                 hits = newer + (if (whole.isNullOrEmpty()) ties else ties.map { whole[it.id] ?: it })
                 if (teaches && tracker?.seen != true) slackMemory?.learn(slackShape!!, lease!!, newer.size + group.size - limit, cut = true)
             }

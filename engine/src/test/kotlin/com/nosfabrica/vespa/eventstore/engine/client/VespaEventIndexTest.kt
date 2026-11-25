@@ -4059,6 +4059,33 @@ class VespaEventIndexTest {
         }
 
     /**
+     * AN UNSIGNED RUMOR IS A WHOLE DOCUMENT. The store keeps rumors (a kind-14 inside a gift
+     * wrap, an event its caller never signed), and they decode with an empty `sig`, which is how
+     * a direct read told an id-only hit from a document: the rumor on a direct page was read
+     * again by id, two queries for a page one serves. An id-only hit is the one with no pubkey,
+     * which the `idtime` summary never carries and every document has.
+     */
+    @Test
+    fun `a direct page holding an unsigned rumor needs no second query`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            val author = "ab".repeat(32)
+            seedBulk((1..5).map { doc(kind = 14, pubkey = author, at = now - it * 100_000L, content = "dm $it").let { d -> if (it == 2) d.copy(sig = "") else d } })
+            val q = EventQuery(kinds = listOf(14), authors = listOf(author), limit = 10, nowSecs = now)
+            for (strategy in RecencyStrategy.entries) {
+                VespaEventIndex(mock.url, recencyStrategy = strategy, recencyMemory = false).use { direct ->
+                    val before = mock.searchRequests.size
+                    val page = direct.search(q)
+                    val all = mock.searchRequests.drop(before)
+                    assertEquals(emptyList(), all.filter { it.isHydrate() }, "$strategy: no document read again by id")
+                    if (strategy == RecencyStrategy.MATCH_PHASE) assertEquals(1, all.size, "one query for a page that fits its slack: $all")
+                    assertEquals(reference.search(q).map { it.id to it.content }, page.map { it.id to it.content }, "$strategy: the page, whole")
+                    assertEquals("", page.single { it.content == "dm 2" }.sig, "$strategy: the rumor, unsigned")
+                }
+            }
+        }
+
+    /**
      * ONE QUERY UNLESS THE PAGE IS LARGE, AND A CROWDED SECOND COSTS IDS. A 70-hit page of
      * one feed is served in one query; a page planned past the cap is id-first; a feed whose
      * boundary second holds thirty notes is direct too, its cut group read as ids and only the
