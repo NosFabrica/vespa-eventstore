@@ -38,6 +38,7 @@ import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import kotlinx.coroutines.runBlocking
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -474,6 +475,32 @@ class BulkMixedInsertTest {
                 assertTrue(outcome is IEventStore.InsertOutcome.Rejected, "the covered event is blocked (kind $kind), got $outcome")
                 assertEquals(null, index.inner.get(target.id), "and not stored (kind $kind)")
                 store.close()
+            }
+        }
+
+    /**
+     * The replay's guard object is the snapshot's, which caches nothing whatever the operator
+     * set, so building it per batch must not read `GUARD_OWNERS_DISABLE`: it re-parsed the
+     * variable for every mixed batch, and an unparseable value failed every one of them even
+     * on a store built with an explicit setting, which never reads it.
+     */
+    @Test
+    fun `a mixed batch's replay never reads the guard-cache switch`() =
+        runBlocking {
+            val reads = AtomicInteger()
+            val saved = GuardOwners.environment
+            try {
+                val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl, guardOwnersDisabled = false)
+                GuardOwners.environment = {
+                    reads.incrementAndGet()
+                    "not a boolean"
+                }
+                val outcomes = store.batchInsert((1..5).map { note(bob) } + deletion(bob, ids = listOf("dd".repeat(32))))
+                assertTrue(outcomes.all { it == IEventStore.InsertOutcome.Accepted }, "$outcomes")
+                assertEquals(0, reads.get(), "the environment is read once, by the store that asks for it")
+                store.close()
+            } finally {
+                GuardOwners.environment = saved
             }
         }
 }

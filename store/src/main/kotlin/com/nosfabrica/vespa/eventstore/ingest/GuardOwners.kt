@@ -93,6 +93,11 @@ internal class GuardOwners(
      * passes it as a value instead.
      */
     override: WriterTopology? = envOverride(),
+    /**
+     * This index's guard-write count ([guardWrites]): by default the one every [GuardOwners]
+     * over [index] in this process shares. [forReplay] passes its own.
+     */
+    private val writes: AtomicLong = guardWriteCounter(index),
 ) {
     private class Blooms(
         val deleters: GuardBloom,
@@ -112,9 +117,6 @@ internal class GuardOwners(
 
     /** The override outranks the caller: an operator must be able to force the strict floor. */
     private val mode = override ?: topology
-
-    /** This index's guard writes, shared by every [GuardOwners] over it in this process — see [guardWrites]. */
-    private val writes: AtomicLong = guardWriteCounter(index)
 
     /**
      * How many kind 5 and kind 62 writes (and the erasures they stand for) this process has made
@@ -162,7 +164,9 @@ internal class GuardOwners(
      */
     private val swapLock = Any()
 
-    private val refreshScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    /** Only a [WriterTopology.SHARED] cache with a cadence ever refreshes, so only it holds a scope to refresh in. */
+    private val refreshScope: CoroutineScope? =
+        if (mode == WriterTopology.SHARED && refreshMillis > 0L) CoroutineScope(SupervisorJob() + Dispatchers.Default) else null
 
     private val refresherStarted = AtomicBoolean(false)
 
@@ -259,7 +263,7 @@ internal class GuardOwners(
 
     /** Stops the background refresher. Idempotent; the store owns the call. */
     fun close() {
-        refreshScope.cancel()
+        refreshScope?.cancel()
     }
 
     private suspend fun loaded(): Blooms? {
@@ -298,9 +302,9 @@ internal class GuardOwners(
      * needs the sets at all.
      */
     private fun startRefresher() {
-        if (mode != WriterTopology.SHARED || refreshMillis <= 0L) return
+        val scope = refreshScope ?: return
         if (!refresherStarted.compareAndSet(false, true)) return
-        refreshScope.launch {
+        scope.launch {
             while (isActive) {
                 delay(refreshMillis)
                 try {
@@ -352,6 +356,18 @@ internal class GuardOwners(
 
         private fun guardWriteCounter(index: EventIndex): AtomicLong = guardWriteCounters.getOrPut(index) { AtomicLong() }
 
+        /**
+         * The guards of [BulkMixedInsert]'s replay, over its throwaway snapshot: no cache
+         * ([WriterTopology.SHARED_STRICT], which is what a replay wants; the real store's cache
+         * answers for the real index), built once per mixed batch, so built without the
+         * per-instance costs that only a store's guards need. It never reads
+         * `GUARD_OWNERS_DISABLE` (the default `override` re-parsed it per batch, and an
+         * unparseable value failed every mixed batch even on a store given an explicit setting),
+         * holds no refresh scope, and counts its guard writes privately instead of in the
+         * process-wide map, whose lock every batch took for an index nobody else sees.
+         */
+        fun forReplay(snapshot: EventIndex): GuardOwners = GuardOwners(snapshot, WriterTopology.SHARED_STRICT, override = null, writes = AtomicLong())
+
         const val ENV_DISABLE = "GUARD_OWNERS_DISABLE"
 
         private val TRUTHY = setOf("1", "true", "yes", "on")
@@ -368,7 +384,11 @@ internal class GuardOwners(
          * while the parse was `toBooleanStrictOrNull`, which returns null for
          * "1" — and a correctness mechanism must not have a quiet failure mode.
          */
-        fun envOverride(): WriterTopology? = parseDisable(System.getenv(ENV_DISABLE))
+        fun envOverride(): WriterTopology? = parseDisable(environment(ENV_DISABLE))
+
+        /** Where [envOverride] reads the environment: the process's, which a test cannot set, so it swaps this. */
+        @Volatile
+        internal var environment: (String) -> String? = System::getenv
 
         /** [envOverride]'s parse, split out so a test can reach it without mutating the process environment. */
         fun parseDisable(raw: String?): WriterTopology? {
