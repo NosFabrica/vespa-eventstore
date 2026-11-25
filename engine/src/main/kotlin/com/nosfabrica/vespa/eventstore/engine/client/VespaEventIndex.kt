@@ -1276,7 +1276,7 @@ class VespaEventIndex(
                 // have been proven by a window: the shape is NOT narrow. Its exact
                 // shape remembers that window (its next read speculates from it) and
                 // the family hears a busy vote. Anything else was narrow after all.
-                val span = if (page.size >= limit) anchor - page[limit - 1].createdAt else null
+                val span = if (page.size >= limit) minusSaturated(anchor, page[limit - 1].createdAt) else null
                 if (span != null && span <= RecencyPlanner.NARROW_HORIZON) {
                     outcome("prior.busy")
                     learn(shape, RecencyWindowMemory.Recall.Window(span.coerceIn(RecencyPlanner.FIRST_WINDOW, RecencyPlanner.MAX_WINDOW), limit))
@@ -1319,7 +1319,15 @@ class VespaEventIndex(
                     fallback = "attempts"
                     break
                 }
-                val since = anchor - window
+                // Saturated: an anchor near Long.MIN_VALUE (a caller's `until`) wrapped
+                // `anchor - window` to the far future, the empty attempt made THAT the
+                // boundary, and the fallback served the newest page. A window that reaches
+                // the bottom of Long cannot sit below the anchor: the unwindowed read is it.
+                val since = minusSaturated(anchor, window)
+                if (since == Long.MIN_VALUE) {
+                    fallback = "floor"
+                    break
+                }
                 if (q.since != null && since <= q.since) {
                     fallback = "since"
                     break
@@ -1413,7 +1421,8 @@ class VespaEventIndex(
      * restriction), asking for [remaining] results — the rest of a speculative
      * read whose newer part short attempts already delivered. `until` only
      * ever TIGHTENS: a boundary is at or below the anchor, itself at or below
-     * the caller's `until`.
+     * the caller's `until`. `boundary - 1` cannot wrap: a boundary is an
+     * attempt's `since`, and no attempt runs with its `since` at Long.MIN_VALUE.
      */
     private fun EventQuery.olderThan(
         boundary: Long?,
@@ -3541,6 +3550,20 @@ class VespaEventIndex(
             a: Int,
             b: Int,
         ): Int = (a.toLong() + b).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+
+        /**
+         * `a - b`, stopping at [Long.MIN_VALUE] / [Long.MAX_VALUE] instead of wrapping. A recency
+         * window's floor is `anchor - window` and the anchor is a caller's `until`, which may be
+         * any Long: near Long.MIN_VALUE the floor wrapped to the far future.
+         */
+        internal fun minusSaturated(
+            a: Long,
+            b: Long,
+        ): Long {
+            val r = a - b
+            // Overflow exactly when the operands' signs differ and the result's sign is not a's.
+            return if (((a xor b) and (a xor r)) < 0) (if (a < 0) Long.MIN_VALUE else Long.MAX_VALUE) else r
+        }
 
         /** The dense tie-group threshold for a page of [pageSize]: `pageSize * TIE_DENSE_FACTOR + 1`, saturated like [plusSaturated]. */
         internal fun denseCap(pageSize: Int): Int = (pageSize.toLong() * TIE_DENSE_FACTOR + 1).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()

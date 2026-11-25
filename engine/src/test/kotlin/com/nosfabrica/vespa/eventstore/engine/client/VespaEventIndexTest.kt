@@ -4264,4 +4264,34 @@ class VespaEventIndexTest {
                 builds.values.forEach { it.close() }
             }
         }
+
+    /**
+     * AN `until` AT THE BOTTOM OF `Long`. A speculative window is `[anchor - window, anchor]`, and
+     * with the anchor at the caller's `until` near [Long.MIN_VALUE] the subtraction wrapped to the
+     * far future: the attempt came back empty, its boundary became that far-future second, and the
+     * fallback read everything strictly older than it — the newest page, served to a read that
+     * matches nothing.
+     */
+    @Test
+    fun `an until near Long MIN_VALUE matches nothing under every strategy`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            seedBulk((1..20).map { doc(kind = 1, at = now - it) })
+            val shapes =
+                listOf(
+                    EventQuery(kinds = listOf(1), until = Long.MIN_VALUE, limit = 5),
+                    EventQuery(kinds = listOf(1), until = Long.MIN_VALUE + 1, limit = 5),
+                    EventQuery(kinds = listOf(1), since = Long.MIN_VALUE, until = Long.MIN_VALUE + 3_600L, limit = 5),
+                ).map { it.copy(nowSecs = now) }
+            for (strategy in RecencyStrategy.entries) {
+                for ((name, build) in modeBuilds(strategy)) {
+                    build.use { b ->
+                        for (q in shapes) {
+                            assertEquals(reference.search(q).map { it.id }, b.search(q).map { it.id }, "$strategy $name: $q")
+                            assertEquals(emptyList(), b.search(q).map { it.id }, "$strategy $name, read again: $q")
+                        }
+                    }
+                }
+            }
+        }
 }
