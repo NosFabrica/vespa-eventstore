@@ -133,7 +133,8 @@ deliberate decision (it fails until the layer table names it) rather than a drif
   answer), the values a consumer passes in — `EngineTuning` (every operator setting, with the
   strict `fromEnv`), `SchemaDeploy` — and the values it hands back or throws — `RejectedException`,
   `EngineReads`, `TrustHealth`, `TrustChain` (`lensOf`), `ReadShape` (the search grammar's verdict
-  on a filter), `StoreTelemetry`, `SchemaDeployment` / `SchemaDeployException`, `LiveGate` (the
+  on a filter), `FilterLocality` (the write and search predicates a relay hands quartz's
+  `LiveEventStore`, so a NEG-OPEN snapshot outlives the writes that cannot change it), `StoreTelemetry`, `SchemaDeployment` / `SchemaDeployException`, `LiveGate` (the
   observer gate a relay applies to a subscription's live events), `ScoredSearch`
   (`scoredProfileSearch`'s hits with their own engine scores, plus the rank service that scored them).
   A new type here has to earn it by being named from outside; the machinery

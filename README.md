@@ -108,6 +108,22 @@ live gate looks the observer's lens up per event, not once at the REQ, so a
 subscription that outlives a 10040 (a list published after it opened, or moved to
 another provider) follows the list its next stored page would read.
 
+**Keeping NEG-OPEN snapshots across writes.** Quartz's `LiveEventStore` caches a
+NEG-OPEN's snapshot and drops it only on a write that could change the filter's set;
+`FilterLocality` is this store's half of that decision, and a relay passes both
+predicates straight through (`LiveEventStore(store, ingest, held,
+FilterLocality::writeIsFilterLocal)`, plus `FilterLocality::searchIsFilterLocal` where
+the quartz pin takes a search hook). `writeIsFilterLocal` is false for what can move the
+gate — a card (30382), a provider list (10040), a vanish, and a deletion unless it names
+only addresses of other kinds — and every such write drops every snapshot.
+`searchIsFilterLocal` keeps a search filter's snapshot only where the search narrows by
+the event itself or by that gate: termless `observer:`, `include:spam`, `filter:rank:`,
+`sort:recent`, `-word` exclusions, `language:` and every ignored extension (`domain:`,
+`nsfw:`, `sentiment:`, an unknown `sort:`) at any limit, and a termless trust `sort:`
+without one. Any text is rejected (the drop-limit and the ranking read bm25 corpus
+statistics, which every write moves), as are a trust `sort:` with a limit (its cut falls
+inside rank ties) and `sort:links` (reactions and reports cut its page).
+
 How they combine (`<hex>` = a 64-hex observer pubkey; the examples assume no
 context observer, so the token is the only source):
 

@@ -466,6 +466,10 @@ class NostrSemanticsStore(
      * `TrustProjection.remove`. A kind-1 note, a reaction, a repost and a zap
      * are none of those, and they are the overwhelming majority of what a
      * relay is asked to store.
+     *
+     * Its public twin is [FilterLocality.writeIsFilterLocal] (false where this
+     * is true, except a deletion naming only addresses of other kinds): the
+     * same kinds, asked by a relay's NEG-OPEN snapshot cache. Change both.
      */
     private fun touchesTrust(event: Event): Boolean =
         event.kind == UserAssertionEvent.KIND ||
