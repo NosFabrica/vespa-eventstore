@@ -129,6 +129,17 @@ object IngestStats {
         companion object Key : CoroutineContext.Key<CallStage>
     }
 
+    /**
+     * One call of [stage] that took no time: a zero-time outcome counter (a choice made, a
+     * path taken), booked as [timed] books a call but with no suspension, clock read or
+     * open-stage entry.
+     */
+    fun tick(stage: String) {
+        add(stage, 0)
+        calls.computeIfAbsent(stage) { AtomicLong() }.incrementAndGet()
+        maxima.computeIfAbsent(stage) { AtomicLong() }
+    }
+
     /** Time [body], booking its wall time under [stage]. */
     suspend fun <T> timed(
         stage: String,

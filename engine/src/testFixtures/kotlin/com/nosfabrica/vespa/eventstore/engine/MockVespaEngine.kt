@@ -385,6 +385,9 @@ class MockVespaEngine(
     /** The same for the attribute-only `idtime` and `idtimetag` summaries: the id-first fetch's pages, and every id walk. */
     @Volatile var rejectIdTimeSummary: Boolean = false
 
+    /** The same for the `nip01` summary a full read is sent on as `select *` (a schema deployed before it). */
+    @Volatile var rejectEventSummary: Boolean = false
+
     /**
      * Answer match-phase queries (`ranking=recency` or `recency_gated`) with
      * only this many hits, marked match-phase-degraded — real Vespa's
@@ -772,6 +775,13 @@ class MockVespaEngine(
         if ((summaryClass == "idtime" || summaryClass == "idtimetag") && rejectIdTimeSummary) {
             return Reply(400, """{"root":{"errors":[{"code":4,"summary":"Invalid query parameter","message":"Summary '$summaryClass' does not exist"}]}}""")
         }
+        if (summaryClass == "nip01" && rejectEventSummary) {
+            return Reply(400, """{"root":{"errors":[{"code":4,"summary":"Invalid query parameter","message":"Summary 'nip01' does not exist"}]}}""")
+        }
+        // What a hit carries is its summary class's fields, as real Vespa serves them: the
+        // attribute-only classes have no content, sig or tags, so a page resolved off them
+        // must read its documents by id. The default summary carries everything.
+        val summaryKeys = SUMMARY_CLASS_FIELDS[summaryClass]
         // A schema predating the near attribute fields: real Vespa rejects the
         // whole query the moment the YQL names an unknown field.
         if (rejectNearFields && "name_near" in yql) {
@@ -877,7 +887,7 @@ class MockVespaEngine(
                         matches.take(served).map { doc ->
                             buildJsonObject {
                                 put("relevance", JsonPrimitive(relevanceOf?.invoke(doc) ?: 0.0))
-                                put("fields", doc.indexFields())
+                                put("fields", doc.indexFields().let { all -> if (summaryKeys == null) all else JsonObject(all.filterKeys { it in summaryKeys }) })
                             }
                         },
                     )
@@ -1423,6 +1433,14 @@ object MockSelection {
         return s.substring(1, s.length - 1)
     }
 }
+
+/** The fields each document-summary class in event.sd carries; a class not listed is the default summary, everything. */
+private val SUMMARY_CLASS_FIELDS: Map<String, Set<String>> =
+    mapOf(
+        "idtime" to setOf("id", "created_at"),
+        "idtimetag" to setOf("id", "created_at", "tag_index"),
+        "nip01" to setOf("id", "pubkey", "created_at", "kind", "tags", "content", "sig", "owner"),
+    )
 
 /**
  * Parses exactly the YQL grammar [EventYql] emits back into an [EventQuery].
