@@ -15,15 +15,18 @@ whole (VespaEventIndex.recallSummaries); when the events at or after the boundar
 
 Rules compared: `flat` (64, before 10fbce5), `page` (the page's width clamped to 8..64,
 10fbce5) and `adaptive` (TieSlackMemory.next: cold at 64, back to 64 on a cut, raised at once
-to 2 * over + 8, narrowed by a quarter of the gap). It is a model, not a measurement: real feeds
-are burstier than Poisson, which favours the wider rules.
+to 2 * over + LEAST, narrowed by a quarter of the gap, never below LEAST). LEAST is
+VespaEventIndex.MIN_TIE_SLACK, 3 since 2026-11-25 (8 before); pass another to compare. It is a
+model, not a measurement: real feeds are burstier than Poisson, which favours the wider rules.
 
-  python3 benchmark/tie_slack_sim.py
+  python3 benchmark/tie_slack_sim.py [LEAST]
 """
 import math
 import random
+import sys
 
-MIN, MAX = 8, 64
+MIN, MAX = (int(sys.argv[1]) if len(sys.argv) > 1 else 3), 64
+PAGE_MIN = 8  # 10fbce5's clamp, kept as it was
 QUERY_US, HIT_US = 800.0, 4.4
 READS = 20_000
 
@@ -62,7 +65,7 @@ def run(rate: float, limit: int, rule: str, seed: int = 1):
         else:
             continue  # the feed ran out before a full page: no boundary, nothing to learn
         reads += 1
-        s = {"flat": MAX, "page": max(MIN, min(MAX, limit))}.get(rule, slack)
+        s = {"flat": MAX, "page": max(PAGE_MIN, min(MAX, limit))}.get(rule, slack)
         cut = over >= s
         cuts += cut
         hits += limit + s

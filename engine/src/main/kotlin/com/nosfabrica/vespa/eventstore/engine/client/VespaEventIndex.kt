@@ -3269,9 +3269,14 @@ class VespaEventIndex(
 
         /**
          * The NARROWEST slack a shape learns ([TieSlackMemory]): a page that showed no boundary
-         * ties still keeps this much, as headroom for the next one's.
+         * ties still keeps this much, as headroom for the next one's. A direct read fetches its
+         * slack as whole documents, so on a store larger than memory each one is a cold read
+         * (~8 KB): at 8 a limit-3 page read 88 KB, at 3 it reads 48 KB and serves 15-25% more
+         * cold reads per second, with hot reads and dense boundaries level (benchmark/README.md,
+         * "The least tie slack, on disk"). Not 1: the simulation there puts a 1-5 event/s feed
+         * at 25-70% more container CPU, its every boundary tie a cut back to the wide slack.
          */
-        const val MIN_TIE_SLACK = 8
+        const val MIN_TIE_SLACK = 3
 
         /**
          * `a + b` for a non-negative [b], stopping at [Int.MAX_VALUE] instead of wrapping. Every
