@@ -25,6 +25,7 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -208,5 +209,25 @@ class SchemaFallbacksTest {
         assertTrue(thrown is IllegalArgumentException, "an unrelated 400 must propagate, not be swallowed as a demotion")
         assertTrue(fallbacks.nearFieldsAvailable, "prefix/typo recall must survive a 400 that only echoes the query")
         assertTrue(fallbacks.bodyGramAvailable, "body reach must survive it too")
+    }
+
+    /**
+     * A REFUSED `select` IS PARKED, NOT DROPPED. The first refusal parks it and says so once,
+     * however many reads in flight met the same refusal; while parked reads go as YQL, and once
+     * the park ends the next read tries `select` again, so an engine upgraded meanwhile gets it back.
+     */
+    @Test
+    fun `a refused select is parked once and tried again when the park ends`() {
+        var now = 1_000L
+        val fallbacks = SchemaFallbacks(clock = { now })
+        assertTrue(fallbacks.selectAvailable)
+        assertTrue(fallbacks.markSelectRefused(), "the first refusal parks it")
+        assertFalse(fallbacks.markSelectRefused(), "a second read meeting the same refusal books nothing")
+        assertFalse(fallbacks.selectAvailable)
+        now += SchemaFallbacks.SELECT_RETRY_AFTER_MS - 1
+        assertFalse(fallbacks.selectAvailable, "still parked")
+        now += 1
+        assertTrue(fallbacks.selectAvailable, "tried again once the park ends")
+        assertTrue(fallbacks.markSelectRefused(), "a refusal after the park parks it again, and says so")
     }
 }

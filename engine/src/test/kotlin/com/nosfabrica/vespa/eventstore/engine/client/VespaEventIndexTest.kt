@@ -38,6 +38,7 @@ import kotlin.random.Random
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -865,6 +866,65 @@ class VespaEventIndexTest {
                 assertEquals(2, sent.size, "one windowed attempt, then the unwindowed read: $sent")
                 assertTrue(sent[0].contains("created_at >= "), "the attempt is windowed")
                 assertTrue(!sent[1].contains("created_at >= "), "the fallback is not")
+            }
+        }
+
+    /**
+     * A FEED BLOCK IS SAID AT ONCE. A cluster past its disk or memory limit refuses every write, and the
+     * batch handler lists each one INSUFFICIENT_STORAGE: the write throws [EngineRefusesWrites] straight
+     * away, without re-putting each document through the feed client, whose retries held a refused
+     * batch of 100 for 5 s on a real Vespa. A lone document, which takes the feed client, still fails.
+     */
+    @Test
+    fun `a feed block fails a batch write at once without re-putting it`() =
+        runBlocking {
+            mock.feedBlocked = true
+            VespaEventIndex(mock.url).use { index ->
+                val docs = (1..50).map { doc(kind = 1, at = 1_000L + it) }
+                val before = mock.documentPutAttempts.get()
+                val started = System.nanoTime()
+                assertFailsWith<EngineRefusesWrites> { index.putAll(docs) }
+                assertEquals(before, mock.documentPutAttempts.get(), "nothing re-put through the feed client")
+                assertTrue(System.nanoTime() - started < 5_000_000_000L, "answered at once, not after the feed client's retries")
+                // A lone document takes the batch path too, so it is answered as fast and in the same words.
+                val lone = System.nanoTime()
+                assertFailsWith<EngineRefusesWrites> { index.putAll(listOf(doc(kind = 1, at = 2_000L))) }
+                assertEquals(before, mock.documentPutAttempts.get(), "a lone document is not re-put through the feed client either")
+                assertTrue(System.nanoTime() - lone < 5_000_000_000L, "a lone document answered at once")
+                // A write only the feed client makes still waits out its retries, but its failure names the engine.
+                val refused = assertFailsWith<EngineRefusesWrites> { index.put(doc(kind = 1, at = 3_000L)) }
+                assertTrue(refused.cause?.message?.contains("External feed is blocked") == true, refused.cause?.message)
+            }
+        }
+
+    /**
+     * AN ENGINE THAT REFUSES `select` COSTS ONE REQUEST. A text-free read goes as Vespa's JSON
+     * `select` first; refused with a 400 (this mock, like an engine predating `select.fields`),
+     * the same query is asked as YQL at once, served, and every later read goes as YQL while
+     * `select` is parked (SchemaFallbacksTest holds the park's end). With
+     * `VESPA_SELECT_QUERIES` off nothing tries `select` at all.
+     */
+    @Test
+    fun `a refused select query falls back to yql and parks select`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            seedStrategyCorpus(now)
+            val q = EventQuery(kinds = listOf(1), authors = listOf(BUSY), limit = 5, nowSecs = now)
+            val refusedBefore = IngestStats.snapshot()[VespaEventIndex.SELECT_REFUSED_STAGE]?.calls ?: 0L
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE).use { index ->
+                val first = index.search(q).map { it.createdAt }
+                assertEquals((1..5).map { now - it }, first, "the YQL answer, served on the first read")
+                assertEquals(1, mock.selectRequests.size, "select tried once")
+                assertTrue(mock.selectRequests.single().contains("\"select\":{\"where\":"), mock.selectRequests.single())
+                assertEquals(first, index.search(q.copy(limit = 5)).map { it.createdAt })
+                index.search(EventQuery(kinds = listOf(7), limit = 3, nowSecs = now))
+                assertEquals(1, mock.selectRequests.size, "every later read goes as YQL")
+            }
+            assertEquals(refusedBefore + 1, IngestStats.snapshot()[VespaEventIndex.SELECT_REFUSED_STAGE]?.calls ?: 0L)
+            mock.selectRequests.clear()
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE, selectQueries = false).use { index ->
+                index.search(q)
+                assertEquals(0, mock.selectRequests.size, "switched off: YQL only")
             }
         }
 
@@ -1814,9 +1874,9 @@ class VespaEventIndexTest {
                 batched.putAll(docs)
                 assertEquals(3, mock.batchRequests, "250 documents are three requests")
                 for (d in docs) assertEquals(d.id, batched.get(d.id)?.id)
-                // A lone document gains nothing from a batch: it takes the feed client.
+                // A lone document is batched too: the handler answers a feed block at once, the feed client after its retries.
                 batched.putAll(listOf(doc()))
-                assertEquals(3, mock.batchRequests)
+                assertEquals(4, mock.batchRequests)
             } finally {
                 batched.close()
             }
