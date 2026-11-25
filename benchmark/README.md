@@ -1618,6 +1618,44 @@ id-first.
 Watching it live: each read eligible for id-first books one zero-time
 `IngestStats` counter, `recency.fetch.direct` or `recency.fetch.idfirst`.
 
+### The query container's own cost (2026-11-25)
+
+Every query costs the query container ~800 µs of CPU whatever its size (above), and
+under 200-client REQ load through vespa-relay it was the largest single consumer:
+820 µs per REQ against the relay's 491 and proton's 391, on a machine with no idle
+core left. Nothing tried from outside had moved it, so this time the container
+itself was profiled (JFR on `default/container.0`, 25 s under load, 3,824 samples):
+
+| where the container's CPU went | share |
+|---|---|
+| parsing the YQL (`YqlParser.parse`) | 34% |
+| … of which the `select id, pubkey, …` field list | ~11% |
+| `FieldFilter`: applying that field list, which decodes every field of every hit to a Java string | 19% |
+| rendering the JSON | ~14% |
+| language detection on the query terms (OpenNLP) | 3% |
+
+The field list was paid for twice: parsed on every query, then applied to every hit
+by decoding its fields, where an unfiltered hit is rendered straight from its stored
+bytes. So a full read is now sent as `select *` on a summary class holding exactly
+those fields (`nip01` in event.sd; `EventYql.onSummaryClass`, applied as the request is
+written). A schema deployed before `nip01` refuses the first such read 400; it is sent
+again naming its fields, and so is every read after (`SchemaFallbacks`). The `idtime`
+reads keep their two-attribute list: filtering two attributes costs next to nothing.
+
+Measured through vespa-relay, the same seeded store, two runs each, identical pages
+(65 REQs):
+
+| | before | `nip01` |
+|---|---|---|
+| query container CPU per REQ | 921 / 835 µs | 768 / 738 µs |
+| REQ/s, limit 10, 200 clients | 1,796 / 2,016 | 2,027 / 2,084 |
+| REQ/s, limit 100, 200 clients | 812 / 843 | 877 / 933 |
+
+Not taken: setting the query language to skip detection (3%). On a free-text search
+the language picks the stemming, and a fixed one would change what a NIP-50 search
+matches; on a recency read the terms are pubkeys and tag values, where it would be
+safe, but that is a second rule for a small share.
+
 ### Small batches take the bulk path (2026-11-23)
 
 `NostrSemanticsStore.batchInsert` sent batches under `BULK_MIN` (16) through the
