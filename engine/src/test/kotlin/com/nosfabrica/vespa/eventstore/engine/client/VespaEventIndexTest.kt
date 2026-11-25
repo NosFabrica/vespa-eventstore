@@ -2480,10 +2480,26 @@ class VespaEventIndexTest {
      * did not serve.
      *
      * Pinned so the timer cannot be dropped the way it was never added.
+     *
+     * THIS TEST NEVER RAN until 2026-11-25: its body ended on `assertNotNull`'s
+     * value, so the method returned one, and JUnit skips a test method that is
+     * not void (`runBlocking<Unit>` is what makes it a test). Its last claim had
+     * never been true either. It said discovery costs exactly ONE cursor page;
+     * run at the commit that wrote it (e8bc99c1) the walk read TWO: the page
+     * that found the second, and the open page strictly below it that came back
+     * empty, which is how a walk with no `since` learns it reached the bottom.
+     * Since the walk reads slices (#209) that one open page is a descent: the
+     * one-second page teaches no width (`spanOfPage` keeps the width it had, 1 s
+     * on an open first page), so the walk asks a one-second slice below, then
+     * widens by SLICE_GROWTH through ~1.7e9 empty seconds — 11 empty slices
+     * here, and the last page asked open: 13 cursor pages, every one past the
+     * first empty. That descent is #209's documented price for a walk with no
+     * `since` ("~9 cheap empty queries below its last id"), so it is what is
+     * pinned: the discovery page, then only empty slices and the last page.
      */
     @Test
     fun `what the prefix split cannot reach is one scan, booked as walk-scan`() =
-        runBlocking {
+        runBlocking<Unit> {
             IngestStats.reset()
             val ida = "d4".repeat(32)
             seedBulk((1..200).map { doc(kind = 30382, pubkey = ida, at = 1_700_000_000L) })
@@ -2508,11 +2524,16 @@ class VespaEventIndexTest {
                     stages["walk.ties.prefix"]?.calls,
                     "the budget is READS across the whole split, not a depth",
                 )
-                // ONE cursor page, and no more. The routing is discovered, not
-                // predicted, so the walk necessarily reads the page that shows
-                // it the boundary — and then resolves the second rather than
-                // paging on. That one page IS the cost the probe used to be.
-                assertEquals(1L, stages["walk.ids.page"]?.calls, "discovery costs exactly one cursor page")
+                // ONE page discovers the second, and every other cursor page is
+                // the walk's way down to the epoch below it, where nothing is.
+                // The routing is discovered, not predicted, so the walk reads
+                // the page that shows it the boundary, resolves the second, and
+                // resumes strictly below it, empty slices widening by
+                // SLICE_GROWTH until the last page, asked open at the bottom.
+                val empty = assertNotNull(stages["walk.slice.empty"], "below the second the walk descends by empty slices: ${stages.keys.sorted()}").calls
+                assertEquals(null, stages["walk.slice.short"], "and finds nothing there")
+                assertEquals(1L + empty + 1L, stages["walk.ids.page"]?.calls, "the discovery page, the empty slices and the last page: no other cursor page")
+                assertTrue(empty <= 12, "a geometric descent: 1 s, then x8 a slice, reaches the epoch in ~11 slices, not $empty")
                 assertNotNull(stages["walk.ids.tiegroup"], "and the bounded boundary read that measured the group")
             } finally {
                 scanning.close()
