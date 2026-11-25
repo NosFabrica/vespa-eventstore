@@ -64,11 +64,13 @@ import kotlinx.coroutines.sync.withPermit
  *
  *  A. local checks (ephemeral accepted-not-stored, expired, in-run duplicates);
  *  B. one `id in (…)` duplicate query per [CHECK_CHUNK], fanned out bounded;
- *  C. per-owner tombstone/vanish guards — read in [commit], UNDER the writer
- *     lock, never in [plan]: a kind 5/62 committed by a neighbouring batch
- *     between a lock-free guard read and this batch's writes would resurrect
- *     the events it covers. [GuardOwners] keeps the locked cost at zero for
- *     the common no-flagged-owners batch;
+ *  C. per-owner tombstone/vanish guards — decided in [commit], UNDER the writer
+ *     lock: a kind 5/62 committed by a neighbouring batch between a lock-free
+ *     guard read and this batch's writes would resurrect the events it covers.
+ *     A narrow batch reads them early, beside B, and [commit] keeps that read
+ *     only when no guard was written to the index since it was taken
+ *     ([GuardOwners.guardWrites]); otherwise it reads them again under the lock.
+ *     [GuardOwners] keeps the cost at zero for the common no-flagged-owners batch;
  *  D. per-address supersession resolved IN RUN ORDER, ending exactly where
  *     sequential inserts would;
  *  E. one pipelined [EventIndex.putAll] of the survivors, THEN the removal of
@@ -98,11 +100,17 @@ internal class BulkRecordInsert(
      * version read returns the stored copy itself — and that must be answered
      * as a duplicate, never as a winner (removing the copy and re-putting it).
      * The guard and supersession reads canNOT race: they decide against the
-     * store's current state, so they run in [commit], atomic with the writes.
+     * store's current state, so they are decided in [commit], atomic with the
+     * writes; an early guard read ([earlyGuards]) is only kept there when
+     * nothing could have changed it.
      */
     internal class Plan(
         val events: List<Event>,
         val outcome: Array<IEventStore.InsertOutcome?>,
+        /** Stage C read early, beside the dedup, for every owner stage A left alive; null when it was not. */
+        val earlyGuards: Map<String, Pair<List<EventDoc>, List<EventDoc>>>? = null,
+        /** [GuardOwners.guardWrites] read before [earlyGuards]: [commit] reuses them only if it has not moved. */
+        val guardWritesAtRead: Long = -1,
     )
 
     /**
@@ -148,16 +156,31 @@ internal class BulkRecordInsert(
         // the single largest ingest cost — see EventIndex.existingIds). Chunks
         // fan out with BOUNDED concurrency: serialized round trips starve the
         // batch, unbounded fan-out measurably 504s the engine's summary stage.
+        //
+        // Stage C's guards are read HERE too, beside the dedup, when the batch is narrow enough
+        // that its guards are one query pair ([EARLY_GUARDS_MAX]): a publish batch then waits
+        // for one round of engine reads instead of two, which under a loaded query container
+        // is the whole difference (each round queues behind every reader). [commit] keeps them
+        // only if no guard was written to this index since they were read; see
+        // [GuardOwners.guardWrites] for why that is as exact as reading them under the lock.
+        val owners = alive().groupBy { events[it].owner() }
+        val early = owners.isNotEmpty() && alive().size <= EARLY_GUARDS_MAX
+        val guardWritesAtRead = guards.guardWrites()
         val stored = HashSet<String>()
-        IngestStats.timed("dedup") {
-            alive()
-                .map { events[it].id }
-                .chunked(DEDUP_CHUNK)
-                .mapBounded(QUERY_FANOUT) { chunk -> index.existingIds(chunk) }
-                .forEach { stored += it }
-        }
+        val earlyGuards =
+            coroutineScope {
+                val guardRead = if (early) async { IngestStats.timed("guards.early") { readGuards(owners, events, Semaphore(QUERY_FANOUT)) } } else null
+                IngestStats.timed("dedup") {
+                    alive()
+                        .map { events[it].id }
+                        .chunked(DEDUP_CHUNK)
+                        .mapBounded(QUERY_FANOUT) { chunk -> index.existingIds(chunk) }
+                        .forEach { stored += it }
+                }
+                guardRead?.await()
+            }
         alive().forEach { i -> if (events[i].id in stored) outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.DUPLICATE) }
-        return Plan(events, outcome)
+        return Plan(events, outcome, earlyGuards, guardWritesAtRead)
     }
 
     /**
@@ -211,27 +234,11 @@ internal class BulkRecordInsert(
         // trips per content batch — the ingest's real bottleneck). Nothing caps
         // the guard queries, so the batched view is exact by construction.
         val owners = alive().groupBy { events[it].owner() }
+        // The early read covered every owner alive before the dedup, a superset of these, and
+        // stands when no guard was written since it was taken.
         val guardSets =
-            IngestStats.timed("guards") {
-                // Unflagged owners (GuardOwners) have provably empty guard sets
-                // — usually ALL of a content batch, skipping both queries.
-                // Gated independently: deleters vastly outnumber vanishers, so
-                // the vanish query usually disappears even in a flagged batch.
-                val flaggedDeleters = guards.filterFlaggedDeleters(owners.keys)
-                val flaggedVanishers = guards.filterFlaggedVanishers(owners.keys)
-                // The two guard reads are independent: run together.
-                coroutineScope {
-                    val tombs =
-                        if (flaggedDeleters.isEmpty()) {
-                            null
-                        } else {
-                            async { tombstoneDocs(owners.filterKeys { it in flaggedDeleters }, events, reads) }
-                        }
-                    val vanishes = if (flaggedVanishers.isEmpty()) emptyMap() else guardDocs(flaggedVanishers, RequestToVanishEvent.KIND, reads)
-                    val tombstones = tombs?.await().orEmpty()
-                    owners.keys.associateWith { (tombstones[it].orEmpty() to vanishes[it].orEmpty()) }
-                }
-            }
+            plan.earlyGuards?.takeIf { guards.guardWrites() == plan.guardWritesAtRead }?.also { IngestStats.tick(EARLY_GUARDS_KEPT) }
+                ?: IngestStats.timed("guards") { readGuards(owners, events, reads) }
         // Applying the guards, as opposed to fetching them (`guards`, above):
         // one pass over every tombstone/vanish tag in the batch to build the
         // per-owner id/address cutoffs. Pure CPU, inside the lock.
@@ -490,6 +497,35 @@ internal class BulkRecordInsert(
     }
 
     /**
+     * Stage C's reads for [owners] (rows of [events] by owner): each owner's tombstones that can
+     * guard these events and its vanish requests, as a pair, for every owner.
+     */
+    private suspend fun readGuards(
+        owners: Map<String, List<Int>>,
+        events: List<Event>,
+        reads: Semaphore,
+    ): Map<String, Pair<List<EventDoc>, List<EventDoc>>> {
+        // Unflagged owners (GuardOwners) have provably empty guard sets
+        // — usually ALL of a content batch, skipping both queries.
+        // Gated independently: deleters vastly outnumber vanishers, so
+        // the vanish query usually disappears even in a flagged batch.
+        val flaggedDeleters = guards.filterFlaggedDeleters(owners.keys)
+        val flaggedVanishers = guards.filterFlaggedVanishers(owners.keys)
+        // The two guard reads are independent: run together.
+        return coroutineScope {
+            val tombs =
+                if (flaggedDeleters.isEmpty()) {
+                    null
+                } else {
+                    async { tombstoneDocs(owners.filterKeys { it in flaggedDeleters }, events, reads) }
+                }
+            val vanishes = if (flaggedVanishers.isEmpty()) emptyMap() else guardDocs(flaggedVanishers, RequestToVanishEvent.KIND, reads)
+            val tombstones = tombs?.await().orEmpty()
+            owners.keys.associateWith { (tombstones[it].orEmpty() to vanishes[it].orEmpty()) }
+        }
+    }
+
+    /**
      * Every guard event of [kind] for [owners], bucketed by author. One query
      * per [CHECK_CHUNK] of owners; no query carries a limit, so a chunk always
      * comes back whole and one prolific deleter cannot crowd out its chunk.
@@ -540,6 +576,17 @@ internal class BulkRecordInsert(
         // Ids/authors/d-tags per check query. Not a result cap — no query here
         // carries a limit — just how wide one round trip is built.
         const val CHECK_CHUNK = DEFAULT_DEDUP_CHUNK
+
+        /**
+         * The widest batch whose guards [plan] reads beside its dedup: one [CHECK_CHUNK] of
+         * events is one tombstone query and one vanish query, the same reads [commit] would make.
+         * A wider batch is a mirror's, mostly duplicates, whose guards are read for the
+         * survivors alone, under the lock, as before.
+         */
+        const val EARLY_GUARDS_MAX = CHECK_CHUNK
+
+        /** Counted each time [commit] keeps the guards [plan] read: no locked guard round trip. */
+        const val EARLY_GUARDS_KEPT = "guards.early.kept"
 
         /**
          * Stage B's dedup chunk width alone (guard/version queries keep

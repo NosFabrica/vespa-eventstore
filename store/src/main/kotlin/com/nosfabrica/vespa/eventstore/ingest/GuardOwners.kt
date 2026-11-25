@@ -41,8 +41,11 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.Collections
+import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * The owners with a stored tombstone / stored vanish — the keys that let the
@@ -108,6 +111,31 @@ internal class GuardOwners(
 
     /** The override outranks the caller: an operator must be able to force the strict floor. */
     private val mode = override ?: topology
+
+    /** This index's guard writes, shared by every [GuardOwners] over it in this process — see [guardWrites]. */
+    private val writes: AtomicLong = guardWriteCounter(index)
+
+    /**
+     * How many kind 5 and kind 62 writes (and the erasures they stand for) this process has made
+     * to this index so far, counted when each one ENDS, landed or failed. A guard read taken after
+     * reading this number is still exact under the writer lock as long as the number has not
+     * moved: whatever this process wrote since would have moved it, and a foreign writer's guard
+     * could race a locked read just the same. [BulkRecordInsert] reads its guards that way, beside
+     * its dedup, and reads them again under the lock only when the number moved.
+     */
+    fun guardWrites(): Long = writes.get()
+
+    /**
+     * Runs [write], a write that stores a kind 5 or 62 or applies one, and counts it in
+     * [guardWrites] however it ends: a write that failed may still have landed. Callers hold the
+     * writer lock, so the count moves before any other batch's locked commit compares it.
+     */
+    suspend fun <T> writingGuards(write: suspend () -> T): T =
+        try {
+            write()
+        } finally {
+            writes.incrementAndGet()
+        }
 
     @Volatile
     private var blooms: Blooms? = null
@@ -303,6 +331,11 @@ internal class GuardOwners(
     }
 
     internal companion object {
+        /** One counter per index object, so two [GuardOwners] over one index share it; weak, so a closed index's goes with it. */
+        private val guardWriteCounters: MutableMap<EventIndex, AtomicLong> = Collections.synchronizedMap(WeakHashMap())
+
+        private fun guardWriteCounter(index: EventIndex): AtomicLong = guardWriteCounters.getOrPut(index) { AtomicLong() }
+
         const val ENV_DISABLE = "GUARD_OWNERS_DISABLE"
 
         private val TRUTHY = setOf("1", "true", "yes", "on")

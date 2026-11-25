@@ -148,15 +148,19 @@ internal class EventAdmission(
         }
         when {
             event is DeletionRequestEvent -> {
-                deletions.applyDeletion(event)
-                index.put(event.toDoc())
-                guards.noteDeletionStored(event.pubKey)
+                guards.writingGuards {
+                    deletions.applyDeletion(event)
+                    index.put(event.toDoc())
+                    guards.noteDeletionStored(event.pubKey)
+                }
             }
 
             event is RequestToVanishEvent -> {
-                deletions.applyVanish(event)
-                index.put(event.toDoc())
-                guards.noteVanishStored(event.pubKey)
+                guards.writingGuards {
+                    deletions.applyVanish(event)
+                    index.put(event.toDoc())
+                    guards.noteVanishStored(event.pubKey)
+                }
             }
 
             // Replaceable/addressable newest-wins in ONE call: false == a

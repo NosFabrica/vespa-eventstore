@@ -73,8 +73,13 @@ internal class BulkMixedInsert(
     /** The vanish erase against the REAL index — the per-event path's paged [Deletions.sweep]. */
     private val erase = Deletions(index, relay, sweepPage)
 
-    /** Preload, replay, write the diff. Callers hold the store's writer lock across the whole run. */
-    suspend fun run(events: List<Event>): List<IEventStore.InsertOutcome> {
+    /**
+     * Preload, replay, write the diff. Callers hold the store's writer lock across the whole run,
+     * which counts as one guard write ([GuardOwners.writingGuards]): its batch carries a kind 5 or 62.
+     */
+    suspend fun run(events: List<Event>): List<IEventStore.InsertOutcome> = guards.writingGuards { replayAndWrite(events) }
+
+    private suspend fun replayAndWrite(events: List<Event>): List<IEventStore.InsertOutcome> {
         val snapshot = InMemoryEventIndex()
         preloadWorkingSet(snapshot, events)
         val beforeDocs = snapshot.search(EventQuery())
