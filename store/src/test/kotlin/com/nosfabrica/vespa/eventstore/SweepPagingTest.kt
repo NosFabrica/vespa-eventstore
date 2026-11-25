@@ -114,6 +114,46 @@ class SweepPagingTest {
         }
 
     /**
+     * STORE-D08 (a limit is per filter) and STORE-F07 (filters are a union): a
+     * multi-filter delete removes the union of each filter's match set, every one
+     * evaluated on the SAME state — SQLite's one `DELETE … WHERE row_id IN (subq1
+     * UNION subq2)`. Swept filter by filter, the second limit-2 filter found the
+     * newest two already gone and took the next two, so the delete removed four.
+     */
+    @Test
+    fun `identical limited delete filters remove their union once`() =
+        runBlocking {
+            val newestFirst = seedNewestFirst()
+            store.delete(listOf(Filter(kinds = listOf(1), limit = 2), Filter(kinds = listOf(1), limit = 2)))
+            assertEquals(newestFirst.drop(2).toSet(), ids(), "two identical limit-2 filters delete the same newest two")
+        }
+
+    @Test
+    fun `overlapping limited delete filters remove their union`() =
+        runBlocking {
+            val newestFirst = seedNewestFirst()
+            store.delete(listOf(Filter(kinds = listOf(1), limit = 2), Filter(kinds = listOf(1), limit = 3)))
+            assertEquals(newestFirst.drop(3).toSet(), ids(), "the newest 2 and the newest 3 are the newest 3")
+        }
+
+    /** The limited filter is read on the state the delete began with, not on what an unlimited sibling left. */
+    @Test
+    fun `a limited delete filter beside an unlimited one reads the state the delete began with`() =
+        runBlocking {
+            val newestFirst = seedNewestFirst()
+            store.delete(listOf(Filter(ids = newestFirst.take(2)), Filter(kinds = listOf(1), limit = 2)))
+            assertEquals(newestFirst.drop(2).toSet(), ids(), "the limit-2 filter's newest two are the two the other filter named")
+        }
+
+    private suspend fun seedNewestFirst(): List<String> {
+        val notes = (1..CORPUS).map { note(at = 7_000L + it) }
+        store.batchInsert(notes)
+        return notes.sortedByDescending { it.createdAt }.map { it.id }
+    }
+
+    private suspend fun ids() = store.query<Event>(listOf(Filter())).map { it.id }.toSet()
+
+    /**
      * A sweep whose removes do not land must FAIL, not return: an acked remove
      * is visible to search (the EventIndex contract), so a repeated page means
      * the deletes are being dropped — reporting the vanish/delete as enforced

@@ -1288,7 +1288,9 @@ class NostrSemanticsStore(
                 .mapNotNull { it.toEventQuery() }
         if (queries.isEmpty()) return
         locks.gated(trust = true, WriteLocks.SWEEP, WriteLocks.SWEEP_TRUST) {
-            queries.forEach { deletions.sweep(it) }
+            // The union, each filter read on the same state (STORE-F07 + D08),
+            // not one filter after another: see Deletions.sweepUnion.
+            deletions.sweepUnion(queries)
         }
     }
 
