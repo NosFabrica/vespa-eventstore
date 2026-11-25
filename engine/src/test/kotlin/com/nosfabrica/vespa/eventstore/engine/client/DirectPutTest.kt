@@ -97,6 +97,21 @@ class DirectPutTest {
         }
 
     @Test
+    fun `a document whose docid cannot be a url segment goes the feed client's way`() =
+        runBlocking<Unit> {
+            // Address-keyed, an addressable event's docid is its address, and a d tag with a space
+            // (or a `/`, or anything non-ASCII) cannot be one path segment of a document-API url.
+            VespaEventIndex(mock.url, addressKeyed = true).use { keyed ->
+                val article = doc(kind = 30023).copy(tags = listOf(listOf("d", "my post")))
+                keyed.put(article)
+                val docPaths = mock.protocols.map { it.first }.filter { it.startsWith("/document/v1/") }
+                assertEquals(emptyList(), docPaths.filter { it.endsWith("/docid/null") }, "nothing is stored under the docid `null`")
+                assertEquals(0, keyed.directPuts, "the feed client took the put")
+                assertNotNull(keyed.get(article.id), "and it is stored")
+            }
+        }
+
+    @Test
     fun `a put the engine refuses goes the feed client's way`() =
         runBlocking<Unit> {
             // The feed client's schema net drops a column the engine does not know and feeds again.

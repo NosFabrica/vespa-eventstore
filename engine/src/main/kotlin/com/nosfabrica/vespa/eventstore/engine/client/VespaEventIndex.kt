@@ -466,7 +466,11 @@ class VespaEventIndex(
         if (!directWriteIdle() || !directPutBusy.compareAndSet(false, true)) return false
         try {
             if (!directWriteIdle()) return false
-            val url = "${documentEndpoint()}/document/v1/$EVENT_NAMESPACE/$EVENT_DOCTYPE/docid/${docIdSegment(docIdOf(doc))}?timeout=${FEED_TIMEOUT.seconds}s"
+            // A docid that cannot be one url segment (a non-hex id, or an address whose d tag holds
+            // a space, a `/` or non-ASCII) is the feed client's: interpolated, the null segment
+            // stored the document under the docid `null` and reported it stored.
+            val segment = docIdSegment(docIdOf(doc)) ?: return false
+            val url = "${documentEndpoint()}/document/v1/$EVENT_NAMESPACE/$EVENT_DOCTYPE/docid/$segment?timeout=${FEED_TIMEOUT.seconds}s"
             val body = doc.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge(), includeStem = fallbacks.stemFieldsAvailable)
             val resp =
                 try {
