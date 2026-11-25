@@ -663,7 +663,9 @@ class VespaEventIndex(
             var pending = chunk
             var refusals = 0
             while (pending.isNotEmpty()) {
-                val ops = pending.map { ifStoredOp(it) }
+                // Handed over through enqueueAll like every feed operation: past the client's
+                // throttle window a hand-over sleeps on its thread, which was the caller's here.
+                val ops = feed.enqueueAll(pending, ::ifStoredOp)
                 val refused = ArrayList<EventDoc>()
                 var failure: Throwable? = null
                 // Every op is awaited before anything is thrown: they are in
