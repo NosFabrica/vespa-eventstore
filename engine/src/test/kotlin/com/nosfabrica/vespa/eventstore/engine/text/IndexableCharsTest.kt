@@ -74,6 +74,14 @@ class IndexableCharsTest {
     }
 
     @Test
+    fun `query text - a lone surrogate separates, a pair is one character`() {
+        assertEquals("a b", IndexableChars.queryText("a\uD83Db"), "no document holds one, and the wire would send it as ?")
+        assertEquals(" zap ", IndexableChars.queryText("\uDD25zap\uD83D"))
+        assertEquals("a\uD83D\uDD25b", IndexableChars.queryText("a\uD83D\uDD25b"))
+        assertEquals("a b", IndexableChars.exclusionText("a\uD83Db"), "nor in an exclusion's phrase")
+    }
+
+    @Test
     fun `search words are capped in number, in tokens and in length, keeping the first`() {
         val many = (1..40).joinToString(" ") { "w$it" }
         assertEquals((1..IndexableChars.MAX_SEARCH_WORDS).map { "w$it" }, IndexableChars.searchWords(many))

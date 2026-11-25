@@ -63,6 +63,7 @@ class EventYqlTest {
                 EventQuery(tagsAll = mapOf("t" to listOf("a", "b")), tags = mapOf("e" to listOf(b)), limit = 10),
                 EventQuery(tagsAll = mapOf("t" to listOf("only")), limit = 10),
                 EventQuery(tags = mapOf("t" to listOf("x\u0001y", "z")), limit = 10),
+                EventQuery(tags = mapOf("t" to listOf("a\uD83Db", "z", "\uD83D\uDD25")), limit = 10),
                 EventQuery(kinds = listOf(1), since = 100, until = 200, notExpiredAt = 150, limit = 10),
                 EventQuery(kinds = listOf(1), expiresBefore = 300),
                 EventQuery(kinds = listOf(1), ranking = EventYql.RANK_RECENCY_GATED, observer = a, rankKey = a, minRank = 2.0, limit = 10),
@@ -749,6 +750,35 @@ class EventYqlTest {
         // value sinks the conjunction. Dropping it would WIDEN the query to
         // documents that lack the term entirely.
         assertNull(EventYql.build(EventQuery(tagsAll = mapOf("d" to listOf(bad, "good")))))
+    }
+
+    /**
+     * A LONE surrogate has no UTF-8 form: the request writer sent it as `?`, so `#t:["\uD83D"]`
+     * read the events tagged `?`. No document can hold one (VespaText.isStorable refuses it), so
+     * the value matches nothing, in the YQL and in the JSON select form alike.
+     */
+    @Test
+    fun `a tag value with a lone surrogate is unmatchable in both forms`() {
+        for (lone in listOf("\uD83D", "\uDD25", "a\uD83Db", "\uDD25\uD83D", "x\uD83D")) {
+            assertNull(EventYql.build(EventQuery(tags = mapOf("t" to listOf(lone)), limit = 10)), lone)
+            assertNull(EventYql.build(EventQuery(tagsAll = mapOf("t" to listOf(lone, "x")), limit = 10)), lone)
+        }
+        val q = EventYql.build(EventQuery(tags = mapOf("t" to listOf("a\uD83Db", "x")), limit = 10))!!
+        assertTrue("tag_index contains \"t:x\"" in q.yql, q.yql)
+        val where = assertNotNull(assertNotNull(q.select).where)
+        assertTrue("\"t:x\"" in where, where)
+        for (text in listOf(q.yql, where)) assertTrue(text.none(Char::isSurrogate) && "t:a" !in text, text)
+        // A real pair is one character, and stays matchable.
+        val fire = EventYql.build(EventQuery(tags = mapOf("t" to listOf("\uD83D\uDD25")), limit = 10))!!
+        assertTrue("t:\uD83D\uDD25" in fire.yql && "t:\uD83D\uDD25" in fire.select!!.where!!, fire.yql)
+    }
+
+    @Test
+    fun `a search word with a lone surrogate sends none`() {
+        val q = EventYql.build(EventQuery(search = "a\uD83Db \uDD25zap"))!!
+        assertEquals(listOf("a", "b", "zap"), listOf(q.params["w0"], q.params["w1"], q.params["w2"]))
+        assertTrue(q.params.values.none { v -> v.any(Char::isSurrogate) }, q.params.toString())
+        assertNull(EventYql.build(EventQuery(search = "\uD83D")), "a word of nothing but one is no match")
     }
 
     /**

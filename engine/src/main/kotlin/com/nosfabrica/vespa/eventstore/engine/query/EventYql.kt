@@ -1653,8 +1653,25 @@ object EventYql {
      * DEL and the C1 block are deliberately NOT excluded: Vespa stores them
      * (mojibake'd Latin-1 lands there constantly), documents really do carry
      * them, and they need no escape.
+     *
+     * A LONE surrogate is excluded: it has no UTF-8 form, so the request
+     * writer sent it as `?` and `#t:["\uD83D"]` read the events tagged `?`. No
+     * document can hold one (`VespaText.isStorable` refuses it), so like a C0
+     * character it is unmatchable. A pair is one character, and quotable.
      */
-    private fun isQuotable(s: String): Boolean = s.none { it < ' ' && it != '\t' && it != '\n' && it != '\r' }
+    private fun isQuotable(s: String): Boolean {
+        var i = 0
+        while (i < s.length) {
+            val c = s[i]
+            when {
+                c < ' ' && c != '\t' && c != '\n' && c != '\r' -> return false
+                Character.isHighSurrogate(c) && i + 1 < s.length && Character.isLowSurrogate(s[i + 1]) -> i++
+                Character.isSurrogate(c) -> return false
+            }
+            i++
+        }
+        return true
+    }
 
     /**
      * `field in (…)` over the valid 64-hex entries of [values] (normalized to

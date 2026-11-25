@@ -175,6 +175,10 @@ object IndexableChars {
      *    it there loses the very notes the text was copied from.
      *  - Emoji skin-tone modifiers are dropped: the engine ignores them (👍🏽
      *    is 👍), and the in-memory reference matches by substring.
+     *  - A LONE surrogate becomes a space: it has no UTF-8 form, so the wire
+     *    sent it as `?` ("a\uD83Db" asked for a and b while the reference
+     *    looked for the literal), and no document holds one
+     *    (`VespaText.isStorable`). A space is what both ends make of it.
      *  - The rest of the default grammar's OPERATORS become spaces too, since
      *    a word reaches `userInput()` whole and Vespa parses it. MEASURED on
      *    the local Vespa (2026-11-25, 31,654 notes; the grammar is `weakAnd`):
@@ -211,6 +215,7 @@ object IndexableChars {
             val n = Character.charCount(cp)
             val next = if (i + n < s.length) s.codePointAt(i + n) else -1
             when {
+                cp in SURROGATES -> out.append(' ')
                 syntax && cp < 0x10000 && cp.toChar() in WORD_SYNTAX -> out.append(' ')
                 syntax && cp < 0x10000 && cp.toChar() in SIGNS && opensTerm(out) -> out.append(' ')
                 cp < 0x10000 && cp.toChar() in SELECTORS && isLoneSelector(prev, next) -> Unit
@@ -231,10 +236,24 @@ object IndexableChars {
      * ❤, FE0F), so the stripped phrase "❤❤" could never match the note the
      * user means to exclude. Quotes and stars stay: phrase grammar reads them
      * as the separators the document's tokenizer did ("-f*ck" drops f*ck).
+     * A lone surrogate is a space even then: the wire would send it as `?`.
      */
     fun exclusionText(word: String): String {
-        val stripped = clean(word, syntax = false)
-        return if (stripped != word && tokens(stripped).size == 1) stripped else word
+        val typed = if (word.any(Character::isSurrogate)) spaceLoneSurrogates(word) else word
+        val stripped = clean(typed, syntax = false)
+        return if (stripped != typed && tokens(stripped).size == 1) stripped else typed
+    }
+
+    /** [s] with every unpaired surrogate a space, the one change [exclusionText] makes to text it otherwise keeps as typed. */
+    private fun spaceLoneSurrogates(s: String): String {
+        val out = StringBuilder(s.length)
+        var i = 0
+        while (i < s.length) {
+            val cp = s.codePointAt(i)
+            if (cp in SURROGATES) out.append(' ') else out.appendCodePoint(cp)
+            i += Character.charCount(cp)
+        }
+        return out.toString()
     }
 
     /** True when a sign appended to [out] would open a term: nothing, or no letter, digit or mark, stands before it. */
@@ -260,6 +279,9 @@ object IndexableChars {
     private const val SIGNS = "-+\uFF0D\uFF0B"
 
     private const val SELECTORS = "\uFE0E\uFE0F"
+
+    /** What [String.codePointAt] returns for a surrogate with no partner: a pair decodes above it. */
+    private val SURROGATES = 0xD800..0xDFFF
 
     private val SKIN_TONES = 0x1F3FB..0x1F3FF
 
