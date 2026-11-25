@@ -462,6 +462,51 @@ With the follower rule, the probe reaches the oracle. No loss over 0.1.
 - **Not shipped**: the embedding package, the semantic rung and the aboutness multiplier
   (`benchmark/embedding/build_app.py`, `RankAb.SEMANTIC_CONFIGS`). They remain an experiment.
 
+## 11. Should a publication (30040) be a reference kind? No.
+
+On the graded mixed pages (§9, §10), wiki (30818, mean grade 2.80 when titled exactly a topical
+query) and long-form (30023, 2.67) are the only kinds whose exact-title documents are reliably the
+answer. Lists and sets grade 1.0–1.3, profiles 0.5, and nothing else clears 1.9. Several kinds that
+look like reference documents never reached a graded page, for three reasons, all checked on
+production (read-only COUNTs and REQs):
+
+- **Drafts (30024): 0 served.**
+- **Too rare to rank:** NIP documents (30817) 479, learning resources (30142) 699, podcast episodes
+  (54) 855 and (30054) 176, hardcopy citations (32) 4, against 1.1M long-form and 6M wiki.
+- **Publications (30040 / 30041): 99 041 / 2.5M, but off the page.** 126 of 133 sampled publications
+  matching common topics come from one public-domain mirror (GC-Publishing) the canonical lens trusts
+  at 32 with 36 followers. On the convex trust curve that is roughly ×25 under a trust-100 author on
+  the same rung, so no publication reaches a mixed top 150.
+
+So the place a 30040 rule could matter is a publications-only read. `benchmark/rank_cases_publications.json`
+(`make_publication_cases.py`) holds 25 book titles (classics the mirror carries, plus books by authors the
+lens trusts at 70+: the US Constitution, *Interior Castle*, *Mysticism and Logic*) and 12 topics, all as
+`kinds: [30040]`, plus 8 of the titles on the mixed page. `capture_eval.py` now captures a case's
+`kinds`. 3 660 events were captured and 3 297 new ones loaded. Production's probe reads every book title
+as topical, since no profile or app is named "Pride and Prejudice", so the shipped rule applies to all of
+them. The experiment package gained `query(ref_30040)`, which widens the shipped `reference_kind()`.
+
+| change | publication-tab pages changed (37) | mixed pages changed (8) |
+|---|---:|---:|
+| baseline → shipped | **0** | 1 (`Common Sense`) |
+| shipped → shipped + 30040 as reference | **0** | **0** |
+
+Why nothing moves:
+
+- **Exact titles are rare.** 31 of the 251 publication-tab top-10 hits are titled exactly the query;
+  `The Republic` has no publication titled exactly that.
+- **Where one exists, it leads either way.** On a single-kind page (and mostly one author), the
+  exactness boost ("the query is the whole title") still ranks the exact title first after the
+  perfect-match rung leaves: "Pride and Prejudice" and Dikaios1517's "Bitcoin" are #1 in all three.
+
+The one page the shipped rule moves is an improvement, though it was not graded: `Common Sense` on the
+mixed page goes from a song and a profile named "Common Sense" at #1–2 to a book-club event about
+Paine's *Common Sense*. The wiki page on the pamphlet holds #6 throughout.
+
+**Verdict: leave `reference_kind()` at 30818 and 30023.** Adding 30040 changes no page. Revisit only if
+trusted authors publish books in volume (the convex trust curve, not this rung, is what keeps
+publications off mixed pages), and re-run this set when they do.
+
 ### 10.1 Still open
 
 - **The human audit** of the 958 model grades (§9.3), `benchmark/search_judgments_audit_broad.json`:

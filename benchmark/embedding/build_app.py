@@ -113,6 +113,7 @@ PROFILE_ADDITIONS = f"""
             query(w_sem_mult_topical) double: 0.0
             query(topical_drop_precision) double: 1.0
             query(topical_keep_reference) double: 0.0
+            query(ref_30040) double: 0.0
         }}
         # Guarded twice. With no q_emb sent the query tensor is all zeros, so
         # nothing reads the cosine unless a knob is on. And an event with no
@@ -145,17 +146,15 @@ PROFILE_ADDITIONS = f"""
         function perfect_boost() {{
             expression: query(w_perfect_pop) * perfect_share() * pow(perfect_match(), query(w_perfect_pow))
         }}
-        # A REFERENCE document: a wiki article (30818) or long-form article
-        # (30023). Titled exactly the topic, it is the canonical page ABOUT it
-        # ("The Art of War", "PICO-8", graded 3), not an entity NAMED it (an app
-        # or calendar event called "Coffee", graded 1-2). §8.5.
-        function reference_kind() {{
-            expression: if(attribute(kind) == 30818, 1.0, if(attribute(kind) == 30023, 1.0, 0.0))
-        }}
+        # reference_kind() is the shipped schema's (§10); REFERENCE_OLD below widens it for §11.
         function intent_precision() {{
             expression: precision_boost_pop() - query(topical) * (query(topical_drop_precision) * precision_boost_pop() + (1.0 - query(topical_drop_precision)) * (1.0 - query(topical_keep_reference) * reference_kind()) * perfect_boost())
         }}
 """
+
+# §11: whether a publication index (30040) is a reference kind too. 0 = the shipped reference_kind().
+REFERENCE_OLD = "if(attribute(kind) == 30023, 1.0, 0.0))"
+REFERENCE_NEW = "if(attribute(kind) == 30023, 1.0, if(attribute(kind) == 30040, query(ref_30040), 0.0)))"
 
 FIRST_OLD = "expression: floored_text_score() * wot_mult() * recency_mult()"
 FIRST_NEW = "expression: max(intent_text_score(), sem_tier_score()) * wot_mult() * recency_mult()"
@@ -173,7 +172,7 @@ def patch_schema(sd: str) -> str:
     start = sd.index("    rank-profile search inherits text_relevance {")
     end = sd.index("\n    rank-profile ", start + 10)
     body = sd[start:end]
-    for old, new in ((FIRST_OLD, FIRST_NEW), (SECOND_OLD, SECOND_NEW), (SECOND_TAIL_OLD, SECOND_TAIL_NEW)):
+    for old, new in ((FIRST_OLD, FIRST_NEW), (SECOND_OLD, SECOND_NEW), (SECOND_TAIL_OLD, SECOND_TAIL_NEW), (REFERENCE_OLD, REFERENCE_NEW)):
         if body.count(old) != 1:
             sys.exit(f"the search profile no longer reads `{old}` exactly once: update build_app.py to the schema")
         body = body.replace(old, new)

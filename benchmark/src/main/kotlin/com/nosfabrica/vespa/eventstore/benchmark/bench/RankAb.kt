@@ -373,6 +373,25 @@ object RankAb {
             // regression check compares.
             "file_entity_off" to
                 mapOf("_intent" to 3.0, "topical_cap" to 1e12, "topical_drop_precision" to 0.0, "topical_keep_reference" to 1.0),
+            // §11: a publication index (30040) as a reference kind too, beside
+            // wiki and long-form: on a book-title search the book IS the answer.
+            "file_pub_reference" to
+                mapOf(
+                    "_intent" to 3.0,
+                    "topical_cap" to 1e12,
+                    "topical_drop_precision" to 0.0,
+                    "topical_keep_reference" to 1.0,
+                    "ref_30040" to 1.0,
+                ),
+            "prodfile_pub_reference" to
+                mapOf(
+                    "perfect_df_min_docs" to 0.0,
+                    "_intent" to 3.0,
+                    "topical_cap" to 1e12,
+                    "topical_drop_precision" to 0.0,
+                    "topical_keep_reference" to 1.0,
+                    "ref_30040" to 1.0,
+                ),
             // The same, decided by the probe instead of the label.
             "probe_cap_550" to mapOf("_intent" to 2.0, "topical_cap" to 550.0),
             "probe_hybrid" to
