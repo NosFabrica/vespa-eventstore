@@ -38,6 +38,7 @@ import kotlin.random.Random
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -865,6 +866,27 @@ class VespaEventIndexTest {
                 assertEquals(2, sent.size, "one windowed attempt, then the unwindowed read: $sent")
                 assertTrue(sent[0].contains("created_at >= "), "the attempt is windowed")
                 assertTrue(!sent[1].contains("created_at >= "), "the fallback is not")
+            }
+        }
+
+    /**
+     * A FEED BLOCK IS SAID AT ONCE. A cluster past its disk or memory limit refuses every write, and the
+     * batch handler lists each one INSUFFICIENT_STORAGE: the write throws [EngineRefusesWrites] straight
+     * away, without re-putting each document through the feed client, whose retries held a refused
+     * batch of 100 for 5 s on a real Vespa. A lone document, which takes the feed client, still fails.
+     */
+    @Test
+    fun `a feed block fails a batch write at once without re-putting it`() =
+        runBlocking {
+            mock.feedBlocked = true
+            VespaEventIndex(mock.url).use { index ->
+                val docs = (1..50).map { doc(kind = 1, at = 1_000L + it) }
+                val before = mock.documentPutAttempts.get()
+                val started = System.nanoTime()
+                assertFailsWith<EngineRefusesWrites> { index.putAll(docs) }
+                assertEquals(before, mock.documentPutAttempts.get(), "nothing re-put through the feed client")
+                assertTrue(System.nanoTime() - started < 5_000_000_000L, "answered at once, not after the feed client's retries")
+                assertTrue(runCatching { index.putAll(listOf(doc(kind = 1, at = 2_000L))) }.isFailure, "a lone document still fails")
             }
         }
 
