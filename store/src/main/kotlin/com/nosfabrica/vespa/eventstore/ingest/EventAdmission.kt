@@ -146,20 +146,24 @@ internal class EventAdmission(
                 if (vanished?.await() == true) throw RejectedException(Rejections.VANISHED)
             }
         }
+        // A guard's owner is noted BEFORE its write: a write that lands and then fails (a timeout
+        // after the feed took it) is a stored guard all the same, and noted after, it was never
+        // noted at all; its re-offer is a duplicate, which notes nothing. Over-flagging, for a
+        // write that never landed, only costs the owner's events a probe ([GuardOwners]).
         when {
             event is DeletionRequestEvent -> {
                 guards.writingGuards {
+                    guards.noteDeletionStored(event.pubKey)
                     deletions.applyDeletion(event)
                     index.put(event.toDoc())
-                    guards.noteDeletionStored(event.pubKey)
                 }
             }
 
             event is RequestToVanishEvent -> {
                 guards.writingGuards {
+                    guards.noteVanishStored(event.pubKey)
                     deletions.applyVanish(event)
                     index.put(event.toDoc())
-                    guards.noteVanishStored(event.pubKey)
                 }
             }
 

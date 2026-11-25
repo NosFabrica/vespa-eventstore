@@ -396,4 +396,56 @@ class BulkMixedInsertTest {
             assertEquals(2, puts.size, "a tombstone that erases lands after the erase: $puts")
             assertEquals(null, inner.get(target.id))
         }
+
+    /** Lands every write, then throws for one carrying a kind in [kinds]: a timeout after the feed accepted it. */
+    private class LandsThenThrows(
+        val inner: InMemoryEventIndex,
+        private val kinds: Set<Int>,
+    ) : EventIndex by inner {
+        var armed = true
+
+        override suspend fun put(doc: EventDoc) {
+            inner.put(doc)
+            check(!(armed && doc.kind in kinds)) { "timeout after landing" }
+        }
+
+        override suspend fun putAll(docs: List<EventDoc>) {
+            inner.putAll(docs)
+            check(!(armed && docs.any { it.kind in kinds })) { "timeout after landing" }
+        }
+
+        override suspend fun putIfNewer(doc: EventDoc): Boolean = super<EventIndex>.putIfNewer(doc)
+    }
+
+    /**
+     * The mixed path's form of a guard write that lands and then fails: the owners were noted
+     * only after the write returned, so a tombstone stored by the together-write (records and
+     * guards in one putAll) or a vanish stored after its erase flagged nobody, and under
+     * SINGLE_WRITER the event it covers was admitted afterwards for good.
+     */
+    @Test
+    fun `a mixed batch's guard that lands and then fails still flags its owner`() =
+        runBlocking {
+            for (kind in listOf(DeletionRequestEvent.KIND, RequestToVanishEvent.KIND)) {
+                val index = LandsThenThrows(InMemoryEventIndex(), setOf(kind))
+                val store = NostrSemanticsStore(index, relay = relayUrl, writers = WriterTopology.SINGLE_WRITER)
+                store.insert(note(alice)) // loads the guard filters, with nobody in them
+                val target = note(alice, at = 1_000)
+                val guard =
+                    if (kind == DeletionRequestEvent.KIND) {
+                        // Names an event not stored yet: nothing to erase, so records and guard share one write.
+                        deletion(alice, at = 2_000, ids = listOf(target.id))
+                    } else {
+                        RequestToVanishEvent(id(), alice, 2_000, arrayOf(arrayOf("relay", "ALL_RELAYS")), "", "")
+                    }
+                assertFailsWith<IllegalStateException> { store.batchInsert(listOf(note(bob), guard)) }
+                index.armed = false
+                assertTrue(index.inner.get(guard.id) != null, "the guard landed (kind $kind)")
+
+                val outcome = store.batchInsert(listOf(target)).single()
+                assertTrue(outcome is IEventStore.InsertOutcome.Rejected, "the covered event is blocked (kind $kind), got $outcome")
+                assertEquals(null, index.inner.get(target.id), "and not stored (kind $kind)")
+                store.close()
+            }
+        }
 }

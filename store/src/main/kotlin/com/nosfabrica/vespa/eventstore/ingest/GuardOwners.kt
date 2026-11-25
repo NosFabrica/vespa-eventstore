@@ -61,7 +61,8 @@ import java.util.concurrent.atomic.AtomicLong
  *  - OVER-flagging only costs a probe. UNDER-flagging re-admits an erased
  *    event, so it is the one thing the design forbids: the sets are preloaded
  *    from the engine and every guard stored afterwards is added via
- *    [noteDeletionStored]/[noteVanishStored].
+ *    [noteDeletionStored]/[noteVanishStored], before its write is sent (a
+ *    write can land and still fail).
  *  - [GuardBloom]s scale to millions of deleters in a few MB; the Bloom's
  *    no-false-negative property is exactly the under-flag prohibition. The
  *    load must be EXHAUSTIVE, so it uses the continuation-paged
@@ -193,7 +194,10 @@ internal class GuardOwners(
         return owners.filter { b.vanishers.mightContain(it) }
     }
 
-    /** A kind 5 by [author] was just stored — their events must probe NIP-09 from now on. */
+    /**
+     * A kind 5 by [author] is about to be stored — their events must probe NIP-09 from now on.
+     * Called BEFORE the write: one that lands and then fails is stored all the same.
+     */
     fun noteDeletionStored(author: String) {
         synchronized(swapLock) {
             noting?.deleters?.add(author)
@@ -201,7 +205,7 @@ internal class GuardOwners(
         }
     }
 
-    /** A kind 62 by [author] was just stored — their events must probe NIP-62 from now on. */
+    /** A kind 62 by [author] is about to be stored — as [noteDeletionStored], for NIP-62. */
     fun noteVanishStored(author: String) {
         synchronized(swapLock) {
             noting?.vanishers?.add(author)

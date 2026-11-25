@@ -124,6 +124,16 @@ internal class BulkMixedInsert(
         // has nothing to come after, so records and guards go in ONE pipelined
         // write instead of two round trips.
         val together = removed.isEmpty() && vanishes.isEmpty()
+        // The guards' owners are noted BEFORE any write that can store a guard: a write that
+        // lands and then fails stored it all the same, and its re-offer is a duplicate, which
+        // notes nothing (the per-event path does the same, [EventAdmission]). Over-flagging, for
+        // a write that never landed, only costs the owner's events a probe ([GuardOwners]).
+        guardsAdded.forEach {
+            when (it.kind) {
+                DeletionRequestEvent.KIND -> guards.noteDeletionStored(it.pubkey)
+                RequestToVanishEvent.KIND -> guards.noteVanishStored(it.pubkey)
+            }
+        }
         try {
             writeRecords(if (together) records + guardsAdded else records, removed)
         } catch (t: Throwable) {
@@ -151,12 +161,6 @@ internal class BulkMixedInsert(
         // the rest.
         vanishes.forEach { erase.applyVanish(it) }
         if (guardsAdded.isNotEmpty() && !together) index.putAll(guardsAdded)
-        guardsAdded.forEach {
-            when (it.kind) {
-                DeletionRequestEvent.KIND -> guards.noteDeletionStored(it.pubkey)
-                RequestToVanishEvent.KIND -> guards.noteVanishStored(it.pubkey)
-            }
-        }
         return outcomes
     }
 
