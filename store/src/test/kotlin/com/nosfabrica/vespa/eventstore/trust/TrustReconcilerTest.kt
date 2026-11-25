@@ -598,6 +598,47 @@ class TrustReconcilerTest {
         }
 
     /**
+     * Delegated for ANY 30382 metric is named. GrapeRank providers are appointed
+     * under `30382:hops` and the like, and the search gate admits their cards on
+     * exactly that entry; the sweep used to know only `rank` and `followers`, so
+     * it deleted, irreversibly, the cards a reader's own 10040 asked for.
+     */
+    @Test
+    fun `a service delegated for another 30382 metric is not swept`() =
+        runBlocking {
+            store.insert(list10040()) // keeps the attribution map non-empty
+            store.insert(list10040(author = observer2, serviceKey = service2, types = listOf("30382:hops")))
+            store.insert(card(signer = service2, about = "c1".repeat(32)))
+            assertTrue(
+                projection.recompute
+                    .delegations()
+                    .of(observer2)
+                    .admits(UserAssertionEvent.KIND, service2),
+                "the search gate admits service2's cards",
+            )
+
+            val dry = reconciler.sweepOrphanScores(dryRun = true)
+            assertTrue(dry.orphans.isEmpty(), "the dry run must not list a delegated service")
+            val report = reconciler.sweepOrphanScores()
+            assertTrue(report.isClean())
+            assertEquals(1, index.count(EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = listOf(service2))), "a delegated service's cards stand")
+        }
+
+    /** Only a non-rank metric is stored at all: the attribution is readable, so the sweep runs and keeps that service. */
+    @Test
+    fun `lists naming only another 30382 metric still sweep the unnamed signer`() =
+        runBlocking {
+            store.insert(list10040(types = listOf("30382:hops")))
+            store.insert(card(about = "c1".repeat(32)))
+            store.insert(card(signer = service2, about = "c2".repeat(32)))
+
+            val report = reconciler.sweepOrphanScores()
+            assertFalse(report.refused, "a 10040 delegating 30382 is readable attribution")
+            assertEquals(listOf(service2), report.orphans)
+            assertEquals(1, index.count(EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = listOf(service))), "the delegated service survives")
+        }
+
+    /**
      * The footgun this refuses: "nobody named it" and "no 10040 is readable yet"
      * produce the same candidate list, and the second is the mirror that stored
      * its scores before its provider lists — sweeping there deletes the whole
@@ -671,6 +712,28 @@ class TrustReconcilerTest {
             val report = racing.sweepOrphanScores()
             assertEquals(listOf(service2), report.remapped)
             assertTrue(report.orphans.isEmpty(), "it was never swept")
+            assertEquals(1, index.count(EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = listOf(service2))), "its cards stand")
+        }
+
+    /** The re-check under the lock reads every 30382 delegation too, not only rank and followers. */
+    @Test
+    fun `a service delegated mid-sweep for another 30382 metric is dropped from the sweep`() =
+        runBlocking {
+            store.insert(list10040())
+            store.insert(card(signer = service2, about = "c1".repeat(32)))
+
+            var claimed = false
+            val racing =
+                TrustReconciler(index, reputations, projection.recompute, projection.backlog, gate = { body ->
+                    if (!claimed) {
+                        claimed = true
+                        store.insert(list10040(author = observer2, serviceKey = service2, types = listOf("30382:hops")))
+                    }
+                    body()
+                })
+
+            val report = racing.sweepOrphanScores()
+            assertEquals(listOf(service2), report.remapped)
             assertEquals(1, index.count(EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = listOf(service2))), "its cards stand")
         }
 

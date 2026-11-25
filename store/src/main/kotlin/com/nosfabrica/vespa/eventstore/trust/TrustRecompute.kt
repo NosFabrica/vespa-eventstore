@@ -82,6 +82,9 @@ internal class TrustRecompute(
      */
     suspend fun delegations(): Delegations = providers.delegations()
 
+    /** Every signer a stored 10040 delegates kind 30382 to, any metric — see [ProviderMap.cardSigners]. */
+    suspend fun cardSigners(): Set<String> = providers.cardSigners()
+
     /** [providerMap] for a read served partial: survives a degraded cluster with a cold cache (see [ProviderMap.servingTrust]). */
     suspend fun servingProviderMap(): TrustProviders = providers.servingTrust()
 

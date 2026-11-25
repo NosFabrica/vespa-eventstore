@@ -89,6 +89,15 @@ internal data class Delegations(
      */
     fun of(observer: String): Enrolment = Enrolment(setOf(observer), byObserver[observer] ?: emptyMap())
 
+    /**
+     * Every signer ANY stored Map delegates [kind] to, whatever the metric:
+     * for 30382, a `30382:hops` service as much as a `30382:rank` one. Not a
+     * read gate (that is [of], one observer at a time) but the store's answer
+     * to "has anyone asked for this signer's declarations of [kind]", which is
+     * what [TrustReconciler.sweepOrphanScores] must never delete.
+     */
+    fun delegatedFor(kind: Int): Set<String> = byObserver.values.flatMapTo(HashSet()) { it[kind].orEmpty() }
+
     companion object {
         val NONE = Delegations(emptyMap())
 
