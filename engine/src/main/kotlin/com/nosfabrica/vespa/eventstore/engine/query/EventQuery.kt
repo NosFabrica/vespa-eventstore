@@ -220,6 +220,20 @@ data class EventQuery(
      */
     val recencyWeight: Double? = null,
     /**
+     * THE TOPICAL INTENT, 0..1: how much this search asks ABOUT a subject
+     * rather than for one entity, which event.sd's `search` profile reads as
+     * query(topical) (`topical_perfect_drop()`). At 1, the perfect-match rung
+     * stops paying an entity NAMED the query (an app or event called "Coffee")
+     * and keeps paying a reference document TITLED it (a wiki or long-form
+     * article). Null or 0 is the ranking as it was.
+     *
+     * POLICY, like [recencyWeight]: the store decides it before the read
+     * (store `search/QueryIntent`, one probe for a trusted entity named the
+     * query), and the engine sends it on the `search` profile only.
+     * docs/embedding-experiment.md §8.5 holds the measurement.
+     */
+    val topical: Double? = null,
+    /**
      * Extra rank features layered onto the request
      * (`ranking.features.query(<name>)`), overriding the profile's own
      * defaults. HARNESS KNOB, like [rerankCount]: RankAb sweeps w_recency /

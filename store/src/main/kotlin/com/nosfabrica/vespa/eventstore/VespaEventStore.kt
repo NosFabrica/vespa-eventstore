@@ -509,6 +509,7 @@ class VespaEventStore internal constructor(
                     metrics = ledger,
                     readOnly = readOnly,
                     guardOwnersDisabled = tuning.guardOwnersDisabled,
+                    intentProbe = tuning.intentProbe ?: EngineTuning.intentProbeFromEnv(System.getenv()),
                 )
             // GAUGES: instantaneous, pulled at snapshot time, and read from
             // their owners rather than mirrored — a queue depth has no

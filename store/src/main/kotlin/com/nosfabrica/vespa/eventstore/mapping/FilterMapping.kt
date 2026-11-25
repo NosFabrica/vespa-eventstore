@@ -80,6 +80,10 @@ import com.vitorpamplona.quartz.nip50Search.SearchQuery
  *
  * Unknown extensions are ignored. A query that is nothing but extensions becomes
  * unconstrained (null terms), not match-nothing.
+ *
+ * Honouring a new extension here changes what a NEG-OPEN snapshot of it may be
+ * kept across: classify it in `FilterLocality.searchIsFilterLocal` (whose test
+ * fails until it is, for the tokens it holds to be ignored).
  */
 internal fun Filter.toEventQuery(): EventQuery? {
     if (ids?.isEmpty() == true || authors?.isEmpty() == true || kinds?.isEmpty() == true) return null

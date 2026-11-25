@@ -95,13 +95,34 @@ their newest-first order but drop authors the observer trusts below the floor
 without a resolved observer is never gated — an anonymous REQ sees everything —
 and internal sync paths (sweeps, the store's own diffs) never resolve one. Two
 paths answer to the same lens as the page itself: a NIP-77 snapshot holds exactly
-the set its filter's REQ serves under the same observer, the `observer:` token or
-the connection's (an authenticated NEG-OPEN runs under the caller's context, as its
-REQ does, so it reconciles the gated set), and `liveGate()` holds a
+the set its filter's REQ serves on the same connection — the `observer:` token,
+else the connection's NIP-42 identity, `include:spam` waiving the floor of either
+(quartz's relay takes the NEG-OPEN snapshot under the caller's `StoreQueryContext`
+and caches it per caller; a mirror that signs in and wants the whole corpus puts
+`include:spam` on its NEG-OPENs and REQs alike; a snapshot is never served partial,
+so on a degraded cluster any NEG-OPEN fails where its REQ is served from what the
+cluster can still search, and one that reads a lens also fails while its lens lookup
+cannot read every 10040 — a termless `include:spam` reads none and never looks one up) — and `liveGate()` holds a
 subscription's live events to the same floor its stored page was served through. The
 live gate looks the observer's lens up per event, not once at the REQ, so a
 subscription that outlives a 10040 (a list published after it opened, or moved to
 another provider) follows the list its next stored page would read.
+
+**Keeping NEG-OPEN snapshots across writes.** Quartz's `LiveEventStore` caches a
+NEG-OPEN's snapshot and drops it only on a write that could change the filter's set;
+`FilterLocality` is this store's half of that decision, and a relay passes both
+predicates straight through, as the last two arguments of quartz 2.28.0's five-argument
+constructor (`LiveEventStore(store, ingest, LiveEventStore.DEFAULT_MAX_HELD_BEFORE_EOSE,
+FilterLocality::writeIsFilterLocal, FilterLocality::searchIsFilterLocal)`). `writeIsFilterLocal` is false for what can move the
+gate — a card (30382), a provider list (10040), a vanish, and a deletion unless it names
+only addresses of other kinds — and every such write drops every snapshot.
+`searchIsFilterLocal` keeps a search filter's snapshot only where the search narrows by
+the event itself or by that gate: termless `observer:`, `include:spam`, `filter:rank:`,
+`sort:recent`, `-word` exclusions, `language:` and every ignored extension (`domain:`,
+`nsfw:`, `sentiment:`, an unknown `sort:`) at any limit, and a termless trust `sort:`
+without one. Any text is rejected (the drop-limit and the ranking read bm25 corpus
+statistics, which every write moves), as are a trust `sort:` with a limit (its cut falls
+inside rank ties) and `sort:links` (reactions and reports cut its page).
 
 How they combine (`<hex>` = a 64-hex observer pubkey; the examples assume no
 context observer, so the token is the only source):

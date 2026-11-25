@@ -50,6 +50,7 @@ import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
 import com.nosfabrica.vespa.eventstore.runtime.readOnlyRefusal
 import com.nosfabrica.vespa.eventstore.search.LinkRerank
 import com.nosfabrica.vespa.eventstore.search.PageAssembly
+import com.nosfabrica.vespa.eventstore.search.QueryIntent
 import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.nosfabrica.vespa.eventstore.search.SearchReferenceExpansion
 import com.nosfabrica.vespa.eventstore.search.SearchReferences
@@ -164,6 +165,15 @@ class NostrSemanticsStore(
      */
     private val searchExpansion: SearchExpansionLimits = SearchExpansionLimits.Default,
     /**
+     * Whether a searching read first asks [QueryIntent] if its words name an
+     * entity the reader trusts, and ranks as TOPICAL when they do not (the
+     * perfect-match rung stops paying apps and events named the topic). On by
+     * default, measured in docs/embedding-experiment.md §8.5 and §10. Off
+     * (`VESPA_INTENT_PROBE=false`) is the ranking as it was, without the probe's
+     * round trip.
+     */
+    intentProbe: Boolean = true,
+    /**
      * HOW MANY HITS ONE AUTHOR MAY HOLD ON A RANKED PAGE, or null — the
      * default — for no cap at all.
      *
@@ -269,6 +279,16 @@ class NostrSemanticsStore(
             }
         }
 
+    /** The topical-intent probe, or null when [intentProbe] is off. */
+    private val intent: QueryIntent? = if (intentProbe) QueryIntent(index) else null
+
+    /**
+     * [lensed], then the topical intent of every searching query ([QueryIntent]):
+     * for the two paths that SERVE a ranked page. Counts and gates never read
+     * the rung the intent moves, so they skip the probe.
+     */
+    private suspend fun lensedRanked(queries: List<EventQuery>): List<EventQuery> = lensed(queries).let { lensedQueries -> intent?.apply(lensedQueries) ?: lensedQueries }
+
     private val deletions = Deletions(index, relay, sweepPage)
 
     /** Addresses a failed write left owing the sweep of the versions its winner replaced — every write path's. */
@@ -328,13 +348,23 @@ class NostrSemanticsStore(
      * observer with no stored list resolves to no key and ranks as trusting
      * nobody, which is what an observer with no cells ranked as before. A
      * store assembled without the projection has no map and resolves nothing.
+     *
+     * ONLY FOR A QUERY THAT READS IT ([EventYql.readsLens]). `include:spam` with
+     * no text, `sort:` or floor carries the caller's observer and reads nothing
+     * through it, and [ReadShape] tells a consumer it answers every connection
+     * alike. Resolving its lens anyway made that false where it shows: with the
+     * map cold and the 10040 read failing, the signed-in read threw and the
+     * anonymous one answered — and on a relay with no 10040s, whose empty map
+     * is never cached, every signed-in mirror read paid a 10040 query for a
+     * lens it never used.
      */
     private suspend fun lensed(queries: List<EventQuery>): List<EventQuery> {
-        if (queries.none { it.observer != null }) return queries
+        if (queries.none { it.observer != null && EventYql.readsLens(it) }) return queries
         val providers = providers() ?: return queries
         if (providers.partial) ServedDegraded.markCurrent()
         return queries.map { q ->
-            val lens = providers.servedLensOf(q.observer ?: return@map q)
+            val observer = q.observer?.takeIf { EventYql.readsLens(q) } ?: return@map q
+            val lens = providers.servedLensOf(observer)
             q.copy(rankKey = lens.rank, followersKey = lens.followers)
         }
     }
@@ -458,6 +488,10 @@ class NostrSemanticsStore(
      * `TrustProjection.remove`. A kind-1 note, a reaction, a repost and a zap
      * are none of those, and they are the overwhelming majority of what a
      * relay is asked to store.
+     *
+     * Its public twin is [FilterLocality.writeIsFilterLocal] (false where this
+     * is true, except a deletion naming only addresses of other kinds): the
+     * same kinds, asked by a relay's NEG-OPEN snapshot cache. Change both.
      */
     private fun touchesTrust(event: Event): Boolean =
         event.kind == UserAssertionEvent.KIND ||
@@ -806,7 +840,7 @@ class NostrSemanticsStore(
     private suspend fun <T : Event> pageOf(filters: List<Filter>): List<T> {
         val observer = connectionObserver()
         val cutoff = nowSecs()
-        val queries = lensed(filters.mapNotNull { it.toExpiryQuery(cutoff, observer) })
+        val queries = lensedRanked(filters.mapNotNull { it.toExpiryQuery(cutoff, observer) })
         // Reconstruct via Quartz's by-kind factory straight from the stored
         // fields, skipping the serialize+parse round trip; see [toEvent].
         return pages.serve(queries, filters, docPage).map { it.toEvent() } as List<T>
@@ -827,7 +861,7 @@ class NostrSemanticsStore(
             reportingPartial {
                 val observer = connectionObserver()
                 val cutoff = nowSecs()
-                val queries = lensed(filters.mapNotNull { it.toExpiryQuery(cutoff, observer) })
+                val queries = lensedRanked(filters.mapNotNull { it.toExpiryQuery(cutoff, observer) })
                 pages.serve(queries, filters, rawPage)
             }
         rows.forEach(onEach)
@@ -1129,15 +1163,36 @@ class NostrSemanticsStore(
      * (created_at, id) pairs straight off the docs — no Event materialization.
      * Every TERMLESS filter goes to the engine's id walk, so a negentropy
      * session sees the COMPLETE set even when it dwarfs a search page, and a
-     * GATED one — an `observer:` declared on the filter, or the connection's
-     * observer off [StoreQueryContext], as a REQ and a COUNT read it — through
-     * the lens that observer's 10040 resolves to (the walk gates engine-side on
-     * EventYql.gateFloor, the rule the REQ gates on). A limit'd walk is the
+     * GATED one through the lens that observer's 10040 resolves to (the walk
+     * gates engine-side on EventYql.gateFloor, the rule the REQ gates on).
+     * The observer is chosen exactly as [query] chooses it: an `observer:`
+     * token on the filter, else the connection's NIP-42 identity off
+     * [StoreQueryContext], and `include:spam` waives the default floor of
+     * either. So a NEG-OPEN and a REQ of one filter on one connection answer
+     * one set; when they did not, an authenticated peer reconciled every
+     * below-floor id as missing and its by-id REQ was then gated to nothing,
+     * every pass.
+     *
+     * STRICT, never under [AcceptPartial]: a reconcile acts on absence, so a
+     * set read from part of a degraded cluster, or a lens resolved from part of
+     * the provider lists, would have a peer delete or re-push what it was not
+     * shown. So on a degraded cluster ANY NEG-OPEN fails (the relay answers
+     * NEG-ERR) where its REQ is served partial: the walk never accepts a partial
+     * answer, signed in or not. One that reads a lens ([EventYql.readsLens]) has a
+     * second way to fail: its lens lookup is never accepted partial either, so
+     * with the provider map cold and the 10040s unreadable it fails even where the
+     * walk itself could be answered. A read that reads no lens — `include:spam`,
+     * no text, no `sort:`, no floor — never looks one up, so it fails or answers
+     * alike for every caller. A limit'd walk is the
      * newest N with NIP-01's id tiebreak, the page a recency read serves; a
      * limit'd TRUST SORT's first N are its most trusted, so the engine answers
      * it with the same ranked search its REQ runs (VespaEventIndex.visitIds).
      * Only searching filters keep the search path here, since their semantics
-     * live there.
+     * live there — and there the NEG set and the REQ page can still differ: the
+     * snapshot takes the engine's ranked hits (`index.search`) as they are, while
+     * the REQ's page assembly adds the reference expansion's pointers and spliced
+     * subjects and applies the per-author cap. A searching filter is a relevance
+     * question, which a reconcile does not answer exactly; documented, not fixed.
      *
      * Both used to go wrong on a relay that stamped its REQ `default_limit` on
      * NEG-OPEN: a limit'd filter left the walk for one bounded search page, so
@@ -1229,14 +1284,11 @@ class NostrSemanticsStore(
         // buys is bounded by the cap: its early exit — the filters left can
         // only add to the union — is work a fan-out has already done. Worth
         // revisiting for the uncapped NIP-77 catch-up, with the heap measured.
-        // lensed: a filter's `observer:` token must reach the engine as the
-        // services its 10040 names, or the gate reads an empty lens. The
-        // CONNECTION's observer is the other way in, as on a REQ and a COUNT
-        // (STORE-O01: the three answer one set under one observer). Quartz
-        // builds an authenticated NEG-OPEN under the caller's StoreQueryContext,
-        // and a walk that read only the token reconciled the ungated corpus
-        // beside a REQ that served the gated one.
+        // The connection's lens, as the REQ reads it: a NEG-OPEN that answered
+        // ungated would name ids its REQ then refuses to serve, every pass.
         val observer = connectionObserver()
+        // lensed: a filter's `observer:` token must reach the engine as the
+        // services its 10040 names, or the gate reads an empty lens.
         for (q in lensed(filters.mapNotNull { it.toExpiryQuery(cutoff, observer) })) {
             // Already over budget: the filters left can only add to the union.
             if (cap != null && count >= cap) break

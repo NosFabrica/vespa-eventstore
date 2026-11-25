@@ -1,0 +1,518 @@
+[
+ {
+  "query": "Pride and Prejudice",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"Pride and Prejudice\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "Pride and Prejudice|publications"
+ },
+ {
+  "query": "Moby Dick",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"Moby Dick\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "Moby Dick|publications"
+ },
+ {
+  "query": "The Republic",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"The Republic\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "The Republic|publications"
+ },
+ {
+  "query": "Meditations",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"Meditations\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "Meditations|publications"
+ },
+ {
+  "query": "The Prince",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"The Prince\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "The Prince|publications"
+ },
+ {
+  "query": "Walden",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"Walden\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "Walden|publications"
+ },
+ {
+  "query": "Leviathan",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"Leviathan\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "Leviathan|publications"
+ },
+ {
+  "query": "On Liberty",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"On Liberty\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "On Liberty|publications"
+ },
+ {
+  "query": "The Wealth of Nations",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"The Wealth of Nations\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "The Wealth of Nations|publications"
+ },
+ {
+  "query": "Frankenstein",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"Frankenstein\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "Frankenstein|publications"
+ },
+ {
+  "query": "Dracula",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"Dracula\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "Dracula|publications"
+ },
+ {
+  "query": "The Odyssey",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"The Odyssey\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "The Odyssey|publications"
+ },
+ {
+  "query": "Common Sense",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"Common Sense\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "Common Sense|publications"
+ },
+ {
+  "query": "Beowulf",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"Beowulf\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "Beowulf|publications"
+ },
+ {
+  "query": "Don Quixote",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"Don Quixote\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "Don Quixote|publications"
+ },
+ {
+  "query": "The Iliad",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"The Iliad\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "The Iliad|publications"
+ },
+ {
+  "query": "Paradise Lost",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"Paradise Lost\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "Paradise Lost|publications"
+ },
+ {
+  "query": "Treasure Island",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"Treasure Island\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "Treasure Island|publications"
+ },
+ {
+  "query": "Leaves of Grass",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"Leaves of Grass\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "Leaves of Grass|publications"
+ },
+ {
+  "query": "Sense and Sensibility",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"Sense and Sensibility\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "Sense and Sensibility|publications"
+ },
+ {
+  "query": "Interior Castle",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"Interior Castle\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "Interior Castle|publications"
+ },
+ {
+  "query": "Mysticism and Logic",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"Mysticism and Logic\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "Mysticism and Logic|publications"
+ },
+ {
+  "query": "The Declaration of Independence",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"The Declaration of Independence\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "The Declaration of Independence|publications"
+ },
+ {
+  "query": "The Bill of Rights",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"The Bill of Rights\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "The Bill of Rights|publications"
+ },
+ {
+  "query": "The United States Constitution",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"The United States Constitution\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "The United States Constitution|publications"
+ },
+ {
+  "query": "philosophy",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL, on a publications (book) tab: publications about philosophy. 3 = a book or section substantially about it; 2 = clearly relevant; 1 = a mention or another sense of the word; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "philosophy|publications"
+ },
+ {
+  "query": "history",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL, on a publications (book) tab: publications about history. 3 = a book or section substantially about it; 2 = clearly relevant; 1 = a mention or another sense of the word; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "history|publications"
+ },
+ {
+  "query": "economics",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL, on a publications (book) tab: publications about economics. 3 = a book or section substantially about it; 2 = clearly relevant; 1 = a mention or another sense of the word; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "economics|publications"
+ },
+ {
+  "query": "poetry",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL, on a publications (book) tab: publications about poetry. 3 = a book or section substantially about it; 2 = clearly relevant; 1 = a mention or another sense of the word; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "poetry|publications"
+ },
+ {
+  "query": "war",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL, on a publications (book) tab: publications about war. 3 = a book or section substantially about it; 2 = clearly relevant; 1 = a mention or another sense of the word; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "war|publications"
+ },
+ {
+  "query": "science",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL, on a publications (book) tab: publications about science. 3 = a book or section substantially about it; 2 = clearly relevant; 1 = a mention or another sense of the word; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "science|publications"
+ },
+ {
+  "query": "religion",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL, on a publications (book) tab: publications about religion. 3 = a book or section substantially about it; 2 = clearly relevant; 1 = a mention or another sense of the word; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "religion|publications"
+ },
+ {
+  "query": "love",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL, on a publications (book) tab: publications about love. 3 = a book or section substantially about it; 2 = clearly relevant; 1 = a mention or another sense of the word; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "love|publications"
+ },
+ {
+  "query": "linguistics",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL, on a publications (book) tab: publications about linguistics. 3 = a book or section substantially about it; 2 = clearly relevant; 1 = a mention or another sense of the word; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "linguistics|publications"
+ },
+ {
+  "query": "biology",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL, on a publications (book) tab: publications about biology. 3 = a book or section substantially about it; 2 = clearly relevant; 1 = a mention or another sense of the word; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "biology|publications"
+ },
+ {
+  "query": "bitcoin",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL, on a publications (book) tab: publications about bitcoin. 3 = a book or section substantially about it; 2 = clearly relevant; 1 = a mention or another sense of the word; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "bitcoin|publications"
+ },
+ {
+  "query": "nostr",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL, on a publications (book) tab: publications about nostr. 3 = a book or section substantially about it; 2 = clearly relevant; 1 = a mention or another sense of the word; 0 = unrelated.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "kinds": [
+   30040
+  ],
+  "id": "nostr|publications"
+ },
+ {
+  "query": "Pride and Prejudice",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"Pride and Prejudice\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated. On a mixed page, other documents about the book can be 2 as well.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "id": "Pride and Prejudice|mixed"
+ },
+ {
+  "query": "The Republic",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"The Republic\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated. On a mixed page, other documents about the book can be 2 as well.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "id": "The Republic|mixed"
+ },
+ {
+  "query": "Meditations",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"Meditations\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated. On a mixed page, other documents about the book can be 2 as well.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "id": "Meditations|mixed"
+ },
+ {
+  "query": "The Prince",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"The Prince\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated. On a mixed page, other documents about the book can be 2 as well.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "id": "The Prince|mixed"
+ },
+ {
+  "query": "Leviathan",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"Leviathan\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated. On a mixed page, other documents about the book can be 2 as well.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "id": "Leviathan|mixed"
+ },
+ {
+  "query": "Common Sense",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"Common Sense\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated. On a mixed page, other documents about the book can be 2 as well.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "id": "Common Sense|mixed"
+ },
+ {
+  "query": "Interior Castle",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"Interior Castle\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated. On a mixed page, other documents about the book can be 2 as well.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "id": "Interior Castle|mixed"
+ },
+ {
+  "query": "The Bill of Rights",
+  "expect": "",
+  "intent": "navigational",
+  "need": "KNOWN ITEM: the book \"The Bill of Rights\". 3 = a publication of that work itself (any edition or translation, including a publication of one of its parts); 2 = a study, commentary or collection substantially about it; 1 = a mention, or a different work sharing words of the title; 0 = unrelated. On a mixed page, other documents about the book can be 2 as well.",
+  "split": "publications",
+  "note": "PUBLICATIONS (2026-11-25): is a 30040 titled exactly the query a reference document? (benchmark/embedding/make_publication_cases.py)",
+  "id": "The Bill of Rights|mixed"
+ }
+]

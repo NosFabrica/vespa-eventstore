@@ -56,6 +56,8 @@ class ReadShape private constructor(
      * `recent`). An exclusion alone (`-word`) or an unknown `sort:` is not.
      */
     val ranked: Boolean,
+    /** An explicit `filter:rank:` floor, which gates through whichever lens the read resolves. */
+    private val floored: Boolean,
 ) {
     /**
      * Whether the filter settles its own lens question: it names an [observer],
@@ -64,17 +66,27 @@ class ReadShape private constructor(
      */
     val declaresLens: Boolean get() = observer != null || includeSpam
 
-    override fun equals(other: Any?): Boolean = other is ReadShape && other.observer == observer && other.includeSpam == includeSpam && other.ranked == ranked
+    /**
+     * Whether the read answers the same set on every connection: it names its own lens, which
+     * wins over a connection's, or it waives the floor and leaves a connection's lens nothing to
+     * act on (no text, no `sort:`, no explicit floor). A NEG-OPEN of such filters may share one
+     * snapshot across callers; any other read must be answered as the caller. Alike in failure
+     * too: the store looks a lens up only for a read that reads one, so a waived floor never
+     * waits on the provider lists, and a named lens is looked up for every caller the same way.
+     */
+    val answersEveryConnectionAlike: Boolean get() = observer != null || (includeSpam && !ranked && !floored)
 
-    override fun hashCode(): Int = (observer.hashCode() * 31 + includeSpam.hashCode()) * 31 + ranked.hashCode()
+    override fun equals(other: Any?): Boolean = other is ReadShape && other.observer == observer && other.includeSpam == includeSpam && other.ranked == ranked && other.floored == floored
 
-    override fun toString(): String = "ReadShape(observer=${observer?.take(16)}, includeSpam=$includeSpam, ranked=$ranked)"
+    override fun hashCode(): Int = ((observer.hashCode() * 31 + includeSpam.hashCode()) * 31 + ranked.hashCode()) * 31 + floored.hashCode()
+
+    override fun toString(): String = "ReadShape(observer=${observer?.take(16)}, includeSpam=$includeSpam, ranked=$ranked, floored=$floored)"
 
     companion object {
         /** [filter]'s shape, as the store will read it. */
         fun of(filter: Filter): ReadShape = of(filter.search)
 
         /** The shape of a NIP-50 [search] string alone; null or blank is a plain NIP-01 read. */
-        fun of(search: String?): ReadShape = SearchIntent.of(search).let { ReadShape(it.observer, it.includeSpam, it.ranked) }
+        fun of(search: String?): ReadShape = SearchIntent.of(search).let { ReadShape(it.observer, it.includeSpam, it.ranked, it.floor != null) }
     }
 }

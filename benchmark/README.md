@@ -4115,7 +4115,8 @@ re-offers events, deletes by address and deletes deletions: `StoreParityTest`
 is excluded (relevance ordering is engine-defined; FTS5 and BM25 legitimately
 differ).
 
-Current status: **155/155 checks agree** on `ConformanceCorpus(4000)` (127/127 on
+Current status: **156/156 checks agree** on `ConformanceCorpus(4000)` (quartz 2.28.0;
+155/155 before its union-with-the-empty-filter check; 127/127 on
 the old `ParityCheck` battery before quartz 2.9.0).
 
 ### Random filters (`FuzzParityIT`, 2026-11-25)
