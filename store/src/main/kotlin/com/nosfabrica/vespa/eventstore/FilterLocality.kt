@@ -106,7 +106,10 @@ object FilterLocality {
      *   `text_score_cutoff`) built from bm25, whose IDF moves with every document written
      *   anywhere in the corpus (event.sd: "Corpus-dependent (bm25 scales with corpus
      *   statistics)"), and `perfect_share()` reads `num_docs_indexed`. A limit then cuts by that
-     *   same score. A write the filter's fields do not match can move both.
+     *   same score. A write the filter's fields do not match can move both. The REQ of the same
+     *   filter also reads other events outright: the reference expansion, and the topical-intent
+     *   probe (`search/QueryIntent`), which asks whether a trusted profile or app is NAMED the
+     *   words and ranks the page differently when one is.
      * - `sort:links[:x]`: false. The rerank widens the recall and cuts it back by the links
      *   (reactions, zaps, reports) other authors wrote — unguarded writes. The walk does not
      *   apply it today; the REQ does, and the two must not be allowed to drift into different
