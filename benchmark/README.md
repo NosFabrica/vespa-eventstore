@@ -1400,8 +1400,9 @@ So the slack is now learned per read SHAPE (`TieSlackMemory`, keyed like
 `RecencyWindowMemory`): a shape seen first gets the old flat 64; a page whose
 boundary group the slack cut (it paid the `[T,T]` query) puts the shape back at
 64; a page whose boundary second spilled `over` events past its last slot raises
-the slack at once to `2·over + 8`, or narrows it by a quarter of the gap when it
-asked for less, never below 8. Only windowable reads are keyed (a client's feed,
+the slack at once to `2·over + 3`, or narrows it by a quarter of the gap when it
+asked for less, never below 3 (8 until 2026-11-25: "The least tie slack, on disk",
+below). Only windowable reads are keyed (a client's feed,
 its speculative attempts and fallbacks); internal probes, walks and id lookups
 keep 64. `VESPA_RECENCY_MEMORY=0` turns it off with the windows (every read 64).
 Exactness is untouched: the slack only decides whether the boundary group comes
@@ -1609,11 +1610,90 @@ nothing and its page query read ~64 documents it threw away. With it those are l
 with id-first, and every sparse page keeps its gain: +43% (limit 10) and +55%
 (limit 100) hot, +17% cold, +25% on a quiet global feed.
 
-What this has NOT measured: a store larger than memory. Every run here fits in the
-page cache once warm, and on the 44M-doc corpus every overfetched document was a cold
-read; a direct read overfetches its slack (at most 64 for a shape not cut before) as
-documents. Measure there before trusting the default on such a store; `0` restores
-id-first.
+**Larger than memory (2026-11-25).** Every run above fits in the page cache once warm,
+and a direct read overfetches its slack as documents, so this is the case the rule had
+not been measured on. 372k notes with Vespa held to 6 GB, the page cache emptied before
+every run and each run reading 3,000 hashtags it had not read before, the two modes
+alternated twice:
+
+| one hashtag's feed | id-first | one query |
+|---|---|---|
+| REQ/s, limit 3 | 305 | **377** (+24%) |
+| REQ/s, limit 5 | 305 | **378** (+24%) |
+| p50, limit 3 | 47 ms | **37 ms** |
+| read from disk per REQ, limit 3 | 24 KB | 64 KB |
+
+One query won every pairing (by 7% to 43%), reading more from disk to save a round trip.
+Then the disk itself was slowed, on hashtags big enough that the overfetch is all cold
+documents: 200k 2 KB notes over 1,000 hashtags of 200 each, Vespa at 8 GB, proton restarted
+and the page cache dropped before every run, each run reading all 1,000 hashtags once (16
+clients), reads throttled through the container's blkio cgroup. Mean of two runs, ABBA:
+
+| REQ/s (KB read per REQ) | id-first | one query, least slack 8 |
+|---|---|---|
+| unthrottled disk, limit 3 | 165 (24) | **223** (88): +35% |
+| unthrottled disk, limit 20 | 125 (160) | 131 (224): +5% |
+| cloud-like, 3,000 IOPS · 125 MB/s, limit 3 | **199** (24) | 177 (88): −11% |
+| cloud-like, limit 20 | 120 (160) | 126 (224): +5% |
+| slow, 500 IOPS · 25 MB/s, limit 3 | **205** (24) | 176 (88): −14% |
+| slow, limit 20 | **105** (160) | 94 (224): −11% |
+
+So the round trip one query saves is worth more than its extra reads until the disk is the
+bottleneck, and there it is the extra documents that lose: (limit + 8) of them at ~8 KB
+each, where id-first reads exactly the page. That floor of 8 was the lever, and it moved:
+next section. `0` still restores id-first for a store whose disk is the bottleneck.
+
+### The least tie slack, on disk (2026-11-25)
+
+A direct read's first query asks for `limit + slack` documents, and a shape whose pages
+show no boundary ties narrows its slack to `MIN_TIE_SLACK`, so on a sparse hashtag that
+floor is the whole overfetch. The cold slack (`TieSlackMemory.coldSlack`) does not matter
+here: it is the first read of a shape only, and an A/B of it at 1 and 3 read the same
+88 KB per REQ as 8 on every run. The floor was A/B'd at 8, 3 and 1 on the corpus above,
+the same harness, two runs each (one for 8 on the slow disk, where the run hit its time
+limit; the run before it had 8 at 187 / 209 and 93 / 92 there):
+
+| REQ/s (KB read per REQ) | least 8 | least 3 | least 1 |
+|---|---|---|---|
+| unthrottled, limit 3 | 238 (88) | **290** (48): +22% | 307 (32) |
+| unthrottled, limit 20 | 155 (224) | **186** (184): +20% | 181 (168) |
+| slow, limit 3 | 185 (88) | **225** (48): +22% | 272 (32) |
+| slow, limit 20 | 92 (224) | **107** (184): +16% | 116 (168) |
+
+At 3, one query reads twice the page at limit 3 instead of 3.7 times, and on the slow disk
+it sits at or above what id-first served in the run before (205 and 105 REQ/s). Neither smaller floor cost anything measured:
+hot, nostr-bench `req` at 200 clients, four rounds, arm order rotated: 1,633 REQ/s at 8
+(1,451–1,869), 1,886 at 3 (1,802–2,003), 1,802 at 1. On the controlled corpus of dense
+seconds (20 s of exactly 2,000, 300 and 30 notes per second; 50 clients; second runs, the
+first after the load reads low for whichever arm goes first), all level:
+
+| REQ/s | least 8 | least 3 | least 1 |
+|---|---|---|---|
+| global, 2,000 per second | 109 | 112 | 101 |
+| global, 300 per second | 284 | 291 | 272 |
+| global, 30 per second | 1,017 | 1,026 | 1,076 |
+| one author, 2,000 per second | 119 | 117 | 120 |
+| one author, 300 per second | 280 | 306 | 326 |
+
+What decided between 3 and 1 is a rate none of those hold: a feed of a few events per
+second, whose boundary second holds a tie now and then. `tie_slack_sim.py` (above; `python3
+benchmark/tie_slack_sim.py 1`), the learned rule's extra-query share and container µs per
+REQ:
+
+| ev/s | limit | least 8 | least 3 | least 1 |
+|---|---|---|---|---|
+| 0.1 | 10 | 0.0% · 80 | 0.0% · 58 | 2.7% · 101 |
+| 1 | 10 | 0.0% · 87 | 0.8% · 79 | 4.9% · 148 |
+| 1 | 20 | 0.0% · 131 | 0.8% · 123 | 5.0% · 193 |
+| 5 | 10 | 0.0% · 116 | 1.3% · 114 | 3.5% · 142 |
+| 20 | 10 | 0.4% · 210 | 1.7% · 203 | 2.8% · 207 |
+| 50 | 10 | 2.9% · 322 | 4.2% · 326 | 4.9% · 328 |
+
+At 1 every boundary tie is a cut, and a cut sends the shape back to the wide slack to
+narrow again over a dozen reads: 25–70% more CPU on a quiet feed. At 3 the model costs what
+8 did at every rate, while paying the `[T,T]` query on 1–4% of reads instead of 0–3% (a
+direct read's `[T,T]` query reads ids, so on disk it is the cheap side of the trade). So
+`MIN_TIE_SLACK` is 3.
 
 Watching it live: each read eligible for id-first books one zero-time
 `IngestStats` counter, `recency.fetch.direct` or `recency.fetch.idfirst`.
@@ -3263,6 +3343,39 @@ Three things reduce it, none of them a setting:
 - More than one document per request: measured in the next section, and the largest of the three.
 - More cores, or more content nodes.
 
+### A lone publish through the relay (2026-11-25)
+
+One client publishing one note at a time through vespa-relay, nothing else running: ~7 ms
+per publish, timed at the relay and in Vespa's access log (a timing proxy in front of the
+query container; the feed client cannot handshake through it, so the put went direct):
+
+| step | ms |
+|---|---|
+| the admission checks (dedup GET; the NIP-09/NIP-62 guard queries, in parallel) | ~1.1 |
+| waiting to leave the relay (the feed client's dispatcher drains its queue, then sleeps 1 ms) | ~2.2 |
+| the put itself in Vespa (`/document/v1` POST) | ~2.5 |
+| everything else (websocket, verify, hand-offs between threads) | ~1.2 |
+
+The wait was the feed client's: its dispatch loop sleeps a millisecond whenever its queue
+is empty, which is always for a lone write, and the result comes back through its executor.
+So a put with nothing else in flight now skips it (`VespaEventIndex.putDirect`): one
+`/document/v1` POST on the read client, taken only while the feed client holds no
+unanswered operation and no batch write is running, one at a time, so it cannot overtake
+an earlier write to the same document (`DirectPutTest`, "a put waits its turn behind a
+write the feed client still holds"). A refused or failed POST goes the feed client's way,
+retries and all. `feedStatus` counts them (`direct`). The same build with and without it,
+four rounds ABBA:
+
+| | before | direct | won |
+|---|---|---|---|
+| 1 client, one note at a time | 110 /s (8 ms) | **127 /s (7 ms)**: +15.5% | 4/4 |
+| 20 clients publishing | 1,049 /s | 1,058 /s: +0.9% | 3/4 |
+| reads under that write load | 1,564 REQ/s | 1,617: +3.4% | 3/4 |
+| writes under 200-client read load | 110 /s | 110 /s | — |
+
+Under load the feed client always has something in flight, so the direct path stands
+aside and nothing changes there, as intended.
+
 ## More than one document per request (2026-10-18)
 
 `/document/v1` takes one document per request. To price batching without building anything, the
@@ -3493,6 +3606,38 @@ baseline, so the "flush shadow" seen after a full 30k ingest does not appear
 at this write volume. On this box the interference is largely CPU contention
 (three processes on four cores); separate client hardware would soften it,
 which is exactly what this bench exists to verify per deployment.
+
+### Through the relay: writes under read saturation (2026-11-25)
+
+The same question end to end, vespa-relay on the 4-core sandbox: nostr-bench `req` at 200
+clients against nostr-bench `event` at 20, alone and together, two runs each.
+
+| | alone | together |
+|---|---|---|
+| reads, REQ/s | 1,469 / 1,535 | 1,530 / 1,961 |
+| writes, events/s | 858 / 976 | **65 / 83** |
+| write latency | 20–22 ms | 229–291 ms |
+
+Reads did not notice the writes; writes fell to a tenth. Every write's admission checks
+(the dedup GET, the NIP-09/NIP-62 guard queries, the batch's dedup and guard reads) are
+queries, and they wait in the same query-container queue as 200 clients' REQs, ~120 ms
+each at saturation. 500 live subscribers on the side received every event either way.
+
+Two changes were tried against it:
+
+- **A narrow batch reads its guards beside its dedup** (`BulkRecordInsert.plan`, at most
+  `EARLY_GUARDS_MAX` = 500 events): one round of queries per batch instead of two, the
+  second under the writer lock. The guards are kept if no guard write (a kind 5 or 62,
+  `GuardOwners.guardWrites`) committed since they were read, and read again under the lock
+  if one did (`BulkRecordInsertTest`, "a vanish committed between plan and commit still
+  blocks the batch"). ABBA, four rounds: writes under read load **75 → 96 /s (+28%, won
+  4/4)**, their latency 253 → 198 ms; the reads beside them 1,458 → 1,374 REQ/s (−5.7%,
+  won 1/4, the ranges overlap); lone and 20-client publishing unchanged. Shipped.
+- **A gate on reads** (a semaphore over the store's query and count calls, so writes find
+  the container less crowded). It trades one for the other: at 24 permits reads fell 33%
+  (1,745 → 1,168 REQ/s) and writes rose 3.6× (74 → 268 /s); at 8, reads −57% and writes
+  6×. Not shipped: which side a relay favours is its operator's call, and a gate in the
+  store would make it for them.
 
 ## Schema & index study (vs SQLite's indexes) — A/B'd on live Vespa
 
@@ -3916,6 +4061,22 @@ differ).
 
 Current status: **155/155 checks agree** on `ConformanceCorpus(4000)` (127/127 on
 the old `ParityCheck` battery before quartz 2.9.0).
+
+### Random filters (`FuzzParityIT`, 2026-11-25)
+
+The battery is fixed filters; `FuzzParityIT` draws them at random (ids, authors, kinds,
+tags, `since`/`until` on tie seconds, limits, unions of up to three) over
+`ConformanceCorpus(20000)` plus two squashed bursts (10k notes at ~10 a second, 5k at
+~100 a second),
+and runs each filter several times so the recency path's learned state is exercised warm
+as well as cold. The answer it expects is exact: each filter's whole SQLite match set,
+ordered newest first and lowest id first within a second, cut to its limit, unioned (SQLite
+leaves same-second order unspecified, STORE-F08, so its own limited read is not the
+reference). 13,000 filters over three seeds, in both read modes (one query and id-first):
+**no difference**. It found one bug, in the reference: Quartz's SQLite store dropped a
+`{}` filter from a union (`[{}, {kinds:[30023]}]` matched only the long-form notes),
+fixed in vitorpamplona/quartz#155 (STORE-F10); the test reports SQLite's own count as
+`SQLITE-COUNT` lines and does not trust it.
 
 ### A NIP-09 divergence the parity gate surfaced
 
