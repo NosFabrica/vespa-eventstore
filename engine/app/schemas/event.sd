@@ -2445,6 +2445,42 @@ schema event {
     # follower sort; EventYql has always sent `search`, so the default's
     # behavior is unchanged.)
     rank-profile search inherits text_relevance {
+        # THE TOPICAL INTENT (docs/embedding-experiment.md §8.5, §9, §10). The store sets
+        # query(topical) to 1 when no profile or app the reader trusts is NAMED
+        # the query (store/search/QueryIntent, engine EntityNames). The query
+        # then asks ABOUT a subject, and the perfect-match rung stops paying an
+        # ENTITY for being named it: an app or a calendar event called "Coffee"
+        # (graded 1-2) no longer outranks every article about coffee by
+        # w_perfect_pop. The rung KEEPS paying a reference document, a wiki or
+        # long-form article titled exactly the topic ("The Art of War",
+        # "PICO-8", graded 3), since that is the topic's own page. 0, the
+        # default and every navigational query, is the ranking as it was:
+        # topical_perfect_drop() is then 0.
+        #
+        # Measured (§9.3) under production's probe decisions: on the 54-case
+        # set, +0.056 [+0.027, +0.088] nDCG@10 against a production replay,
+        # topical +0.123, no loss over 0.1; on 147 queries chosen blind
+        # (rank_cases_broad.json), +0.176 [+0.131, +0.223] on the 71 whose page
+        # changed, one loss over 0.1 (`Derek Ross`, a profile under the
+        # probe's follower floor). Dropping the rung off reference documents too lost `the art of
+        # war` and `pico 8` (§8.4); capping the name rungs instead lost the
+        # articles TITLED the topic along with the entities NAMED it (§8.1).
+        inputs {
+            query(topical) double: 0.0
+        }
+
+        # A wiki article (30818) or a long-form article (30023): a page ABOUT
+        # its title, never an entity named it.
+        function reference_kind() {
+            expression: if(attribute(kind) == 30818, 1.0, if(attribute(kind) == 30023, 1.0, 0.0))
+        }
+
+        # The perfect-match share of precision_boost_pop() that a topical query
+        # takes back from an entity named the topic. Same factors as the rung.
+        function topical_perfect_drop() {
+            expression: query(topical) * (1.0 - reference_kind()) * query(w_perfect_pop) * perfect_share() * pow(perfect_match(), query(w_perfect_pow))
+        }
+
         first-phase {
             # x recency_mult(): FIRST phase, not second, and the reason is the
             # rerank window. A common term matches ~50 000 docs and the second
@@ -2485,7 +2521,9 @@ schema event {
             # fresh document than for an old one. Scaling by the same factor
             # the bands carry is what keeps "reorders within a band" true.
             # x phrase_mult(): the phrase band, see query(w_phrase_mult).
-            expression: (firstPhase + (precision_boost_pop() + body_phrase_pop() * query(w_phrase_pop)) * wot_mult() * recency_mult()) * phrase_mult()
+            # - topical_perfect_drop(): the topical intent, above. 0 unless the store
+            # read the query as topical.
+            expression: (firstPhase + (precision_boost_pop() - topical_perfect_drop() + body_phrase_pop() * query(w_phrase_pop)) * wot_mult() * recency_mult()) * phrase_mult()
             rerank-count: 1000
         }
 
@@ -2496,6 +2534,8 @@ schema event {
         # it. It costs nothing extra — the second phase already computes the
         # fieldMatch analysis it reads.
         match-features {
+            # The topical intent's take-back, so "why did this entity drop" is answerable.
+            topical_perfect_drop
             user_score
             verified_followers
             # Surfaced for the same reason every other decisive signal is: a

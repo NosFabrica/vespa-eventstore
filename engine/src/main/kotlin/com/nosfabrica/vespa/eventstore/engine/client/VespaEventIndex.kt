@@ -1457,7 +1457,7 @@ class VespaEventIndex(
                     recallSummaries(q).mapNotNull { project(it) }.map { Ranked(it, null) }
                 } else {
                     rankedHits(q).mapNotNull { hit ->
-                        hit.fields?.let { fields -> project(fields)?.let { Ranked(it, hit.relevance, textScoreOf(fields.matchfeatures)) } }
+                        hit.fields?.let { fields -> project(fields)?.let { Ranked(it, hit.relevance, textScoreOf(fields.matchfeatures), followersOf(fields.matchfeatures)) } }
                     }
                 }
             }
@@ -1571,6 +1571,9 @@ class VespaEventIndex(
      * a caller must fall back rather than invent a number.
      */
     private fun textScoreOf(mf: JsonObject?): Double? = (mf?.get("text_score") as? JsonPrimitive)?.content?.toDoubleOrNull()
+
+    /** The verified_followers match-feature ([Ranked.followers]), when the serving profile reports one. */
+    private fun followersOf(mf: JsonObject?): Double? = (mf?.get("verified_followers") as? JsonPrimitive)?.content?.toDoubleOrNull()
 
     /** The rank band a hit arrived through, from the profile's match-features; null when none were served. */
     private fun tierOf(mf: JsonObject?): String? {

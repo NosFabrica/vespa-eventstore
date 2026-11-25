@@ -49,6 +49,7 @@ import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
 import com.nosfabrica.vespa.eventstore.runtime.readOnlyRefusal
 import com.nosfabrica.vespa.eventstore.search.LinkRerank
 import com.nosfabrica.vespa.eventstore.search.PageAssembly
+import com.nosfabrica.vespa.eventstore.search.QueryIntent
 import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.nosfabrica.vespa.eventstore.search.SearchReferenceExpansion
 import com.nosfabrica.vespa.eventstore.search.SearchReferences
@@ -162,6 +163,15 @@ class NostrSemanticsStore(
      */
     private val searchExpansion: SearchExpansionLimits = SearchExpansionLimits.Default,
     /**
+     * Whether a searching read first asks [QueryIntent] if its words name an
+     * entity the reader trusts, and ranks as TOPICAL when they do not (the
+     * perfect-match rung stops paying apps and events named the topic). On by
+     * default, measured in docs/embedding-experiment.md §8.5 and §10. Off
+     * (`VESPA_INTENT_PROBE=false`) is the ranking as it was, without the probe's
+     * round trip.
+     */
+    intentProbe: Boolean = true,
+    /**
      * HOW MANY HITS ONE AUTHOR MAY HOLD ON A RANKED PAGE, or null — the
      * default — for no cap at all.
      *
@@ -266,6 +276,16 @@ class NostrSemanticsStore(
                 locks.gated(trust = true, WriteLocks.PROVIDERS, WriteLocks.PROVIDERS_TRUST) { body() }
             }
         }
+
+    /** The topical-intent probe, or null when [intentProbe] is off. */
+    private val intent: QueryIntent? = if (intentProbe) QueryIntent(index) else null
+
+    /**
+     * [lensed], then the topical intent of every searching query ([QueryIntent]):
+     * for the two paths that SERVE a ranked page. Counts and gates never read
+     * the rung the intent moves, so they skip the probe.
+     */
+    private suspend fun lensedRanked(queries: List<EventQuery>): List<EventQuery> = lensed(queries).let { lensedQueries -> intent?.apply(lensedQueries) ?: lensedQueries }
 
     private val deletions = Deletions(index, relay, sweepPage)
 
@@ -818,7 +838,7 @@ class NostrSemanticsStore(
     private suspend fun <T : Event> pageOf(filters: List<Filter>): List<T> {
         val observer = connectionObserver()
         val cutoff = nowSecs()
-        val queries = lensed(filters.mapNotNull { it.toExpiryQuery(cutoff, observer) })
+        val queries = lensedRanked(filters.mapNotNull { it.toExpiryQuery(cutoff, observer) })
         // Reconstruct via Quartz's by-kind factory straight from the stored
         // fields, skipping the serialize+parse round trip; see [toEvent].
         return pages.serve(queries, filters, docPage).map { it.toEvent() } as List<T>
@@ -839,7 +859,7 @@ class NostrSemanticsStore(
             reportingPartial {
                 val observer = connectionObserver()
                 val cutoff = nowSecs()
-                val queries = lensed(filters.mapNotNull { it.toExpiryQuery(cutoff, observer) })
+                val queries = lensedRanked(filters.mapNotNull { it.toExpiryQuery(cutoff, observer) })
                 pages.serve(queries, filters, rawPage)
             }
         rows.forEach(onEach)
