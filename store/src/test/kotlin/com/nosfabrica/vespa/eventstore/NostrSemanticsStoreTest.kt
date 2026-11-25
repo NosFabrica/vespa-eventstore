@@ -1257,4 +1257,54 @@ open class NostrSemanticsStoreTest {
             store.delete(listOf(Filter(kinds = listOf(1))))
             assertEquals(0, storedDocs(), "a real filter still sweeps")
         }
+
+    /**
+     * STORE-F10 + STORE-S01: the search extensions are stripped BEFORE the empty-filter
+     * check, as the SQLite store does (`strippingSearchExtensions()` first), so a filter
+     * whose search is nothing but extensions, or blank, IS the empty filter and deletes
+     * nothing. Checked before stripping instead, each of these got past the guard,
+     * mapped to an unconstrained query, and the sweep emptied the store.
+     */
+    @Test
+    fun `a delete whose search is only extensions or blank deletes nothing`() =
+        runBlocking {
+            val wiped =
+                listOf("include:spam", "   ", "observer:${"0b".repeat(32)}", "sort:recent", "language:pt").filter { search ->
+                    store.batchInsert((1..5).map { note() })
+                    val before = storedDocs()
+                    store.delete(Filter(search = search))
+                    storedDocs() != before
+                }
+            assertEquals(emptyList(), wiped, "these delete filters wiped the store")
+        }
+
+    /**
+     * The other half of stripping first: a delete with real terms and an `observer:`
+     * deletes the term matches UNGATED, as SQLite does. Gated, it went out carrying
+     * the observer, which on Vespa reads the observer's lens — never resolved by a
+     * sweep, so the empty tensor, "trusts nobody" — and deleted nothing. The
+     * in-memory reference ignores the gate, so the sweep's own queries are read.
+     */
+    @Test
+    fun `a delete with terms and an observer deletes the term matches ungated`() =
+        runBlocking {
+            val swept = mutableListOf<EventQuery>()
+            val inner = newIndex()
+            val recording =
+                object : EventIndex by inner {
+                    override suspend fun search(query: EventQuery): List<EventDoc> {
+                        swept += query
+                        return inner.search(query)
+                    }
+                }
+            val fresh = NostrSemanticsStore(recording)
+            val bitcoin = (1..2).map { TextNoteEvent(id(), alice, next(), emptyArray(), "bitcoin talk $it", "") }
+            val other = TextNoteEvent(id(), alice, next(), emptyArray(), "nostr talk", "")
+            fresh.batchInsert(bitcoin + other)
+            swept.clear()
+            fresh.delete(Filter(search = "bitcoin observer:${"0b".repeat(32)}"))
+            assertTrue(swept.isNotEmpty(), "the delete swept nothing")
+            assertEquals(emptyList(), swept.mapNotNull { it.observer }, "the delete's sweep went out gated")
+            assertEquals(listOf(other.id), fresh.query<Event>(Filter(kinds = listOf(1))).map { it.id })
+        }
 }
