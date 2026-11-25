@@ -3675,6 +3675,14 @@ Two changes were tried against it:
   blocks the batch"). ABBA, four rounds: writes under read load **75 → 96 /s (+28%, won
   4/4)**, their latency 253 → 198 ms; the reads beside them 1,458 → 1,374 REQ/s (−5.7%,
   won 1/4, the ranges overlap); lone and 20-client publishing unchanged. Shipped.
+  It had a cost that run could not show, its events being fresh: a batch that is all
+  duplicates never commits, so its early guard read (a tombstone and a vanish search under
+  the default SHARED_STRICT) was thrown away, three engine reads per batch where the dedup
+  alone had been one. The early read now runs only while at least half of the recent narrow
+  batches had something survive the dedup (`EARLY_GUARDS_MIN_SURVIVING`, a moving average
+  over about the last four), so a syncing relay's duplicate stream is back to one read per
+  batch and a publish stream keeps the measured gain ("an all-duplicate narrow stream
+  settles to one engine read per batch"). Not re-measured on Vespa.
 - **A gate on reads** (a semaphore over the store's query and count calls, so writes find
   the container less crowded). It trades one for the other: at 24 permits reads fell 33%
   (1,745 → 1,168 REQ/s) and writes rose 3.6× (74 → 268 /s); at 8, reads −57% and writes

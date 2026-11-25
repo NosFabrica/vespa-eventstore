@@ -384,15 +384,64 @@ class BulkRecordInsertTest {
             assertTrue(outcomes.all { it is IEventStore.InsertOutcome.Accepted })
         }
 
+    /**
+     * A stream of narrow batches that are ALL duplicates (a relay syncing what it already holds)
+     * must settle to the dedup's one existence read per batch. Under SHARED_STRICT, the default,
+     * the early guard read is a tombstone and a vanish search whatever survives, and a batch with
+     * no survivor never commits, so reading them early tripled the engine reads of such a stream.
+     */
+    @Test
+    fun `an all-duplicate narrow stream settles to one engine read per batch`() =
+        runBlocking {
+            val index = CountingSearches(InMemoryEventIndex())
+            val store = NostrSemanticsStore(index, relay = relayUrl)
+            val batch = padding(20)
+            store.batchInsert(batch)
+            repeat(5) { store.batchInsert(batch) }
+            repeat(5) {
+                index.searches = 0
+                index.existence = 0
+                val outcomes = store.batchInsert(batch)
+                assertTrue(outcomes.all { it == IEventStore.InsertOutcome.Rejected(Rejections.DUPLICATE) }, "$outcomes")
+                assertEquals(0, index.searches, "a duplicate batch reads no guards")
+                assertEquals(1, index.existence, "the dedup is the batch's one engine read")
+            }
+            store.close()
+        }
+
+    /** The other half: once the stream turns fresh again, narrow batches go back to reading their guards beside the dedup. */
+    @Test
+    fun `a fresh stream after a duplicate one reads its guards early again`() =
+        runBlocking {
+            val index = InMemoryEventIndex()
+            val bulk = BulkRecordInsert(index, relayUrl, GuardOwners(index), nowSecs = { System.currentTimeMillis() / 1000 })
+            assertTrue(bulk.plan(padding(20)).earlyGuards != null, "a fresh process reads early")
+            val stored = padding(20)
+            bulk.commit(bulk.plan(stored))
+            repeat(10) { bulk.plan(stored) }
+            assertEquals(null, bulk.plan(stored).earlyGuards, "a duplicate stream stops reading early")
+            repeat(10) { bulk.commit(bulk.plan(padding(20))) }
+            val fresh = bulk.plan(padding(20))
+            assertTrue(fresh.earlyGuards != null, "a fresh stream reads early again")
+            val outcomes = bulk.commit(fresh)
+            assertTrue(outcomes.all { it is IEventStore.InsertOutcome.Accepted }, "$outcomes")
+        }
+
     /** Counts [search] calls, which is how every guard query reaches the engine. */
     private class CountingSearches(
         private val inner: InMemoryEventIndex,
     ) : EventIndex by inner {
         var searches = 0
+        var existence = 0
 
         override suspend fun search(query: EventQuery): List<EventDoc> {
             searches++
             return inner.search(query)
+        }
+
+        override suspend fun existingIds(ids: List<String>): Set<String> {
+            existence++
+            return inner.existingIds(ids)
         }
     }
 

@@ -67,9 +67,10 @@ import kotlinx.coroutines.sync.withPermit
  *  C. per-owner tombstone/vanish guards — decided in [commit], UNDER the writer
  *     lock: a kind 5/62 committed by a neighbouring batch between a lock-free
  *     guard read and this batch's writes would resurrect the events it covers.
- *     A narrow batch reads them early, beside B, and [commit] keeps that read
- *     only when no guard was written to the index since it was taken
- *     ([GuardOwners.guardWrites]); otherwise it reads them again under the lock.
+ *     A narrow batch reads them early, beside B (unless recent narrow batches
+ *     mostly came out of B empty, [EARLY_GUARDS_MIN_SURVIVING]), and [commit]
+ *     keeps that read only when no guard was written to the index since it was
+ *     taken ([GuardOwners.guardWrites]); otherwise it reads them again under the lock.
  *     [GuardOwners] keeps the cost at zero for the common no-flagged-owners batch;
  *  D. per-address supersession resolved IN RUN ORDER, ending exactly where
  *     sequential inserts would;
@@ -91,6 +92,19 @@ internal class BulkRecordInsert(
 ) {
     /** Stage D's attribute-only version reads, shared with [BulkMixedInsert]'s preload. */
     private val versionReads = VersionReads(index)
+
+    /**
+     * A moving estimate of how often a recent narrow batch (one [plan] may read early, see
+     * [EARLY_GUARDS_MAX]) had anything left after its dedup: 1 when every one did, 0 when none
+     * did. [plan] reads guards early only while it is at least [EARLY_GUARDS_MIN_SURVIVING];
+     * see there for why. Starts at 1, a publish stream's fresh events, and is moved by every
+     * narrow batch's dedup, early read or not, so it follows the stream both ways.
+     *
+     * Read and written without a lock: two batches racing an update lose one of them, which
+     * only delays the estimate by a batch.
+     */
+    @Volatile
+    private var survivingShare: Double = 1.0
 
     /**
      * What [plan] resolved lock-free (stages A–B). Dedup can race: an event a
@@ -163,8 +177,11 @@ internal class BulkRecordInsert(
         // is the whole difference (each round queues behind every reader). [commit] keeps them
         // only if no guard was written to this index since they were read; see
         // [GuardOwners.guardWrites] for why that is as exact as reading them under the lock.
+        // Only while recent narrow batches mostly had survivors ([EARLY_GUARDS_MIN_SURVIVING]):
+        // a batch left with none never commits, and its early read was thrown away.
         val owners = alive().groupBy { events[it].owner() }
-        val early = owners.isNotEmpty() && alive().size <= EARLY_GUARDS_MAX
+        val narrow = owners.isNotEmpty() && alive().size <= EARLY_GUARDS_MAX
+        val early = narrow && survivingShare >= EARLY_GUARDS_MIN_SURVIVING
         val guardWritesAtRead = guards.guardWrites()
         val stored = HashSet<String>()
         val earlyGuards =
@@ -180,6 +197,10 @@ internal class BulkRecordInsert(
                 guardRead?.await()
             }
         alive().forEach { i -> if (events[i].id in stored) outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.DUPLICATE) }
+        if (narrow) {
+            val survived = if (alive().isEmpty()) 0.0 else 1.0
+            survivingShare += SURVIVING_WEIGHT * (survived - survivingShare)
+        }
         return Plan(events, outcome, earlyGuards, guardWritesAtRead)
     }
 
@@ -581,9 +602,35 @@ internal class BulkRecordInsert(
          * The widest batch whose guards [plan] reads beside its dedup: one [CHECK_CHUNK] of
          * events is one tombstone query and one vanish query, the same reads [commit] would make.
          * A wider batch is a mirror's, mostly duplicates, whose guards are read for the
-         * survivors alone, under the lock, as before.
+         * survivors alone, under the lock, as before. A narrow one too, while recent narrow
+         * batches have mostly come out of the dedup empty ([EARLY_GUARDS_MIN_SURVIVING]).
          */
         const val EARLY_GUARDS_MAX = CHECK_CHUNK
+
+        /**
+         * The least [survivingShare] at which [plan] still reads a narrow batch's guards beside
+         * its dedup. The early read costs its guard queries for every batch (under SHARED_STRICT,
+         * the default, every owner is flagged: a tombstone and a vanish search), while the locked
+         * read costs them only for a batch something survived, since a batch left with nothing
+         * never commits. With a share p of batches surviving, reading early wastes 2(1 - p)
+         * searches per batch beside the dedup's one existence read. At p = 1/2 that is one search
+         * per batch, the price of sparing each surviving batch its second round of reads under
+         * the writer lock; below it the waste climbs toward the 3x a stream of all-duplicate
+         * batches (a relay syncing from relays it already mirrors) paid. A midpoint of that
+         * argument, not a measured optimum.
+         *
+         * Per BATCH, not per event: a batch with one survivor in twenty needs its guards read just
+         * as much as a fresh one, so the share of surviving events would turn the early read off
+         * for batches that waste nothing by it.
+         */
+        const val EARLY_GUARDS_MIN_SURVIVING = 0.5
+
+        /**
+         * How far one narrow batch moves [survivingShare]: an exponential moving average over
+         * roughly the last 1 / weight batches. At 1/4, three all-duplicate batches turn a fresh
+         * stream's early read off (1 -> 0.42) and three batches with survivors turn it back on.
+         */
+        const val SURVIVING_WEIGHT = 0.25
 
         /** Counted each time [commit] keeps the guards [plan] read: no locked guard round trip. */
         const val EARLY_GUARDS_KEPT = "guards.early.kept"
