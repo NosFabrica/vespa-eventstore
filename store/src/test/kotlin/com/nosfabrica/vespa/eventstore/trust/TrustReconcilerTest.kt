@@ -148,6 +148,30 @@ class TrustReconcilerTest {
             assertEquals(serviceCells(service to 87), reputations.get(subject)?.influenceScores)
         }
 
+    /**
+     * The coverage a reconcile records is the state it LEAVES: a boot reconcile
+     * that walks every unprojected service has made them all usable, and the
+     * health page and `trust.coverage.*` gauges must say so now, not at the next
+     * reconcile hours later.
+     */
+    @Test
+    fun `coverage after a repairing reconcile counts the repaired services as projected`() =
+        runBlocking {
+            store.insert(card())
+            store.insert(list10040())
+            store.insert(list10040(author = observer2, serviceKey = service2))
+            store.insert(card(signer = service2))
+            reputations.docs.clear() // neither service carries a cell
+
+            TrustCoverage.reset()
+            val report = reconciler.reconcile()
+            assertEquals(setOf(service, service2), report.rebuilt.toSet(), "both were walked")
+            assertEquals(2, TrustCoverage.servicesNamed)
+            assertEquals(2, TrustCoverage.servicesProjected, "the walked services are projected now")
+            assertEquals(2, TrustCoverage.lensesResolvable, "and every lens resolves to one")
+            TrustCoverage.reset()
+        }
+
     @Test
     fun `reconcile leaves a healthy projection alone`() =
         runBlocking {

@@ -351,18 +351,27 @@ class TrustReconciler internal constructor(
         // service, whether any subject carries its cell. It used to keep only
         // the negatives (what to rebuild) and drop the rest, so nothing in the
         // store could answer "how much of the trust view is usable".
-        val projectedCount = verdicts.count { it != null && it.second }.toLong()
         val projectedServices =
             verdicts
                 .filterNotNull()
                 .filter { it.second }
                 .map { it.first }
                 .toHashSet()
-        val resolvable =
-            providers.lenses.values
-                .count { lens -> listOfNotNull(lens.rank, lens.followers).any { it in projectedServices } }
-                .toLong()
-        TrustCoverage.record(examined.toLong(), projectedCount, providers.lenses.size.toLong(), resolvable)
+
+        // Recorded AGAIN after every walk below, with the walked service
+        // counted as projected: the figure is the state this reconcile LEAVES.
+        // Recorded only here, a boot reconcile that repaired every service
+        // left the health page and the `trust.coverage.*` gauges showing the
+        // pre-repair coverage until the next reconcile, hours later. Recorded
+        // here too, so a walk that throws still leaves a measurement.
+        fun recordCoverage() {
+            val resolvable =
+                providers.lenses.values
+                    .count { lens -> listOfNotNull(lens.rank, lens.followers).any { it in projectedServices } }
+                    .toLong()
+            TrustCoverage.record(examined.toLong(), projectedServices.size.toLong(), providers.lenses.size.toLong(), resolvable)
+        }
+        recordCoverage()
 
         // Phase 2 — rebuilds: heavy walks whose mutating batches take the
         // writer lock through the gate.
@@ -378,6 +387,8 @@ class TrustReconciler internal constructor(
                 gate = gate,
             )
             rebuilt += service
+            projectedServices += service
+            recordCoverage()
             TrustProgress.advance(RECONCILE, rebuilt.size.toLong(), unprojected.size.toLong())
             onProgress?.invoke(total, total, rebuilt.size, 0)
         }
