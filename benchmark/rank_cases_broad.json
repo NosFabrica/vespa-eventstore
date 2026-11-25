@@ -1,0 +1,1178 @@
+[
+ {
+  "query": "Alex Gleason",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"Alex Gleason\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "Adam Curry",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"Adam Curry\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "Saifedean Ammous",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"Saifedean Ammous\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "James Lavish",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"James Lavish\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "Joe Burnett",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"Joe Burnett\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "Fran Finney",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"Fran Finney\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "Frank Corva",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"Frank Corva\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "Kody Low",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"Kody Low\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "jack mallers",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"jack mallers\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "Jack Spirko",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"Jack Spirko\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "Nathan Day",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"Nathan Day\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "Nick Anthony",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"Nick Anthony\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "Leonard Pickard",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"Leonard Pickard\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "Terry Yiu",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"Terry Yiu\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "Joe Carlasare",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"Joe Carlasare\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "Natalie Brunell",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"Natalie Brunell\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "Michael Saylor",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"Michael Saylor\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "Will Casarin",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"Will Casarin\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "Derek Ross",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"Derek Ross\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "Edward Snowden",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"Edward Snowden\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "fiatjaf",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"fiatjaf\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "jb55",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"jb55\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "hodlbod",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"hodlbod\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "Gigi",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"Gigi\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "pablof7z",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"pablof7z\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "rabble",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"rabble\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "Snowden",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"Snowden\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "Kieran",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"Kieran\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "verbiricha",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"verbiricha\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "Semisol",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the person or account \"Semisol\". 3 = their own profile; 2 = their own posts or content substantively about them; 1 = an incidental mention; 0 = other accounts sharing part of the name, impersonators, unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "stacker news",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the Nostr/bitcoin app or project \"stacker news\". 3 = the app itself (its profile, app handler, official announcements); 2 = content substantively about it (reviews, guides); 1 = a mention; 0 = the ordinary-word sense of the name, or unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "nostr.build",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the Nostr/bitcoin app or project \"nostr.build\". 3 = the app itself (its profile, app handler, official announcements); 2 = content substantively about it (reviews, guides); 1 = a mention; 0 = the ordinary-word sense of the name, or unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "nostr.watch",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the Nostr/bitcoin app or project \"nostr.watch\". 3 = the app itself (its profile, app handler, official announcements); 2 = content substantively about it (reviews, guides); 1 = a mention; 0 = the ordinary-word sense of the name, or unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "zapstore",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the Nostr/bitcoin app or project \"zapstore\". 3 = the app itself (its profile, app handler, official announcements); 2 = content substantively about it (reviews, guides); 1 = a mention; 0 = the ordinary-word sense of the name, or unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "snort",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the Nostr/bitcoin app or project \"snort\". 3 = the app itself (its profile, app handler, official announcements); 2 = content substantively about it (reviews, guides); 1 = a mention; 0 = the ordinary-word sense of the name, or unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "coracle",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the Nostr/bitcoin app or project \"coracle\". 3 = the app itself (its profile, app handler, official announcements); 2 = content substantively about it (reviews, guides); 1 = a mention; 0 = the ordinary-word sense of the name, or unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "nostrudel",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the Nostr/bitcoin app or project \"nostrudel\". 3 = the app itself (its profile, app handler, official announcements); 2 = content substantively about it (reviews, guides); 1 = a mention; 0 = the ordinary-word sense of the name, or unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "habla",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the Nostr/bitcoin app or project \"habla\". 3 = the app itself (its profile, app handler, official announcements); 2 = content substantively about it (reviews, guides); 1 = a mention; 0 = the ordinary-word sense of the name, or unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "highlighter",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the Nostr/bitcoin app or project \"highlighter\". 3 = the app itself (its profile, app handler, official announcements); 2 = content substantively about it (reviews, guides); 1 = a mention; 0 = the ordinary-word sense of the name, or unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "wavlake",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the Nostr/bitcoin app or project \"wavlake\". 3 = the app itself (its profile, app handler, official announcements); 2 = content substantively about it (reviews, guides); 1 = a mention; 0 = the ordinary-word sense of the name, or unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "olas",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the Nostr/bitcoin app or project \"olas\". 3 = the app itself (its profile, app handler, official announcements); 2 = content substantively about it (reviews, guides); 1 = a mention; 0 = the ordinary-word sense of the name, or unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "yakihonne",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the Nostr/bitcoin app or project \"yakihonne\". 3 = the app itself (its profile, app handler, official announcements); 2 = content substantively about it (reviews, guides); 1 = a mention; 0 = the ordinary-word sense of the name, or unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "nostur",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the Nostr/bitcoin app or project \"nostur\". 3 = the app itself (its profile, app handler, official announcements); 2 = content substantively about it (reviews, guides); 1 = a mention; 0 = the ordinary-word sense of the name, or unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "ditto",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the Nostr/bitcoin app or project \"ditto\". 3 = the app itself (its profile, app handler, official announcements); 2 = content substantively about it (reviews, guides); 1 = a mention; 0 = the ordinary-word sense of the name, or unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "mutiny",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the Nostr/bitcoin app or project \"mutiny\". 3 = the app itself (its profile, app handler, official announcements); 2 = content substantively about it (reviews, guides); 1 = a mention; 0 = the ordinary-word sense of the name, or unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "phoenix",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the Nostr/bitcoin app or project \"phoenix\". 3 = the app itself (its profile, app handler, official announcements); 2 = content substantively about it (reviews, guides); 1 = a mention; 0 = the ordinary-word sense of the name, or unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "breez",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the Nostr/bitcoin app or project \"breez\". 3 = the app itself (its profile, app handler, official announcements); 2 = content substantively about it (reviews, guides); 1 = a mention; 0 = the ordinary-word sense of the name, or unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "minibits",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the Nostr/bitcoin app or project \"minibits\". 3 = the app itself (its profile, app handler, official announcements); 2 = content substantively about it (reviews, guides); 1 = a mention; 0 = the ordinary-word sense of the name, or unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "SimpleX Chat",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the Nostr/bitcoin app or project \"SimpleX Chat\". 3 = the app itself (its profile, app handler, official announcements); 2 = content substantively about it (reviews, guides); 1 = a mention; 0 = the ordinary-word sense of the name, or unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "No Bullshit Bitcoin",
+  "expect": "",
+  "intent": "navigational",
+  "need": "NAVIGATIONAL: the Nostr/bitcoin app or project \"No Bullshit Bitcoin\". 3 = the app itself (its profile, app handler, official announcements); 2 = content substantively about it (reviews, guides); 1 = a mention; 0 = the ordinary-word sense of the name, or unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "technology",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about technology. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "freedom",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about freedom. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "photography",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about photography. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "sports",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about sports. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "travel",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about travel. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "security",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about security. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "cryptography",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about cryptography. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "decentralization",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about decentralization. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "nature",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about nature. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "monero",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about monero. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "encryption",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about encryption. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "woodworking",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about woodworking. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "history",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about history. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "philosophy",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about philosophy. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "podcast",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about podcast. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "ecash",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about ecash. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "politics",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about politics. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "money",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about money. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "memes",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about memes. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "surveillance",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about surveillance. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "censorship",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about censorship. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "sovereignty",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about sovereignty. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "business",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about business. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "gardening",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about gardening. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "cooking",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about cooking. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "books",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about books. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "health",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about health. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "inflation",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about inflation. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "mining",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about mining. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "education",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about education. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "gaming",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about gaming. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "football",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about football. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "chess",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about chess. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "poetry",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about poetry. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "science",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about science. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "space",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about space. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "economics",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about economics. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "wallet",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about wallet. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "relay",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about relay. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "meditation",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about meditation. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "human rights",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about human rights. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "financial freedom",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about financial freedom. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "austrian economics",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about austrian economics. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "satoshi nakamoto",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about satoshi nakamoto. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "open source",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about open source. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "freedom tech",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about freedom tech. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "bitcoin mining",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about bitcoin mining. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "self custody",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about self custody. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "cold storage",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about cold storage. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "nostr relay",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about nostr relay. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "machine learning",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about machine learning. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "social media",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about social media. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "central bank",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about central bank. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "climate change",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about climate change. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "mental health",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about mental health. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "hard money",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about hard money. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "game theory",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about game theory. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "zero knowledge proofs",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about zero knowledge proofs. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "lightning wallet",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about lightning wallet. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "sound money",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about sound money. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "privacy tools",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about privacy tools. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "artificial intelligence",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about artificial intelligence. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "home cooking",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about home cooking. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "film photography",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about film photography. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "value for value",
+  "expect": "",
+  "intent": "topical",
+  "need": "TOPICAL: content about value for value. 3 = substantively about it; 2 = clearly relevant; 1 = mentions it in passing, a bare hashtag, or a different sense of the word; 0 = unrelated or spam.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "Saife",
+  "expect": "",
+  "intent": "prefix",
+  "need": "AS-YOU-TYPE toward \"Saifedean Ammous\". 3 = its profile / app / the topic's best content; 2 = closely related; 1 = a plausible other completion; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "Alex Gle",
+  "expect": "",
+  "intent": "prefix",
+  "need": "AS-YOU-TYPE toward \"Alex Gleason\". 3 = its profile / app / the topic's best content; 2 = closely related; 1 = a plausible other completion; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "James La",
+  "expect": "",
+  "intent": "prefix",
+  "need": "AS-YOU-TYPE toward \"James Lavish\". 3 = its profile / app / the topic's best content; 2 = closely related; 1 = a plausible other completion; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "stacker n",
+  "expect": "",
+  "intent": "prefix",
+  "need": "AS-YOU-TYPE toward \"Stacker News\". 3 = its profile / app / the topic's best content; 2 = closely related; 1 = a plausible other completion; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "nostr.bu",
+  "expect": "",
+  "intent": "prefix",
+  "need": "AS-YOU-TYPE toward \"nostr.build\". 3 = its profile / app / the topic's best content; 2 = closely related; 1 = a plausible other completion; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "fiatj",
+  "expect": "",
+  "intent": "prefix",
+  "need": "AS-YOU-TYPE toward \"fiatjaf\". 3 = its profile / app / the topic's best content; 2 = closely related; 1 = a plausible other completion; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "jack mal",
+  "expect": "",
+  "intent": "prefix",
+  "need": "AS-YOU-TYPE toward \"Jack Mallers\". 3 = its profile / app / the topic's best content; 2 = closely related; 1 = a plausible other completion; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "wavla",
+  "expect": "",
+  "intent": "prefix",
+  "need": "AS-YOU-TYPE toward \"Wavlake\". 3 = its profile / app / the topic's best content; 2 = closely related; 1 = a plausible other completion; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "zapst",
+  "expect": "",
+  "intent": "prefix",
+  "need": "AS-YOU-TYPE toward \"Zapstore\". 3 = its profile / app / the topic's best content; 2 = closely related; 1 = a plausible other completion; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "Natalie Bru",
+  "expect": "",
+  "intent": "prefix",
+  "need": "AS-YOU-TYPE toward \"Natalie Brunell\". 3 = its profile / app / the topic's best content; 2 = closely related; 1 = a plausible other completion; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "photogr",
+  "expect": "",
+  "intent": "prefix",
+  "need": "AS-YOU-TYPE toward \"photography (the topic)\". 3 = its profile / app / the topic's best content; 2 = closely related; 1 = a plausible other completion; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "decentral",
+  "expect": "",
+  "intent": "prefix",
+  "need": "AS-YOU-TYPE toward \"decentralization (the topic)\". 3 = its profile / app / the topic's best content; 2 = closely related; 1 = a plausible other completion; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "liberdade",
+  "expect": "",
+  "intent": "multilingual",
+  "need": "Portuguese: freedom. 3 = content substantively about it in any language; 2 = clearly relevant; 1 = a passing mention or another sense; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "privacidad",
+  "expect": "",
+  "intent": "multilingual",
+  "need": "Spanish: privacy. 3 = content substantively about it in any language; 2 = clearly relevant; 1 = a passing mention or another sense; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "economía",
+  "expect": "",
+  "intent": "multilingual",
+  "need": "Spanish: economy. 3 = content substantively about it in any language; 2 = clearly relevant; 1 = a passing mention or another sense; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "dinheiro",
+  "expect": "",
+  "intent": "multilingual",
+  "need": "Portuguese: money. 3 = content substantively about it in any language; 2 = clearly relevant; 1 = a passing mention or another sense; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "café",
+  "expect": "",
+  "intent": "multilingual",
+  "need": "Portuguese/Spanish/French: coffee or a café. 3 = content substantively about it in any language; 2 = clearly relevant; 1 = a passing mention or another sense; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "música",
+  "expect": "",
+  "intent": "multilingual",
+  "need": "Portuguese/Spanish: music. 3 = content substantively about it in any language; 2 = clearly relevant; 1 = a passing mention or another sense; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "Freiheit",
+  "expect": "",
+  "intent": "multilingual",
+  "need": "German: freedom. 3 = content substantively about it in any language; 2 = clearly relevant; 1 = a passing mention or another sense; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "Wirtschaft",
+  "expect": "",
+  "intent": "multilingual",
+  "need": "German: economy. 3 = content substantively about it in any language; 2 = clearly relevant; 1 = a passing mention or another sense; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "ビットコイン",
+  "expect": "",
+  "intent": "multilingual",
+  "need": "Japanese: bitcoin. 3 = content substantively about it in any language; 2 = clearly relevant; 1 = a passing mention or another sense; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "怪談",
+  "expect": "",
+  "intent": "multilingual",
+  "need": "Japanese: ghost stories (kaidan). 3 = content substantively about it in any language; 2 = clearly relevant; 1 = a passing mention or another sense; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "política",
+  "expect": "",
+  "intent": "multilingual",
+  "need": "Portuguese/Spanish: politics. 3 = content substantively about it in any language; 2 = clearly relevant; 1 = a passing mention or another sense; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "família",
+  "expect": "",
+  "intent": "multilingual",
+  "need": "Portuguese: family. 3 = content substantively about it in any language; 2 = clearly relevant; 1 = a passing mention or another sense; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "filosofia",
+  "expect": "",
+  "intent": "multilingual",
+  "need": "Portuguese/Italian: philosophy. 3 = content substantively about it in any language; 2 = clearly relevant; 1 = a passing mention or another sense; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "criptografia",
+  "expect": "",
+  "intent": "multilingual",
+  "need": "Portuguese: cryptography. 3 = content substantively about it in any language; 2 = clearly relevant; 1 = a passing mention or another sense; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "viagem",
+  "expect": "",
+  "intent": "multilingual",
+  "need": "Portuguese: travel. 3 = content substantively about it in any language; 2 = clearly relevant; 1 = a passing mention or another sense; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "futebol",
+  "expect": "",
+  "intent": "multilingual",
+  "need": "Portuguese: football. 3 = content substantively about it in any language; 2 = clearly relevant; 1 = a passing mention or another sense; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "Geld",
+  "expect": "",
+  "intent": "multilingual",
+  "need": "German: money. 3 = content substantively about it in any language; 2 = clearly relevant; 1 = a passing mention or another sense; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "sécurité",
+  "expect": "",
+  "intent": "multilingual",
+  "need": "French: security. 3 = content substantively about it in any language; 2 = clearly relevant; 1 = a passing mention or another sense; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "liberté",
+  "expect": "",
+  "intent": "multilingual",
+  "need": "French: freedom. 3 = content substantively about it in any language; 2 = clearly relevant; 1 = a passing mention or another sense; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ },
+ {
+  "query": "自由",
+  "expect": "",
+  "intent": "multilingual",
+  "need": "Japanese/Chinese: freedom. 3 = content substantively about it in any language; 2 = clearly relevant; 1 = a passing mention or another sense; 0 = unrelated.",
+  "split": "broad",
+  "note": "BROAD (2026-11-25): regression set for the intent-gated perfect-match rung, chosen before any page was seen (benchmark/embedding/make_broad_cases.py)."
+ }
+]

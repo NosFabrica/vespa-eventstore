@@ -720,6 +720,24 @@ class EventYqlTest {
     }
 
     @Test
+    fun `the topical intent rides the default search profile only, and only when it moves anything`() {
+        val coffee = EventQuery(search = "coffee", observer = hexA, minRank = 2.0, topical = 1.0)
+        val sent = EventYql.build(coffee)!!
+        assertEquals(EventYql.RANK_SEARCH, sent.ranking)
+        assertEquals("1.0", sent.params["ranking.features.query(topical)"])
+
+        // 0 and unset are the shipped default: nothing is sent.
+        for (inert in listOf(coffee.copy(topical = null), coffee.copy(topical = 0.0))) {
+            assertNull(EventYql.build(inert)!!.params["ranking.features.query(topical)"])
+        }
+        // Profiles without topical_perfect_drop() are not sent it.
+        for (other in listOf(coffee.copy(observer = null), coffee.copy(ranking = EventYql.RANK_DESC), coffee.copy(ranking = EventYql.RANK_RECENCY_GATED))) {
+            val built = EventYql.build(other)!!
+            assertNull(built.params["ranking.features.query(topical)"], "${built.ranking} must not carry topical")
+        }
+    }
+
+    @Test
     fun `rank feature overrides land on the request, and their names are validated`() {
         val swept =
             EventYql.build(

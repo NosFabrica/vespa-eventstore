@@ -101,6 +101,8 @@ class EngineTuning(
     // ---- per store: policy --------------------------------------------------
     /** `GUARD_OWNERS_DISABLE` — true forces every insert to probe NIP-09/NIP-62 whatever `writers` says. Default off (`GuardOwners`). */
     val guardOwnersDisabled: Boolean? = null,
+    /** `VESPA_INTENT_PROBE` — false skips the topical-intent probe and ranks every search as navigational, as before it. Default on (`search/QueryIntent`). */
+    val intentProbe: Boolean? = null,
     // ---- per process --------------------------------------------------------
     /** `VESPA_QUERY_FANOUT` — engine queries a batch stage keeps in flight, at least 1. Default [DEFAULT_QUERY_FANOUT] (`engine.async.QUERY_FANOUT`). */
     val queryFanout: Int? = null,
@@ -217,6 +219,7 @@ class EngineTuning(
             "addressKeyed" to addressKeyed,
             "unboundedHits" to unboundedHits,
             "guardOwnersDisabled" to guardOwnersDisabled,
+            "intentProbe" to intentProbe,
             "queryFanout" to queryFanout,
             "putFanout" to putFanout,
             "matchPhaseMaxHits" to matchPhaseMaxHits,
@@ -247,6 +250,17 @@ class EngineTuning(
         /** `VESPA_QUERY_FANOUT`'s default: past it proton's summary stage times out on bulk-stage queries. */
         const val DEFAULT_QUERY_FANOUT = 4
 
+        /** The topical-intent probe's switch ([intentProbe]). */
+        const val INTENT_PROBE = "VESPA_INTENT_PROBE"
+
+        /**
+         * `VESPA_INTENT_PROBE` read LENIENTLY, as `open()` reads every setting a
+         * caller left unnamed: only an explicit off value (`false`, `0`, `no`,
+         * `off`) turns the probe off; unset, blank or anything else keeps it on.
+         * [fromEnv] is the strict reading.
+         */
+        fun intentProbeFromEnv(env: Map<String, String>): Boolean = env[INTENT_PROBE]?.trim()?.lowercase() !in setOf("false", "0", "no", "off")
+
         /** Every variable [fromEnv] reads, so a deployment's docs can list exactly these. */
         val VARIABLES: List<String> =
             listOf(
@@ -267,6 +281,7 @@ class EngineTuning(
                 ClientTuning.ADDRESS_KEYED,
                 ClientTuning.UNBOUNDED_HITS,
                 GuardOwners.ENV_DISABLE,
+                INTENT_PROBE,
                 ProcessKnobs.queryFanout.env,
                 ProcessKnobs.putFanout.env,
                 ProcessKnobs.matchPhaseMaxHits.env,
@@ -341,6 +356,7 @@ class EngineTuning(
                     addressKeyed = flag(ClientTuning.ADDRESS_KEYED),
                     unboundedHits = int(ClientTuning.UNBOUNDED_HITS, atLeastOne),
                     guardOwnersDisabled = flag(GuardOwners.ENV_DISABLE),
+                    intentProbe = flag(INTENT_PROBE),
                     queryFanout = int(ProcessKnobs.queryFanout.env, atLeastOne),
                     putFanout = int(ProcessKnobs.putFanout.env, atLeastOne),
                     matchPhaseMaxHits = int(ProcessKnobs.matchPhaseMaxHits.env, atLeastOne),

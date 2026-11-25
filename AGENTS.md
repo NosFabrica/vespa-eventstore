@@ -203,7 +203,7 @@ is a field of `EngineTuning` (store root), documented there with its variable, r
 code that reads it; `EngineTuning.VARIABLES` lists them. `open(tuning = EngineTuning.fromEnv(env))`
 parses STRICTLY (every bad variable named in one exception); a field left null is read the old,
 lenient way, so `open()` without a tuning is unchanged. Per-store settings travel as values
-(`ClientTuning` into the engine client, `guardOwnersDisabled` into the store); the few read as
+(`ClientTuning` into the engine client, `guardOwnersDisabled` and `intentProbe` — `VESPA_INTENT_PROBE`, the topical-intent probe, `search/QueryIntent` — into the store); the few read as
 constants from places no store instance reaches (fan-outs, the match-phase depth, the dedup chunk,
 the trust walk's page and slice) are `ProcessKnob`s, pinned once per process by `open()`. **A new
 knob goes on `EngineTuning`** (field, `fromEnv`, `VARIABLES`) — never a bare `System.getenv` in the

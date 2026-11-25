@@ -1,6 +1,6 @@
 # The embedding experiment: does dense retrieval improve search?
 
-Status: **the candidate is `prod_intent_entity_off` / `prod_probe_entity_off` (§8.5): an intent-gated perfect-match rung, with no embedding in it. 52 rows to grade. The embedding itself did not earn its place (§7, §8.2).** Nothing here ships. The experiment
+Status: **SHIPPED as an intent-gated perfect-match rung (§10), with no embedding in it. The embedding itself did not earn its place (§7, §8.2). 958 model grades are owed a 20% human audit (§9.3).**
 package is built from a COPY of `engine/app`, and the shipped schema is unchanged.
 
 ## 1. The question
@@ -356,15 +356,121 @@ work (§8.6).
 4. After deploying, re-capture production and confirm that the live pages match the local
    replay (§9).
 
-### 8.3 What is owed
+## 9. A broad regression set, and the probe calibrated on production
 
-- **Grades.** `intent_perfect_off` is the candidate. Its unjudged rows are in the round's
-  pool (597 rows over 8 configs). Grading only the `intent_perfect_off` and
-  `probe_perfect_off` rows is enough to read it. Model grades are fine here: that config has
-  no model in its ranking, so §5.3's human-only rule applies to the embedding configs alone.
-- **A classifier.** The probe's misses are trusted accounts named after a topic. Candidates:
-  require that entity to also be the page's dominant answer, or compare body frequency against
-  name frequency on production statistics (`name_df.json` has only the name half).
+### 9.1 The set
+
+`benchmark/rank_cases_broad.json` (`benchmark/embedding/make_broad_cases.py`) holds 147 queries
+written without looking at any page, all `split: broad`:
+
+- 30 people (20 full names, 10 one-word handles such as `fiatjaf`, `jb55`, `Gigi`);
+- 20 apps, several named with an ordinary word (`snort`, `ditto`, `olas`, `phoenix`);
+- 40 one-word and 25 multi-word topics;
+- 12 as-you-type prefixes;
+- 20 non-English words.
+
+Hints came from the trusted names, apps and hashtags in the eval capture. No search log was
+used: the relay's term log is admin-only and quotes what people typed. The pages were captured
+read-only (30 439 events, 28 247 new) and loaded beside the §7 corpus (48 284 in all).
+
+### 9.2 What production changed about the probe
+
+**The local corpus flattered it.** Run on production (`benchmark/embedding/probe_decisions.py`,
+REQ only), the first probe, "a trust-30+ profile or app named the query", read **18 of 89**
+topical queries as navigational: `bitcoin`, `nostr`, `coffee`, `art`, `privacy`, `crypto`,
+`freedom`, `science`, `philosophy`, `sound money`, and more. The local capture did not hold the
+accounts involved. Each is someone named after the word ("Coffee ☕", "art", "Science", the
+shitposter), and trust saturates: they sit at 75–100 like everyone real. **Followers separate
+them.** The navigational entities run to thousands (ODELL 26 041, Gigi 25 187, damus 16 928,
+the apps 1 000–10 000), while the accounts named after a topic run to a few hundred ("nostr" 220,
+"art" 275, "privacy" 124). The shipped rule is an app handler, or a profile with **at least
+1 000 followers** under the lens. With it, production reads 87 of 89 topical queries topical
+(the misses are `coffee` at 1 842 and `memes` at 3 451). 52 of 65 navigational queries read
+navigational, and most of the other 13 hold no profile named exactly the query, so the rung the
+intent moves never touched them.
+
+**Cost.** Timed on production, 200 queries, wall clock, each REQ paying about 56 ms of fixed
+overhead (`benchmark/embedding/probe_latency.py`):
+
+| REQ | p50 | p95 |
+|---|---:|---:|
+| the search a client sends | 929 ms | 3 989 ms |
+| the probe sent as words | 342–429 ms | 1 292–2 089 ms (`dell` 4.2 s) |
+| **the probe sent as one quoted phrase (shipped)** | **77 ms** | **653 ms** |
+
+"Named exactly" needs no fuzzy, prefix or trigram reach. The phrase made the same decision as the
+word form on 198 of 199 queries, and its only miss (`nostr`) is fixed by reading 50 deep instead
+of 20. Inside the store, the probe is one engine search with no network hop and no reference
+expansion, so it costs less than this table shows. Its answers are cached for ten minutes per
+lens and text.
+
+### 9.3 The verdict, graded
+
+958 rows were graded blind by six parallel model assessors (provenance `llm:claude`), grouped so
+that each topic is graded by one assessor. They cover the union of the baseline's and the
+candidate's top 10 on every broad topic that changed, plus the 81 owed rows of the 54-case run.
+That is allowed here because the ranking holds no model (§5.3). The blind 20% audit sheet a
+person still owes is `benchmark/search_judgments_audit_broad.json` (203 rows over 96 topics).
+Every topic is ranked under **production's** probe decision (`rankAb --intent-file`, `_intent` 3).
+
+**The 147 broad queries.** Damping is off on both sides, since `name_df.json` does not cover
+these words. 71 topics changed; the other 76 are identical.
+
+| candidate vs baseline (71 changed topics) | Δ nDCG@10 | 95% CI | W/T/L | topical (55) | multilingual (10) | navigational (5) | prefix (1) |
+|---|---:|---|---:|---:|---:|---:|---:|
+| `file_entity_off` | **+0.176** | [+0.131, +0.223] | 57/5/9 | **+0.215** | +0.078 | −0.019 | −0.018 |
+
+That averages about **+0.085** across all 147. RR: +0.222 [+0.142, +0.304]. **The one loss over
+0.1 is `Derek Ross`** (RR −0.50). His profile has 659 followers, under the floor, so the query
+reads topical and the profile loses the rung while his own long-form "AMA" article, a reference
+kind, keeps it: profile #2, article #1. The cost of the follower floor is a person with a small
+following whose own article is titled their name. The other navigational changes are within a
+rank or two (`Joe Carlasare`'s two calendar events swap; `mutiny`'s page is wrong in both, led by
+a brewery named Mutiny).
+
+**The 54 original cases**, under production's decisions and statistics, fully graded:
+
+| vs `prod_baseline` | Δ nDCG@10 | 95% CI | p | W/T/L | topical (24) | RR |
+|---|---:|---|---:|---:|---:|---:|
+| **probe, as shipped** (`prodfile_entity_off`) | **+0.056** | **[+0.027, +0.088]** | <0.001 | 16/36/2 | **+0.123** | +0.113 |
+| oracle (`prod_intent_entity_off`) | +0.054 | [+0.025, +0.086] | <0.001 | 14/39/1 | +0.121 | +0.118 |
+
+With the follower rule, the probe reaches the oracle. No loss over 0.1.
+
+## 10. What shipped
+
+- **`engine/app/schemas/event.sd`**, `search` profile: `query(topical)` (default 0),
+  `reference_kind()` (30818, 30023) and `topical_perfect_drop()`, subtracted in the second phase
+  and surfaced as a match-feature. At 0, the ranking is exactly what it was. An older schema
+  ignores the input it does not declare (checked on Vespa: an undeclared
+  `ranking.features.query(x)` is accepted and unread), so a new store on an old cluster ranks as
+  before.
+- **`engine`**: `EventQuery.topical`, which `EventYql` sends on `search` only and only when
+  positive. `Ranked.followers` carries the `verified_followers` match-feature.
+  `text/EntityNames` is the one "named exactly" test, shared by the store and `rankAb`.
+- **`store/search/QueryIntent`**: the probe (one quoted phrase over kinds 0 and 31990, min_rank
+  30, 50 deep, under the reader's lens), the follower floor, a ten-minute cache, and fail-open
+  behaviour. It runs only on the two paths that serve a ranked page (`NostrSemanticsStore.pageOf`,
+  `rawQuery`). Counts and gates skip it. So do profile-only, notes-only and reference-only reads.
+- **`EngineTuning.intentProbe` / `VESPA_INTENT_PROBE`**: on by default. `false` restores the old
+  ranking and removes the round trip.
+- **Tests**: `EntityNamesTest`, `QueryIntentTest`, `EventYqlTest`, `EngineTuningTest`, and
+  `TopicalIntentIT`, which runs the store's own read path on 55 signed production events
+  (`lightning` led by an article instead of the sets titled Lightning; `the art of war`'s wiki
+  page kept in the top 2; `odell` untouched; and the old order back with the probe off).
+  RankRegressionIT, PhraseBandIT, FieldCoverageRankIT and the unit suites stay green.
+- **Not shipped**: the embedding package, the semantic rung and the aboutness multiplier
+  (`benchmark/embedding/build_app.py`, `RankAb.SEMANTIC_CONFIGS`). They remain an experiment.
+
+### 10.1 Still open
+
+- **The human audit** of the 958 model grades (§9.3), `benchmark/search_judgments_audit_broad.json`:
+  run `rankAb --agreement` on it before anyone `--merge`s it (§5.3).
+- **The follower floor's cost**: a person under 1 000 followers whose own reference article is
+  titled their name (`Derek Ross`, §9.3). A narrower rule to try is to keep the rung on any
+  profile named the query when the page also holds that profile's own reference document.
+- **The probe's two topical misses** (`coffee`, `memes`: an account named the word with
+  1 842 / 3 451 followers). Production's name-frequency damping already covers the commonest
+  words, and these two are not.
 - **The embedding, if revisited:** a larger model, a minimum text length or a substance prior
-  before the aboutness signal, and grading the §7 pool. As built, it does not earn its RAM
-  (§6).
+  before the aboutness signal, and grading the §7 pool. As built, it does not earn its RAM (§6).

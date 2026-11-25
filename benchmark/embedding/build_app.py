@@ -31,7 +31,9 @@ This never touches engine/app: it rewrites a COPY of the built package. What it 
                         0.84, so 0.84..0.90 spans "unrelated" to "about it".
      query(q_emb)       the query's embedding; rankAb sends `embed(e5, @sem_text)`.
 
-  THE INTENT-AWARE LADDER (docs/embedding-experiment.md §8). query(topical), 0..1, says how
+  THE INTENT-AWARE LADDER (docs/embedding-experiment.md §8). query(topical) (declared by the
+  shipped schema since §10, whose own topical_perfect_drop() this package replaces with
+  intent_precision(), its superset), 0..1, says how
   much the query asks ABOUT a subject rather than for one entity; the caller decides it
   (rankAb: the case file's label as an oracle, or an entity probe). At 0, nothing changes.
   At 1:
@@ -106,7 +108,6 @@ PROFILE_ADDITIONS = f"""
             query(w_sem_mult) double: 0.0
             query(sem_floor) double: 0.84
             query(sem_ceil) double: 0.90
-            query(topical) double: 0.0
             query(topical_cap) double: 550.0
             query(w_sem_tier_topical) double: 0.0
             query(w_sem_mult_topical) double: 0.0
@@ -158,7 +159,7 @@ PROFILE_ADDITIONS = f"""
 
 FIRST_OLD = "expression: floored_text_score() * wot_mult() * recency_mult()"
 FIRST_NEW = "expression: max(intent_text_score(), sem_tier_score()) * wot_mult() * recency_mult()"
-SECOND_OLD = "expression: (firstPhase + (precision_boost_pop() + body_phrase_pop()"
+SECOND_OLD = "expression: (firstPhase + (precision_boost_pop() - topical_perfect_drop() + body_phrase_pop()"
 SECOND_NEW = "expression: (firstPhase + (intent_precision() + body_phrase_pop()"
 SECOND_TAIL_OLD = "* recency_mult()) * phrase_mult()"
 SECOND_TAIL_NEW = "* recency_mult()) * phrase_mult() * sem_mult()"

@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.eventstore.benchmark.harness.PairedComparison
 import com.nosfabrica.vespa.eventstore.benchmark.harness.RelevanceMetrics
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
+import com.nosfabrica.vespa.eventstore.engine.text.EntityNames
 import com.nosfabrica.vespa.eventstore.engine.text.StemText
 import com.vitorpamplona.quartz.nip50Search.SearchQuery
 import kotlinx.serialization.ExperimentalSerializationApi
@@ -357,6 +358,21 @@ object RankAb {
                     "topical_drop_precision" to 0.0,
                     "topical_keep_reference" to 1.0,
                 ),
+            // §10: production's probe decisions (`--intent-file`), the shipped rule.
+            "prodfile_entity_off" to
+                mapOf(
+                    "perfect_df_min_docs" to 0.0,
+                    "_intent" to 3.0,
+                    "topical_cap" to 1e12,
+                    "topical_drop_precision" to 0.0,
+                    "topical_keep_reference" to 1.0,
+                ),
+            // The same without production's name statistics, for a case set whose
+            // words name_df.json does not cover (rank_cases_broad.json): baseline
+            // and candidate then share the local statistics, which is what a
+            // regression check compares.
+            "file_entity_off" to
+                mapOf("_intent" to 3.0, "topical_cap" to 1e12, "topical_drop_precision" to 0.0, "topical_keep_reference" to 1.0),
             // The same, decided by the probe instead of the label.
             "probe_cap_550" to mapOf("_intent" to 2.0, "topical_cap" to 550.0),
             "probe_hybrid" to
@@ -379,6 +395,7 @@ object RankAb {
             when (overrides["_intent"]?.toInt()) {
                 null -> return overrides
                 1 -> if (topic.intent == "topical") 1.0 else 0.0
+                3 -> intentFile[topic.key] ?: error("--intent-file has no decision for '${topic.key}'")
                 else -> probeCache.getOrPut(topic.key) { entityProbe(base, topic, profile, nowSecs) }
             }
         return overrides + ("topical" to topical)
@@ -387,9 +404,18 @@ object RankAb {
     private val probeCache = LinkedHashMap<String, Double>()
 
     /**
+     * `--intent-file`: per-topic `topical` decisions made ON PRODUCTION by
+     * `benchmark/embedding/probe_decisions.py`, for `_intent` 3. A local corpus
+     * lacks the accounts production holds that are named after common words,
+     * so a probe run here reads those topics more topical than production
+     * would (docs/embedding-experiment.md §10.2).
+     */
+    private var intentFile: Map<String, Double> = emptyMap()
+
+    /**
      * THE ENTITY PROBE: a query is NAVIGATIONAL (0.0) when someone the reader
      * trusts IS named it — a profile (kind 0) or an app (kind 31990) whose
-     * naming field is the whole query (perfect_match), by an author at or over
+     * declared name is the whole query ([EntityNames]), by an author at or over
      * [PROBE_TRUST] under the lens — and TOPICAL (1.0) otherwise. A page
      * restricted to profiles is navigational by construction. One extra
      * kind-restricted query, which the store could send before the search.
@@ -402,14 +428,29 @@ object RankAb {
         nowSecs: Long?,
     ): Double {
         if (topic.kinds.isNotEmpty() && topic.kinds.all { it == 0 }) return 0.0
+        // The store's probe, step for step (store/search/QueryIntent): the
+        // entity kinds, the trust floor as the query's own min_rank, and
+        // EntityNames deciding "named exactly" from the declared name.
+        val parsed = SearchQuery.parse(topic.query)
+        val text = (listOf(parsed.terms) + parsed.phrases).filter { it.isNotBlank() }.joinToString(" ")
+        if (text.isBlank()) return 0.0
         val named =
-            search(base, topic.query, profile, topic.observer, 20, emptyMap(), nowSecs, listOf(0, 31990))
-                .filter { it.perfect >= 0.999 && it.trust >= PROBE_TRUST }
-        return if (named.isEmpty()) 1.0 else 0.0
+            search(base, "\"$text\"", profile, topic.observer, PROBE_HITS, mapOf("min_rank" to PROBE_TRUST), nowSecs, EntityNames.KINDS)
+                .any { hit ->
+                    val kind = hit.kind.toIntOrNull() ?: return@any false
+                    (kind != 0 || hit.followers < 0 || hit.followers >= PROBE_FOLLOWERS) && EntityNames.names(text, kind, hit.content)
+                }
+        return if (named) 0.0 else 1.0
     }
 
-    /** The trust an entity's author needs for its name to make a query navigational. */
+    /** The trust an entity's author needs for its name to make a query navigational (QueryIntent.PROBE_TRUST). */
     private const val PROBE_TRUST = 30.0
+
+    /** How many entities the probe reads (QueryIntent.PROBE_HITS). */
+    private const val PROBE_HITS = 50
+
+    /** The followers a named profile needs (QueryIntent.PROBE_FOLLOWERS). */
+    private const val PROBE_FOLLOWERS = 1000.0
 
     /** How the probe's verdicts agree with the case file's labels: printed whenever a probe ran. */
     private fun probeReport(topics: List<Topic>) {
@@ -457,6 +498,19 @@ object RankAb {
                         }
                 }.orEmpty()
         val hits = (opts["--hits"] ?: "100").toInt()
+        intentFile =
+            opts["--intent-file"]
+                ?.let { path ->
+                    Json
+                        .parseToJsonElement(Files.readString(Path.of(path)))
+                        .jsonObject
+                        .mapValues { (_, v) ->
+                            v.jsonObject
+                                .getValue("topical")
+                                .jsonPrimitive.content
+                                .toDouble()
+                        }
+                }.orEmpty()
         // The instant recency is measured against. Pinning it makes a sweep
         // reproducible across days (and lets one be replayed at the moment a
         // bad ranking was reported); omitted, EventYql stamps the wall clock.
@@ -1118,6 +1172,8 @@ object RankAb {
         val scattered: Double = 0.0,
         val coverage: Double = 0.0,
         val perfect: Double = 0.0,
+        // The author's followers under the lens (verified_followers); -1 when not reported.
+        val followers: Double = -1.0,
         // The author's trust under the lens (match feature user_score), for the entity probe.
         val trust: Double = 0.0,
         // For the quality columns: the author-share guardrail and the --pool worksheet.
@@ -1287,6 +1343,7 @@ object RankAb {
                     coverage = feature("naming_coverage"),
                     perfect = feature("perfect_match"),
                     trust = feature("user_score"),
+                    followers = feature("verified_followers"),
                     pubkey = str("pubkey").orEmpty(),
                     content = str("content").orEmpty(),
                     tags = str("tags") ?: "[]",
