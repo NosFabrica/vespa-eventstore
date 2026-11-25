@@ -145,15 +145,19 @@ class AuthorShardsMoveIT {
                                     when (rnd.nextInt(10)) {
                                         in 0..5 -> {
                                             note(seq.incrementAndGet(), author).also {
+                                                inFlight.add(it.id)
                                                 writer.put(it)
                                                 oracle[it.id] = it
+                                                inFlight.remove(it.id)
                                             }
                                         }
 
                                         in 6..7 -> {
                                             oracle.keys.filter { it != damaged }.randomOrNull(rnd)?.let { id ->
+                                                inFlight.add(id)
                                                 writer.remove(id)
                                                 oracle.remove(id)
+                                                inFlight.remove(id)
                                             }
                                         }
 
@@ -305,13 +309,21 @@ class AuthorShardsMoveIT {
     ) {
         // The oracle moves under the writer: read it, then the index, then it again, and judge the
         // index against what both oracle reads agree on (an id present in one only was written mid-read).
+        // A write IN FLIGHT is judged by neither: Vespa can serve a put before the writer gets
+        // its ack and records it, which read as a document "the oracle never held" (it flaked so,
+        // once in a full-suite run, on an event written long after the copy and the diff). Each
+        // in-flight snapshot is taken before its oracle snapshot: a write leaves the in-flight set
+        // only after the oracle has it, so a write the read saw is in one of the two.
+        val flyingBefore = inFlight.toSet()
         val before = oracle.keys.toSet()
         val served = allIds(index)
+        val flyingAfter = inFlight.toSet()
         val after = oracle.keys.toSet()
         assertEquals(served.size, served.toSet().size, "$phase: a document served twice")
-        val stable = before intersect after
+        val unsettled = flyingBefore union flyingAfter
+        val stable = (before intersect after) - unsettled
         val missing = stable - served.toSet()
-        val ghost = served.toSet() - (before union after)
+        val ghost = served.toSet() - (before union after) - unsettled
         assertTrue(missing.isEmpty(), "$phase: ${missing.size} live documents not served, e.g. ${missing.take(3)}")
         assertTrue(ghost.isEmpty(), "$phase: ${ghost.size} documents served that the oracle never held, e.g. ${ghost.take(3)}")
     }
@@ -387,6 +399,9 @@ class AuthorShardsMoveIT {
         const val QUERY_PORT = 8080
         const val CONFIG_PORT = 19071
         val HTTP: HttpClient = HttpClient.newHttpClient()
+
+        /** Ids the test's writer is putting or removing right now, between its call and its oracle update ([assertExact]). */
+        val inFlight: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
         /** A service key no fixture or writer ever scores with. */
         val BOGUS_SERVICE = "ab".repeat(32)
