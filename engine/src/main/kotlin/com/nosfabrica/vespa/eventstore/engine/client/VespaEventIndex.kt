@@ -294,6 +294,13 @@ class VespaEventIndex(
      */
     private val slackMemory: TieSlackMemory? = windowMemory?.let(::TieSlackMemory)
 
+    /**
+     * What a read's FAMILY usually is ([NarrowPrior]), for the cold read [windowMemory] has
+     * never seen: a family whose cold reads all ended narrow skips the speculative attempt.
+     * Switched by the same `VESPA_RECENCY_MEMORY`.
+     */
+    private val narrowPrior: NarrowPrior? = if (recencyMemory) NarrowPrior() else null
+
     // ADDRESS-KEYED mode (VESPA_ADDRESS_KEYED=1, the [addressKeyed] parameter):
     // replaceable/addressable events are stored under their NIP-01 address as
     // the document id, so the engine enforces newest-wins with a conditional put
@@ -941,6 +948,29 @@ class VespaEventIndex(
                 val narrowLease = firstLease?.let { if (it.epoch == 0L) TieSlackMemory.Lease(MIN_TIE_SLACK, 0) else it }
                 return@timed recallPage(planner.shipped(q), planned = true, idOnly = idOnly, shape = shape, coldSlack = MIN_TIE_SLACK, leased = narrowLease)
             }
+            // A COLD read (nothing remembered for its exact shape) of a family whose
+            // cold reads vote narrow: the unwindowed read alone, as a remembered
+            // narrow shape gets, and its page says what the shape really is.
+            val family = if (recalled == null && narrowPrior != null) RecencyWindowMemory.familyOf(q, anchor, now) else null
+            if (family != null && narrowPrior!!.isNarrow(family)) {
+                outcome("prior.narrow")
+                val narrowLease = firstLease?.let { if (it.epoch == 0L) TieSlackMemory.Lease(MIN_TIE_SLACK, 0) else it }
+                val page = recallPage(planner.shipped(q), planned = true, idOnly = idOnly, shape = shape, coldSlack = MIN_TIE_SLACK, leased = narrowLease)
+                // A full page whose oldest hit lies inside the narrow horizon would
+                // have been proven by a window: the shape is NOT narrow. Its exact
+                // shape remembers that window (its next read speculates from it) and
+                // the family hears a busy vote. Anything else was narrow after all.
+                val span = if (page.size >= limit) anchor - page[limit - 1].createdAt else null
+                if (span != null && span <= RecencyPlanner.NARROW_HORIZON) {
+                    outcome("prior.busy")
+                    learn(shape, RecencyWindowMemory.Recall.Window(span.coerceIn(RecencyPlanner.FIRST_WINDOW, RecencyPlanner.MAX_WINDOW), limit))
+                    vote(family, narrow = false)
+                } else {
+                    learn(shape, RecencyWindowMemory.Recall.Narrow)
+                    vote(family, narrow = true)
+                }
+                return@timed page
+            }
             var window =
                 (recalled as? RecencyWindowMemory.Recall.Window)
                     ?.let { (it.window * limit / it.limit).coerceIn(RecencyPlanner.FIRST_WINDOW, RecencyPlanner.MAX_WINDOW) }
@@ -993,6 +1023,7 @@ class VespaEventIndex(
                 if (page.size >= remaining) {
                     outcome(if (attempts == 1) "first" else "widened")
                     learn(shape, RecencyWindowMemory.Recall.Window(window, limit))
+                    family?.let { vote(it, narrow = false) }
                     return@timed carried + page
                 }
                 carried = carried + page
@@ -1007,14 +1038,22 @@ class VespaEventIndex(
             }
             outcome("fallback.$fallback")
             when (fallback) {
-                // Too thin to window: the next read of this shape skips the attempts.
-                "narrow", "attempts", "window" -> learn(shape, RecencyWindowMemory.Recall.Narrow)
+                // Too thin to window: the next read of this shape skips the attempts,
+                // and a cold one votes its family narrow.
+                "narrow", "attempts", "window" -> {
+                    learn(shape, RecencyWindowMemory.Recall.Narrow)
+                    family?.let { vote(it, narrow = true) }
+                }
 
                 // An attempt the engine cut says nothing about the shape's rate.
-                "partial" -> shape?.let { windowMemory?.forget(it) }
+                "partial" -> {
+                    shape?.let { windowMemory?.forget(it) }
+                }
 
                 // The caller's own `since` decided it; the shape learned nothing.
-                else -> Unit
+                else -> {
+                    Unit
+                }
             }
             // The unwindowed read, for what the carried pages do not already hold.
             // A shape that came back short has MEASURED its rate: the fallback
@@ -1038,6 +1077,19 @@ class VespaEventIndex(
     }
 
     /**
+     * One cold read's vote for its [family] ([NarrowPrior]), unless an answer it was served came
+     * off part of the corpus ([ServedDegraded]): a thinned page would vote narrow for a busy family.
+     */
+    private suspend fun vote(
+        family: RecencyWindowMemory.Shape,
+        narrow: Boolean,
+    ) {
+        val prior = narrowPrior ?: return
+        if (currentCoroutineContext()[ServedDegraded]?.seen == true) return
+        prior.record(family, narrow)
+    }
+
+    /**
      * [this] restricted to what is strictly older than [boundary] (null: no
      * restriction), asking for [remaining] results — the rest of a speculative
      * read whose newer part short attempts already delivered. `until` only
@@ -1057,7 +1109,9 @@ class VespaEventIndex(
      * `attempts` (the cap), `since` (the caller's own window was tighter),
      * `partial` (an attempt the engine cut), `window` (past MAX_WINDOW) — and
      * `recalled.window` / `recalled.narrow` when [RecencyWindowMemory] supplied
-     * the start (a remembered window) or skipped the attempts (a narrow shape).
+     * the start (a remembered window) or skipped the attempts (a narrow shape),
+     * `prior.narrow` when a cold read skipped them on its family's vote
+     * ([NarrowPrior]), and `prior.busy` when that read's page proved a window.
      * With `recency.speculative` (every read, timed) and `.attempt` (every
      * windowed query, timed), the ratios answer what the local benchmark could
      * only estimate: how often a real cluster's reads prove out in one query.

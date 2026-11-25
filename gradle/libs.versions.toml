@@ -8,7 +8,57 @@ mavenPublish = "0.37.0"
 # FROM MAGPIE, so the published POM names com.vitorpamplona.quartz:quartz-jvm:<pin> and a consumer of
 # this store needs Magpie serving quartz's groups (settings.gradle.kts); it needs no JitPack.
 #
-# 2.22.1 = vitorpamplona/quartz's release 2.22.1 (the v2.22.1 tag 273155b3d over the quartz#141 merge
+# 2.25.2 = vitorpamplona/quartz's release 2.25.2 (the v2.25.2 tag ddc66ff18, quartz main's head), 66
+# commits over 4456c57f06 (below) plus 13 merges, which it descends from; 2.25.0 (v2.25.0 = 2e60d4eb9)
+# and 2.25.1 (untagged) between them were never pinned. Back from JitPack to a release. Nothing this
+# store calls changes contract:
+#  - SEARCH. No kind becomes or stops being SearchableEvent (the 239 commonMain files naming it are the
+#    same set at both ends), and nip50Search has no diff; the one SearchableEvent class touched,
+#    GroupEditMetadataEvent, changes only its 9002 builder (a lifted `private` / `closed` also sends
+#    `public` / `open`). SQLite's FTS catch-up pages by row_id (its own index). No reindex.
+#  - STORE CONTRACT. IEventStore's default snapshotIdsForNegentropy stops its walk at the overflow
+#    sentinel (NostrSemanticsStore overrides it); the conformance battery (nip01Core.store.conformance)
+#    has no diff. Filter matching, nip85TrustedAssertions, nip40Expiration, nip09Deletions,
+#    nip62RequestToVanish, the hint providers and the tag codecs have none either.
+#  - RELAY SERVER (LiveEventStore, SessionBackend, RelaySession; this store constructs none, vespa-relay
+#    does). A NEG-OPEN's snapshot is built under the caller's StoreQueryContext, on the IO pool, as a
+#    lazy job cancelled with its session, and cached per caller unless the store is quartz's own
+#    EventStore; a search NEG-OPEN drains a deferred FTS backlog first. NostrSemanticsStore's
+#    sealedNegentropyStorage does not read the connection observer, so its NEG-OPEN answer is ungated,
+#    as before. COUNTs count against maxSubscriptions; IngestQueue's backlog count no longer leaks.
+#  - KITE. Text mode (Event.toJson, so EventDoc.toEventJson) escapes a lone surrogate as \uxxxx instead
+#    of writing it raw (it reached the wire as '?', breaking the id); a whole-input parse (Event.fromJson,
+#    so EventDoc.fromEventJson) refuses trailing data after the value.
+#  - CORE. Event.verify() refuses an id, pubkey or sig that is not lowercase hex (this store verifies
+#    nothing); Hex.isHex / isHex64 are branchless, same answers; EventFactory's registry is
+#    copy-on-write; TagArray gains two- and three-name firstTagValueFor overloads.
+#  - QUARTZ'S SQLITE STORE (the parity reference): a kind 5's id delete stays on the id index, schema v7
+#    adds query_by_owner_created for the vanish delete, the live negentropy index is rebuilt on a reader,
+#    and the removal generation moves after the commit. Same rows deleted and served.
+#  - Also in the range, nothing this store calls: relay-client AUTH / backoff / pool fixes, NIP-44 strict
+#    v2, NIP-46 / NIP-55 signer result binding, NIP-59 unwrap verification left to the caller, NIP-19
+#    nembed caps, bounded inflate, NIP-11 fetch fixes, Concord folds, ContextVM, and interop vectors.
+#  - The distributed skill (.claude/skills/quartz) is re-copied from this release's commit (SKILL.md's
+#    verify and NIP-44 notes; the NIP-85 and search references have no diff).
+#
+# Prev 4456c57f06 = vitorpamplona/quartz main @ 2026-11-24, the quartz#151 merge (4456c57f0), 41 commits
+# over 2.22.1 (below), which it descends from: 2.23.0 and 2.24.0 (v2.24.0 = 45d20fe31) and 24 after it,
+# taken as a commit JitPack built. Nothing this store calls changes contract:
+#  - RELAY SERVER (RelaySession). An unusable REQ, COUNT or CLOSE is answered CLOSED on its sub id; a failed
+#    REQ gives its slot back; nothing is sent on a parked REQ after it is closed; COUNT runs off the
+#    connection's reader, capped and ordered per id, its concurrency left to the backend, and CLOSE, a
+#    replacement or a refusal cancels it at once. Server side: this store constructs no RelaySession;
+#    vespa-relay does.
+#  - SEARCH. EventSearchMatcher walks a SearchableEvent's fields once for all of a query's terms, phrases
+#    and exclusions instead of once per term (a kind 0 parsed its JSON on every walk). Same answers; no
+#    kind becomes or stops being SearchableEvent, so no reindex.
+#  - ALLOCATION (nothing this store's contract reads): hint providers allocate nothing for references they
+#    don't find, Kite sizes large writes once, RelayLogger/RelayReqStats allocate nothing per EVENT, the
+#    EventInterner sweeps collected entries, CachingEventDecoder stops copying ids twice.
+#  - Also in the range: NIP-85 trust updates (one paged REQ before negentropy), Concord and Buzz event
+#    classes, and Kotlin/Native fixes.
+#
+# Prev 2.22.1 = vitorpamplona/quartz's release 2.22.1 (the v2.22.1 tag 273155b3d over the quartz#141 merge
 # d0effdd1a), 18 commits over 2.21.0 (below), which it descends from; 2.21.1 and 2.22.0 between them were
 # never pinned. Nothing this store calls moves:
 #  - UNPARSABLE AUTH / EVENT (quartz#139). RelaySession answers a frame it cannot parse but whose id it can
@@ -404,7 +454,7 @@ mavenPublish = "0.37.0"
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "2.22.1"
+quartz = "2.25.2"
 coroutines = "1.11.0"
 serialization = "1.12.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.

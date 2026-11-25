@@ -46,7 +46,11 @@ rootProject.name = "vespa-eventstore"
 providers.gradleProperty("quartzDir").orNull?.let { dir ->
     includeBuild(dir) {
         dependencySubstitution {
-            substitute(module("com.vitorpamplona.quartz:quartz")).using(project(":quartz"))
+            // Both quartz groups: the Magpie release this build pins, and JitPack's
+            // com.github.vitorpamplona.quartz, which nothing names now but a commit pin would.
+            for (group in listOf("com.vitorpamplona.quartz", "com.github.vitorpamplona.quartz")) {
+                substitute(module("$group:quartz")).using(project(":quartz"))
+            }
         }
     }
 }
