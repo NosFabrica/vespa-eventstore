@@ -203,4 +203,24 @@ class GroupingResultsTest {
         val single = Json.parseToJsonElement("""{"id":"toplevel","children":[{"id":"group:root:0"},{"id":"group:root:1"}]}""").jsonObject
         assertSame(single, GroupingResults.mergeRoots(single), "one cluster's two groupings are left as they came")
     }
+
+    /** A bucket move's cut-over: the zap receipt by a moved author comes back from both clusters, and counts once. */
+    @Test
+    fun `a hit met in two clusters is served once, groupings untouched`() {
+        val root =
+            Json
+                .parseToJsonElement(
+                    """
+                    {"id":"toplevel","fields":{"totalCount":3},"children":[
+                      {"id":"index:content/0/aa","fields":{"id":"z1","pubkey":"p1"}},
+                      {"id":"index:content1/0/aa","fields":{"id":"z1","pubkey":"p1"}},
+                      {"id":"index:content1/0/bb","fields":{"id":"z2","pubkey":"p2"}},
+                      {"id":"group:root:0","fields":{"count()":3}}]}
+                    """.trimIndent(),
+                ).jsonObject
+        val out = GroupingResults.distinctHits(root)["children"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content }
+        assertEquals(listOf("index:content/0/aa", "index:content1/0/bb", "group:root:0"), out)
+        val single = Json.parseToJsonElement("""{"id":"toplevel","children":[{"id":"index:content/0/aa","fields":{"id":"z1"}}]}""").jsonObject
+        assertSame(single, GroupingResults.distinctHits(single), "nothing repeated: the answer as it came")
+    }
 }

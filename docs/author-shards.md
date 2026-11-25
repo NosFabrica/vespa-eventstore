@@ -110,8 +110,10 @@ is n+1st in every cluster would be missing from the merge, and the merged list c
 K×n groups in first-seen order. A group's `relevance` is its rank within one cluster's list, not
 a value, so it can't be used to re-sort. So `VespaEventIndex.group` (behind `EngineReads.group`,
 used by pipelines such as vespa-relay's statistics) REFUSES a pipeline with a group limit when
-K > 1, rather than return an answer that only looks right. The `max(expr)` aggregator is not a
-limit and passes. Roots merge only when their ids match exactly: a second grouping in one query is
+K > 1, rather than return an answer that only looks right. A limit inside an `each(…)` under
+`group(pubkey)` passes: everything it limits comes from one cluster (the store's own
+newest-per-author grouping has that shape). The `max(expr)` aggregator is not a limit and
+passes. Roots merge only when their ids match exactly: a second grouping in one query is
 `group:root:1`, a different tree.
 
 **A count of distinct values does not add either.** An `output(count())` beside a `group(F)`
@@ -267,7 +269,10 @@ collection.
 4. **Switch every store to the final map.** The new cluster serves. The old owner still holds
    copies, so a read over every cluster can meet a document twice. A sharded client drops
    repeated hits by id, and asks again for more when a page shrank below its limit, so a
-   reader never mistakes it for the end. COUNTs over-report for this window.
+   reader never mistakes it for the end. It raises the yql's own `limit` to do it, since that
+   wins over the `hits` parameter, and never past the store's hit ceiling (`VESPA_UNBOUNDED_HITS`).
+   Hits returned beside a grouping (the zap receipts a `sort:links` rerank counts) are
+   deduplicated the same way. COUNTs, and any count a grouping sums, over-report for this window.
 5. **`finish { … }`**, in this order:
    - the moved documents are removed from the old owner (a document-API `DELETE` by
      selection), while the overlap package still sends it every write, so any copy a read
@@ -475,8 +480,10 @@ With `garbage-collection="true"`, a cluster's selection is also what its nodes *
 package under which some cluster keeps fewer buckets would make the engine delete every
 document in the buckets it lost, and nothing re-feeds them.
 
-`SchemaDeployer.checkShardChange` runs on every deploy path that replaces a serving package
-(`deployIfChanged`, and `open()` / `deploySchema` with `IF_CHANGED`). It compares, cluster by
+`SchemaDeployer.checkShardChange` runs on every deploy path (`deployIfChanged`, and `open()` /
+`deploySchema` with `IF_ABSENT` or `IF_CHANGED`), whether or not the container answers: a
+crash-looping container says nothing about what its content nodes hold, and the first cut skipped
+the guard whenever nothing served. It compares, cluster by
 cluster, the buckets the active package keeps with those the new one keeps.
 
 | change | over data |
@@ -493,5 +500,7 @@ one replace a sharded deployment during a config-server hiccup. It asks the cont
 which names the content clusters it serves when asked to visit one that does not exist. One
 served cluster to a one-cluster package goes through: a single cluster keeps every bucket either
 way, so production's boot behaves as before. Anything else is decided by the document count, and
-goes through only over an empty deployment. Moving to a new layout on real data is either the move above
+goes through only over an empty deployment. A count is taken only from an answer with full
+coverage and no errors: with the content nodes down the container still answers, reading 0
+documents, and 0 would let any narrowing through. Moving to a new layout on real data is either the move above
 or a fresh deployment fed from the old one, for example by NIP-77 sync.

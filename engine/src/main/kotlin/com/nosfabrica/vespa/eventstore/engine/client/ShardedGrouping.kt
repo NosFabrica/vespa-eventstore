@@ -76,6 +76,12 @@ internal object ShardedGrouping {
     fun plan(pipeline: String): Plan {
         val top = calls(pipeline.trim()).singleOrNull() ?: return Plan.AsIs
         if (top.name != "all" && top.name != "each") return Plan.AsIs
+        if (unpartitionedLimit(top, partitioned = false)) {
+            return Plan.Refused(
+                "a grouping limit (max(n)) cannot be answered exactly across author-shard clusters: each applies it alone, " +
+                    "so the merge could miss a group or hit that is n+1st in every cluster; it stands only inside an each() under group(pubkey)",
+            )
+        }
         unpartitionedOrder(top, partitioned = false)?.let { field ->
             return Plan.Refused(
                 "an order() over `$field` groups cannot be kept across author-shard clusters: the merged list holds each cluster's groups as they came; " +
@@ -152,6 +158,32 @@ internal object ShardedGrouping {
         }
         return null
     }
+
+    /**
+     * Whether a scope under [scope] applies a LIMIT, `max(n)` (never the `max(expr)` aggregator,
+     * which sits inside an `output(…)`), to groups or hits merged from several clusters. Each
+     * cluster applies it alone. Inside an `each(…)` of a `group(pubkey)` scope ([partitioned])
+     * everything comes from one cluster and the limit stands, as in the store's own
+     * newest-per-author grouping.
+     */
+    private fun unpartitionedLimit(
+        scope: Call,
+        partitioned: Boolean,
+    ): Boolean {
+        val items = calls(scope.args)
+        if (!partitioned && items.any { it.name == "max" && LIMIT_ARG.matches(it.args) }) return true
+        val group = items.firstOrNull { it.name == "group" }?.args?.trim()
+        val inner = partitioned || group == AUTHOR_FIELD
+        return items.any { child ->
+            when (child.name) {
+                "each" -> unpartitionedLimit(child, inner)
+                "all" -> unpartitionedLimit(child, partitioned)
+                else -> false
+            }
+        }
+    }
+
+    private val LIMIT_ARG = Regex("""\s*\d+\s*""")
 
     /** The most distinct values [Plan.Distinct] counts; more are refused, not materialized. */
     const val DISTINCT_CAP = 100_000

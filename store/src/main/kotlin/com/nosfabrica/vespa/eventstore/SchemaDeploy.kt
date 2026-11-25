@@ -153,7 +153,9 @@ internal fun runSchemaDeploy(
             val zip = VespaApp.zipBytes(accessLog, buckets)
             if (serving && deployer.serves(zip)) return SchemaDeployment(mode, deployed = false, generation = null, converged = null, deployer = deployer)
             return try {
-                if (serving) deployer.checkShardChange(url, zip)
+                // Whether or not the container answers: a crash-looping container says nothing about
+                // what its content nodes hold, and the guard knows "nothing deployed" on its own.
+                deployer.checkShardChange(url, zip)
                 val generation = SchemaDeployer.generationOf(deployer.deploy(zip))
                 val converged = if (mode == SchemaDeploy.IF_CHANGED) deployer.awaitConverged(generation) else null
                 deployer.awaitServing(url, poll = AWAIT_POLL)

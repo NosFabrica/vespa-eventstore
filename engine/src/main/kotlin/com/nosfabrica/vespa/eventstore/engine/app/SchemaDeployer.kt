@@ -235,7 +235,7 @@ class SchemaDeployer(
     /** The content cluster ids of the application Vespa has ACTIVE, off its services.xml; null when it cannot be read. */
     fun activeContentClusters(): List<String>? = runCatching { VespaApp.contentClusters(get("$root$INSTANCE/content/$SERVICES").decodeToString()) }.getOrNull()
 
-    /** Every document [queryUrl] serves, of every type in every cluster; null when the count cannot be read. */
+    /** Every document [queryUrl] serves, of every type in every cluster; null when the count cannot be read, or not from every node. */
     fun storedDocuments(queryUrl: String): Long? =
         runCatching {
             val req =
@@ -247,6 +247,12 @@ class SchemaDeployer(
             val res = http.send(req, HttpResponse.BodyHandlers.ofString())
             require(res.statusCode() == 200) { "count answered ${res.statusCode()}" }
             val root = (Json.parseToJsonElement(res.body()) as JsonObject)["root"] as JsonObject
+            // A count is only as good as the nodes that answered it: with the content nodes down the
+            // container still answers 200, reading 0 documents. The guard lets anything through
+            // over 0, so a count without full coverage, or with errors, is unknown.
+            require(root["errors"] == null) { "the count carried errors" }
+            val coverage = root["coverage"] as? JsonObject
+            require(coverage?.get("full")?.jsonPrimitive?.content == "true") { "the count did not cover every node" }
             ((root["fields"] as JsonObject)["totalCount"]!!.jsonPrimitive).longOrNull
         }.getOrNull()
 

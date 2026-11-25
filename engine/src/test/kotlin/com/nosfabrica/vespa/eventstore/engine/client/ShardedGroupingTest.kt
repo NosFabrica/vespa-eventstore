@@ -139,4 +139,22 @@ class ShardedGroupingTest {
         val e = kotlin.test.assertFailsWith<IllegalArgumentException> { ShardedGrouping.exactDistinct(root(ShardedGrouping.DISTINCT_CAP + 1)) }
         assertTrue("too many" in e.message.orEmpty(), e.message)
     }
+
+    /** A limit stands where everything it limits comes from one cluster: inside an each() under the author. */
+    @Test
+    fun `a grouping limit is refused across clusters and stands inside one author`() {
+        for (p in listOf(
+            "all(group(pubkey) max(10) each(output(count())))",
+            "all(group(kind) max(3) each(output(count())))",
+            "all(max(10) each(output(summary())))",
+            "all(group(kind) each(max(2) each(output(summary()))))",
+        )) {
+            val plan = assertIs<Plan.Refused>(ShardedGrouping.plan(p), p)
+            assertTrue("max(n)" in plan.reason, "$p: ${plan.reason}")
+        }
+        // The store's own newest-per-author shape, through the caller's door.
+        assertEquals(Plan.AsIs, ShardedGrouping.plan("all(group(pubkey) each(all(group(created_at) max(1) order(-max(created_at)) each(output(count())))))"))
+        assertEquals(Plan.AsIs, ShardedGrouping.plan("all(group(pubkey) each(max(3) each(output(summary()))))"))
+        assertEquals(Plan.AsIs, ShardedGrouping.plan("all(group(kind) each(output(count(), max(created_at))))"), "the max() aggregator is no limit")
+    }
 }

@@ -2464,7 +2464,8 @@ class VespaEventIndex(
      * `max(created_at)` aggregator) is refused: each content cluster applies the limit before
      * answering, so the merged root ([GroupingResults.mergeRoots]) would hold up to K times the
      * groups or hits asked for, and could miss one that is n+1st in every cluster. Refusing is
-     * honest where a trimmed answer would only look right. So is a count of distinct values of a
+     * honest where a trimmed answer would only look right. Inside an `each(…)` under
+     * `group(pubkey)` the limit stands: those groups all come from one cluster. So is a count of distinct values of a
      * field other than the author's, except in the one shape statistics use,
      * `all(group(F) output(count()))`, which is answered exactly from the merged groups instead
      * ([ShardedGrouping]).
@@ -2477,9 +2478,6 @@ class VespaEventIndex(
         if (!authorClusters.sharded) {
             val vq = EventYql.buildGrouping(query, pipeline, source) ?: return EMPTY_GROUPING_ROOT
             return queryRoot(vq, hits = 0) ?: error("vespa answered a grouping with no root")
-        }
-        require(!GROUP_LIMIT.containsMatchIn(pipeline)) {
-            "a grouping limit (max(n)) cannot be answered exactly across ${authorClusters.serving.size} author-shard clusters: each applies it alone"
         }
         return when (val plan = ShardedGrouping.plan(pipeline)) {
             ShardedGrouping.Plan.AsIs -> {
@@ -2736,13 +2734,18 @@ class VespaEventIndex(
     ): SearchRoot {
         val first = searchRootOnce(vq, hits)
         if (!authorClusters.sharded) return first
+        // Never past what the engine serves one request: an operator capping maxHits caps
+        // [unboundedHits] with it, and a refetch over it would turn a short page into a 400.
+        val ceiling = maxOf(hits, unboundedHits)
         var asked = hits
         var root = first
         repeat(MAX_REPEAT_REFETCHES) {
             val kept = distinctHits(root)
-            if (kept.children.size >= hits || root.children.size < asked) return kept.trimmedTo(hits)
-            asked *= 2
-            root = searchRootOnce(vq, asked)
+            if (kept.children.size >= hits || root.children.size < asked || asked >= ceiling) return kept.trimmedTo(hits)
+            asked = minOf(asked.toLong() * 2, ceiling.toLong()).toInt()
+            // The page size is the yql's own `limit` where it has one, which wins over `hits`:
+            // raising `hits` alone answers the same page again (the first cut did).
+            root = searchRootOnce(withYqlLimit(vq.yql, asked)?.let { vq.copy(yql = it) } ?: vq, asked)
         }
         return distinctHits(root).trimmedTo(hits)
     }
@@ -2902,6 +2905,8 @@ class VespaEventIndex(
             ?.jsonObject
             // One grouping root per content cluster under author sharding: merged before anything reads it.
             ?.let(GroupingResults::mergeRoots)
+            // And any hits in the answer served once, as [searchRoot]'s are ([GroupingResults.distinctHits]).
+            ?.let { if (authorClusters.sharded) GroupingResults.distinctHits(it) else it }
             ?.also { root ->
                 // Before the coverage check, as in [searchRoot]: a node that did not answer is outside what coverage counts.
                 root["errors"]?.let { refuseErrors(VESPA_JSON.decodeFromJsonElement(ListSerializer(SearchError.serializer()), it)) }
@@ -3050,11 +3055,40 @@ class VespaEventIndex(
 
         private val SCOPABLE = listOf(EVENT_DOCTYPE, "reputation")
 
+        /**
+         * [yql] with its LAST `limit N` (the page size, which Vespa takes over the `hits`
+         * parameter) set to [n]; null when it has none outside a quoted literal (a search term may
+         * spell "limit 5"), when the page is `hits` alone.
+         */
+        internal fun withYqlLimit(
+            yql: String,
+            n: Int,
+        ): String? {
+            val m = YQL_LIMIT.findAll(yql).lastOrNull { !insideQuotes(yql, it.range.first) } ?: return null
+            return yql.replaceRange(m.range, " limit $n")
+        }
+
+        private val YQL_LIMIT = Regex(""" limit \d+\b""")
+
+        /** Whether [at] sits inside a double-quoted yql literal (backslash escapes honored). */
+        private fun insideQuotes(
+            yql: String,
+            at: Int,
+        ): Boolean {
+            var quoted = false
+            var i = 0
+            while (i < at) {
+                when (yql[i]) {
+                    '\\' -> i++
+                    '"' -> quoted = !quoted
+                }
+                i++
+            }
+            return quoted
+        }
+
         /** How many times a sharded page that lost repeats is asked again, each for twice the hits ([searchRoot]). */
         private const val MAX_REPEAT_REFETCHES = 4
-
-        /** A group LIMIT in a grouping pipeline, `max(10)`, never the `max(expr)` aggregator. */
-        private val GROUP_LIMIT = Regex("""\bmax\(\s*\d+\s*\)""")
 
         /**
          * The FED column generations a schema can predate — the near tier, the

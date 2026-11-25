@@ -83,6 +83,28 @@ internal object GroupingResults {
         return JsonObject(root + ("children" to JsonArray(out)))
     }
 
+    /**
+     * [root] with a HIT met twice served once, keyed like [VespaEventIndex]'s hit pages: by the
+     * event id, or the pubkey of a reputation hit; a hit carrying neither is kept. Under author
+     * sharding a read over every cluster meets a moved document in its old owner and its new one
+     * until a bucket move finishes, and a read that sums what it gets (the zap receipts a
+     * `sort:links` rerank counts) would count it twice. Grouping roots are left as they are.
+     */
+    fun distinctHits(root: JsonObject): JsonObject {
+        val children = root["children"] as? JsonArray ?: return root
+        if (children.size < 2) return root
+        val seen = HashSet<String>(children.size * 2)
+        val kept =
+            children.filter { child ->
+                val node = child as? JsonObject ?: return@filter true
+                if (node.isGroupingRoot()) return@filter true
+                val fields = node["fields"] as? JsonObject ?: return@filter true
+                val key = ((fields["id"] ?: fields["pubkey"]) as? JsonPrimitive)?.content?.takeIf { it.isNotEmpty() } ?: return@filter true
+                seen.add(key)
+            }
+        return if (kept.size == children.size) root else JsonObject(root + ("children" to JsonArray(kept)))
+    }
+
     private fun JsonObject.isGroupingRoot(): Boolean = idOf()?.startsWith("group:root") == true
 
     private fun JsonObject.idOf(): String? = (this["id"] as? JsonPrimitive)?.content

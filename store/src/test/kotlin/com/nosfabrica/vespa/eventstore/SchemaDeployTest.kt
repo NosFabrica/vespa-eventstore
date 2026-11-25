@@ -76,8 +76,13 @@ class SchemaDeployTest {
                             }
                         }
 
+                        // A container that is not serving cannot count either.
+                        path == "/search/" && !serving -> {
+                            503 to ByteArray(0)
+                        }
+
                         path == "/search/" -> {
-                            200 to """{"root":{"id":"toplevel","fields":{"totalCount":$stored}}}""".toByteArray()
+                            200 to """{"root":{"id":"toplevel","fields":{"totalCount":$stored},"coverage":{"coverage":100,"documents":$stored,"full":true,"nodes":1,"results":1,"resultsFull":1}}}""".toByteArray()
                         }
 
                         path.endsWith("/serviceconverge") -> {
@@ -204,6 +209,22 @@ class SchemaDeployTest {
         assertFailsWith<SchemaDeployException>("and back to one cluster is the same move") { deploy(SchemaDeploy.IF_CHANGED) }
         changeActive()
         assertTrue(deploy(SchemaDeploy.IF_CHANGED, EngineTuning(authorShards = 2)).deployed, "a schema change at the same count deploys over data")
+    }
+
+    /**
+     * A container that is down (crash-looping, restarting) says nothing about the documents its
+     * content nodes hold: the guard runs anyway, and a package that would drop buckets is refused
+     * because the count cannot be read. The first cut skipped the guard whenever nothing served.
+     */
+    @Test
+    fun `a shard change is refused while the container is down over a sharded deployment`() {
+        active = files(VespaApp.zipBytes(null, 2))
+        stored = 1_000
+        serving = false
+        assertFailsWith<SchemaDeployException> { deploy(SchemaDeploy.IF_CHANGED) }
+        assertFailsWith<SchemaDeployException>("IF_ABSENT deploys when nothing serves: the guard still runs") { deploy(SchemaDeploy.IF_ABSENT) }
+        assertEquals(0, deploys.get(), "nothing was deployed")
+        assertTrue(deploy(SchemaDeploy.IF_CHANGED, EngineTuning(authorShards = 2)).deployed, "the same layout deploys, container down or not")
     }
 
     /**

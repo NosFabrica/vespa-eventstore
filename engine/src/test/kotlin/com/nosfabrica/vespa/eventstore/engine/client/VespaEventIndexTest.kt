@@ -3768,6 +3768,8 @@ class VespaEventIndexTest {
                     }
                 assertTrue("max(n)" in e.message.orEmpty(), e.message)
                 sharded.group(EventQuery(kinds = listOf(1)), "all(group(pubkey) each(output(count(), max(created_at))))")
+                // A limit inside one author's groups is exact across clusters: the first cut refused any max(n).
+                sharded.group(EventQuery(kinds = listOf(1)), "all(group(pubkey) each(all(group(created_at) max(1) order(-max(created_at)) each(output(count())))))")
             }
             index.group(EventQuery(kinds = listOf(1)), "all(group(pubkey) max(10) each(output(count())))")
             Unit
@@ -3791,4 +3793,28 @@ class VespaEventIndexTest {
             }
             assertEquals(8, index.search(EventQuery(kinds = listOf(1), limit = 8)).size, "one cluster never deduplicates: it cannot hold a document twice")
         }
+
+    /** The refetch never asks past the hit ceiling an operator capping maxHits sets: a 400 would replace a short page. */
+    @Test
+    fun `a sharded refetch stops at the hit ceiling`() =
+        runBlocking {
+            seedBulk((0 until 10).map { doc(at = 2_000L - it) })
+            mock.repeatFirstHits = 3
+            mock.refuseHitsAbove = 6
+            VespaEventIndex(mock.url, tuning = ClientTuning(authorShards = 2, unboundedHits = 6)).use { sharded ->
+                val page = sharded.search(EventQuery(kinds = listOf(1), limit = 5)).map { it.id }
+                assertEquals(page.size, page.toSet().size, "no repeat served")
+                assertTrue(page.size in 3..5, "as full as six hits allow: $page")
+            }
+        }
+
+    @Test
+    fun `the page size is rewritten in the yql, never inside a quoted term`() {
+        assertEquals("select id from event where kind = 1 order by created_at desc limit 40", VespaEventIndex.withYqlLimit("select id from event where kind = 1 order by created_at desc limit 20", 40))
+        assertEquals(
+            """select * from event where text contains "limit 5" limit 80""",
+            VespaEventIndex.withYqlLimit("""select * from event where text contains "limit 5" limit 20""", 80),
+        )
+        assertEquals(null, VespaEventIndex.withYqlLimit("""select * from event where text contains "limit 5"""", 80), "a page set by hits alone")
+    }
 }

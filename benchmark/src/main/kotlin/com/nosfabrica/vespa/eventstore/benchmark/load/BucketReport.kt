@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore.benchmark.load
 
+import com.nosfabrica.vespa.eventstore.EngineTuning
 import com.nosfabrica.vespa.eventstore.engine.app.AuthorShards
 import com.nosfabrica.vespa.eventstore.engine.client.ClientTuning
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
@@ -45,7 +46,10 @@ object BucketReport {
         runBlocking {
             val url = System.getenv("VESPA_URL") ?: "http://localhost:8080"
             val splits = (System.getenv("BENCH_SPLITS") ?: "2,3,5").split(",").map { it.trim().toInt() }
-            val tuning = ClientTuning(authorShards = System.getenv(AuthorShards.ENV)?.toIntOrNull(), authorBuckets = System.getenv(AuthorShards.BUCKETS_ENV))
+            // The store's own strict parse (AGENTS.md, "Operator settings"): a bad VESPA_AUTHOR_SHARDS
+            // or VESPA_AUTHOR_BUCKETS is named and refused, never read as one cluster.
+            val store = EngineTuning.fromEnv(System.getenv())
+            val tuning = ClientTuning(authorShards = store.authorShards, authorBuckets = store.authorBuckets)
 
             val subjects = HashMap<String, Boolean>() // subject -> has an event
             val reputations = LongArray(BUCKETS + 1)

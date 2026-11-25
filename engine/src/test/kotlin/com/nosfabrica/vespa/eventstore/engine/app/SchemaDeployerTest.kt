@@ -55,6 +55,9 @@ class SchemaDeployerTest {
     /** What the fake container's document count answers; null fails the count. */
     @Volatile private var storedTotal: Long? = null
 
+    /** The content nodes not answering: the container still answers the count, 200 with no coverage. */
+    @Volatile private var contentNodesDown = false
+
     /** The content clusters the fake container names when asked for one it lacks; null answers nothing useful. */
     @Volatile private var servedClusters: List<String>? = null
 
@@ -85,7 +88,10 @@ class SchemaDeployerTest {
                         }
 
                         path == "/search/" -> {
-                            storedTotal?.let { 200 to """{"root":{"fields":{"totalCount":$it}}}""".toByteArray() } ?: (503 to ByteArray(0))
+                            storedTotal?.let {
+                                val coverage = if (contentNodesDown) """{"coverage":0,"documents":0,"full":false,"nodes":0,"results":0,"resultsFull":0,"degraded":{"timeout":true}}""" else """{"coverage":100,"documents":$it,"full":true,"nodes":1,"results":1,"resultsFull":1}"""
+                                200 to """{"root":{"fields":{"totalCount":$it},"coverage":$coverage}}""".toByteArray()
+                            } ?: (503 to ByteArray(0))
                         }
 
                         path.startsWith("/document/v1/") -> {
@@ -200,6 +206,19 @@ class SchemaDeployerTest {
         servedClusters = listOf("content", "content1")
         kotlin.test.assertFailsWith<IllegalStateException>("a sharded container does not vouch for a one-cluster package") { deployer.checkShardChange(base, pkg) }
         storedTotal = 0
+        deployer.checkShardChange(base, pkg)
+    }
+
+    /** Content nodes down read 0 documents with no coverage: that is not an empty deployment. */
+    @Test
+    fun aCountFromADegradedAnswerIsNotTakenForAnEmptyDeployment() {
+        active = SchemaDeployer.files(VespaApp.zipBytes(null, 2))
+        storedTotal = 0
+        contentNodesDown = true
+        assertEquals(null, deployer.storedDocuments(base), "a count no content node answered is unknown")
+        kotlin.test.assertFailsWith<IllegalStateException>("so a narrowing package is refused") { deployer.checkShardChange(base, pkg) }
+        contentNodesDown = false
+        assertEquals(0L, deployer.storedDocuments(base))
         deployer.checkShardChange(base, pkg)
     }
 
