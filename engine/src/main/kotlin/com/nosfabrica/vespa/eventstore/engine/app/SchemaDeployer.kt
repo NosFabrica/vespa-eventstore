@@ -179,21 +179,26 @@ class SchemaDeployer(
         if (dropped.isEmpty() && lost != null && (lost.isEmpty() || allowNarrowing)) return
         val stored = storedDocuments(queryUrl)
         if (stored == 0L) return
-        if (dropped.isNotEmpty()) {
-            error(
-                "refusing to deploy: " + dropped.entries.joinToString("; ") { (c, k) -> "'$c' would drop node(s) $k" } +
-                    " while the deployment holds ${stored ?: "an unknown number of"} documents. A content node holding data is the only copy of " +
-                    "what it holds at redundancy 1: mark it retired=\"true\" and deploy, wait until it holds nothing, then remove it",
-            )
+        // Every reason that applies, buckets first: a shard-count change drops a whole cluster's
+        // nodes as well, and the bucket reason is the one that says what was attempted.
+        val bucketsLost = lost == null || (lost.isNotEmpty() && !allowNarrowing)
+        val reasons = ArrayList<String>()
+        if (bucketsLost) {
+            reasons +=
+                lost?.entries?.joinToString("; ") { (c, b) -> "'$c' would drop ${b.size} bucket(s)" }
+                    ?: "content clusters ${VespaApp.contentClusters(wantedXml)} over ${activeXml?.let(VespaApp::contentClusters) ?: "an unreadable package"}"
         }
-        val what =
-            lost?.entries?.joinToString("; ") { (c, b) -> "'$c' would drop ${b.size} bucket(s)" }
-                ?: "content clusters ${VespaApp.contentClusters(wantedXml)} over ${activeXml?.let(VespaApp::contentClusters) ?: "an unreadable package"}"
-        error(
-            "refusing to deploy: $what while the deployment holds ${stored ?: "an unknown number of"} documents. Changing the author-shard " +
-                "count or bucket map makes Vespa's garbage collection delete every document a cluster stops keeping. Feed a fresh deployment, " +
-                "or move the buckets with the move tool (docs/author-shards.md)",
-        )
+        if (dropped.isNotEmpty()) reasons += dropped.entries.joinToString("; ") { (c, k) -> "'$c' would drop node(s) $k" }
+        val why = ArrayList<String>()
+        if (bucketsLost) {
+            why += "Changing the author-shard count or bucket map makes Vespa's garbage collection delete every document a cluster stops keeping. " +
+                "Feed a fresh deployment, or move the buckets with the move tool (docs/author-shards.md)"
+        }
+        if (dropped.isNotEmpty()) {
+            why += "A content node holding data is the only copy of what it holds at redundancy 1: mark it retired=\"true\" and deploy, " +
+                "wait until it holds nothing, then remove it"
+        }
+        error("refusing to deploy: ${reasons.joinToString("; ")} while the deployment holds ${stored ?: "an unknown number of"} documents. ${why.joinToString(". ")}")
     }
 
     /** What each content cluster of [servicesXml] keeps, by author bucket; null when the package is not laid out by this store. */

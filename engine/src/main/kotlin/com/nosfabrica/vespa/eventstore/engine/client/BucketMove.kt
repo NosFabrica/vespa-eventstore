@@ -38,6 +38,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.net.URLEncoder
 import java.time.Duration
+import java.util.TreeSet
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicLong
@@ -91,6 +92,8 @@ class BucketMove(
     /** Document-API containers; empty = just [baseUrl]. */
     endpoints: List<String> = emptyList(),
     tuning: ClientTuning = ClientTuning(),
+    /** Documents one [fullDiff] batch may hold in memory; lowered only to measure the full diff at production's bucket sizes (`MoveSpeedProbe`). */
+    private val diffBudget: Double = DIFF_BUDGET,
 ) : AutoCloseable {
     /** bucket -> (source cluster, destination cluster). */
     val moves: Map<Int, Pair<Int, Int>> = from.movesTo(to)
@@ -119,6 +122,8 @@ class BucketMove(
         val extra: Long,
     ) {
         val clean: Boolean get() = missing == 0L && differing == 0L && extra == 0L
+
+        operator fun plus(o: Diff): Diff = Diff(missing + o.missing, differing + o.differing, extra + o.extra)
 
         override fun toString(): String = "missing=$missing differing=$differing extra=$extra"
     }
@@ -151,13 +156,17 @@ class BucketMove(
      * only because [diff] runs after the copy, always: the source received every write and is the
      * reference, and the destination is pending, read by no one, until [diff] is clean.
      */
-    suspend fun copy(): Counts =
-        counts { type, buckets, src, dst ->
+    suspend fun copy(): Counts {
+        // Before the first document is read: anything written from here on may be what the copy
+        // gets wrong, and [diff] reads it again.
+        if (changedSince == null) changedSince = (System.currentTimeMillis() - CLOCK_MARGIN_MS) * 1000
+        return counts { type, buckets, src, dst ->
             val n = writeVisit(type, src, buckets, "&destinationCluster=${URLEncoder.encode(AuthorShards.clusterName(dst), "UTF-8")}", delete = false)
             // Sizes [diff]'s batches; a document API that reported no count leaves the conservative default.
             if (n > 0) seen[Triple(src, dst, type.doctype)] = n
             n
         }
+    }
 
     /**
      * Step 3: how each destination differs from its source, counting only differences that
@@ -167,12 +176,119 @@ class BucketMove(
      * together, and counted (and, with [repair], fixed from the source's fresh read) only when it
      * still differs. A race can still slip past a pass; the next pass catches it.
      */
-    suspend fun diff(repair: Boolean = false): Diff {
+    suspend fun diff(
+        repair: Boolean = false,
+        /** Compare everything ([fullDiff]) even after a [copy]: a last complete check, or a measurement. */
+        full: Boolean = false,
+    ): Diff {
         check(!finishing) { "no diff once finish() has begun: the sources are being emptied, and a diff would delete the moved documents from their new owner" }
-        var missing = 0L
-        var differing = 0L
-        var extra = 0L
+        val startedMs = System.currentTimeMillis()
+        val since = changedSince
+        val result = if (since == null || full) fullDiff(repair, pairs) else incrementalDiff(repair, since)
+        // The next pass needs only what was written from this one's start on.
+        if (since != null) changedSince = (startedMs - CLOCK_MARGIN_MS) * 1000
+        return result.also { lastDiffClean = it.clean }
+    }
+
+    /**
+     * Vespa's document timestamps (microseconds) from which a source document may differ from its
+     * copy: [copy]'s start, then each [diff]'s, less [CLOCK_MARGIN_MS] for the distance between
+     * this client's clock and the content nodes'. Null before a [copy] (a diff of a move this
+     * object did not copy), when [diff] compares everything.
+     */
+    @Volatile private var changedSince: Long? = null
+
+    /**
+     * The diff after a [copy], in passes that each read a cluster ONCE, where [fullDiff] re-reads
+     * the source whole per batch of buckets (a visit evaluates its selection over every document)
+     * and so could not finish at production size: ~128 batches of one ~3.7 M-document bucket each
+     * for a two-cluster split of ~945 M events, each a full scan.
+     *
+     * Every way the copy goes wrong, measured on Vespa 8: the copy writes each document with a NEW
+     * timestamp, so a write that reached the destination first is overwritten by the older copy,
+     * and a delete that reached it first is undone (the document comes back). So:
+     *  1. CHANGED: every source document written since [since] (`fromTimestamp`) is read in both
+     *     clusters and settled ([settle]): what the copy left stale, partial or missing.
+     *  2. DIGESTS: a delete leaves nothing to visit (`includeRemoves` is not a document-API visit
+     *     parameter; measured: ignored), so what the copy undid is found by comparing, per author
+     *     bucket, the two clusters' documents as a count and a sum of 64-bit hashes ([digests]),
+     *     one streaming pass each: of ids for events, which never change in place, and of ids with
+     *     their fields for reputation documents, so a write that reached the destination alone is
+     *     found as well. Equal digests are equal sets but for a hash collision across a bucket (about
+     *     2^-64 per bucket). A bucket whose digests differ gets [fullDiff], which settles every
+     *     difference, and under live writes a bucket written between the two passes differs for
+     *     nothing: settling finds nothing persistent, at the cost of one more full read of it.
+     */
+    private suspend fun incrementalDiff(
+        repair: Boolean,
+        since: Long,
+    ): Diff {
+        var total = Diff(0, 0, 0)
         for ((pair, all) in pairs) {
+            val (src, dst) = pair
+            for (type in types) {
+                val changed = ConcurrentLinkedQueue<String>()
+                visit(type, src, all, "[id]", "&fromTimestamp=$since") { docs -> docs.forEach { changed += idOf(it) } }
+                total += settle(type, changed.toSet(), src, dst, repair)
+            }
+            val differing = TreeSet<Int>()
+            for (type in types) {
+                val (a, b) = coroutineScope { listOf(async { digests(type, src, all) }, async { digests(type, dst, all) }).awaitAll() }
+                for (bucket in all) if (a[bucket] != b[bucket]) differing += bucket
+            }
+            if (differing.isNotEmpty()) total += fullDiff(repair, mapOf(pair to differing.toList()))
+        }
+        return total
+    }
+
+    /**
+     * Per bucket of [buckets], [type]'s documents in [cluster] as (count, sum of 64-bit hashes), one
+     * streaming pass: of each id, and for a type whose documents change in place (reputation) of
+     * the id with its fields, so a document that differs only in content differs here too.
+     */
+    private suspend fun digests(
+        type: Type,
+        cluster: Int,
+        buckets: List<Int>,
+    ): Map<Int, Pair<Long, Long>> {
+        val counts =
+            java.util.concurrent.atomic
+                .AtomicLongArray(256)
+        val sums =
+            java.util.concurrent.atomic
+                .AtomicLongArray(256)
+        // A reputation document changes in place, so its digest covers what it holds; an event never
+        // does, so its id is enough, and its pubkey (what places it) is all that is read.
+        val fieldSet = if (type.compareFields) "[document]" else "${type.doctype}:pubkey"
+        visit(type, cluster, buckets, fieldSet) { docs ->
+            for (d in docs) {
+                val id = idOf(d)
+                val key =
+                    if (type.compareFields) {
+                        id
+                    } else {
+                        (d["fields"] as? JsonObject)
+                            ?.get("pubkey")
+                            ?.jsonPrimitive
+                            ?.content
+                            .orEmpty()
+                    }
+                // A key with no hex bucket is cluster 0's (AuthorShards), never a moving bucket's.
+                val bucket = AuthorShards.bucketOf(key) ?: continue
+                counts.incrementAndGet(bucket)
+                sums.addAndGet(bucket, idHash(if (type.compareFields) id + "\u0000" + canonical(d["fields"]) else id))
+            }
+        }
+        return buckets.associateWith { counts.get(it) to sums.get(it) }
+    }
+
+    /** The diff that compares everything: [buckets]' documents read whole from both clusters, batch by batch. */
+    private suspend fun fullDiff(
+        repair: Boolean,
+        buckets: Map<Pair<Int, Int>, List<Int>>,
+    ): Diff {
+        var total = Diff(0, 0, 0)
+        for ((pair, all) in buckets) {
             val (src, dst) = pair
             // As few batches as the memory budget allows: each batch re-reads both clusters whole,
             // and a batch holds its destination's documents in memory. Sized from what copy()
@@ -182,16 +298,16 @@ class BucketMove(
                 if (known.size < types.size) {
                     BATCH
                 } else {
-                    val perBucket = known.max().toDouble() / all.size
-                    (DIFF_BUDGET / perBucket.coerceAtLeast(1.0)).toInt().coerceIn(1, all.size)
+                    val perBucket = known.max().toDouble() / pairs.getValue(pair).size
+                    (diffBudget / perBucket.coerceAtLeast(1.0)).toInt().coerceIn(1, all.size)
                 }
-            for (buckets in all.chunked(batch)) {
+            for (chunk in all.chunked(batch)) {
                 for (type in types) {
                     val fieldSet = if (type.compareFields) "[document]" else "[id]"
                     val there = ConcurrentHashMap<String, String>()
-                    visit(type, dst, buckets, fieldSet) { docs -> docs.forEach { there[idOf(it)] = canonical(it["fields"]) } }
+                    visit(type, dst, chunk, fieldSet) { docs -> docs.forEach { there[idOf(it)] = canonical(it["fields"]) } }
                     val candidates = ConcurrentLinkedQueue<String>()
-                    visit(type, src, buckets, fieldSet) { docs ->
+                    visit(type, src, chunk, fieldSet) { docs ->
                         for (d in docs) {
                             val id = idOf(d)
                             val theirs = there.remove(id)
@@ -199,30 +315,42 @@ class BucketMove(
                         }
                     }
                     candidates += there.keys
-                    val confirmed =
-                        coroutineScope {
-                            candidates
-                                .toList()
-                                .map { id ->
-                                    async {
-                                        val a = read(type, id, src)
-                                        val b = read(type, id, dst)
-                                        when {
-                                            a != null && b == null -> Fix.MISSING.also { if (repair) put(type, a, dst, ifAbsent = true) }
-                                            a != null && type.compareFields && canonical(a["fields"]) != canonical(b!!["fields"]) -> Fix.DIFFERING.also { if (repair) put(type, a, dst, ifAbsent = false) }
-                                            a == null && b != null -> Fix.EXTRA.also { if (repair) remove(type, id, dst) }
-                                            else -> null
-                                        }
-                                    }
-                                }.awaitAll()
-                        }
-                    missing += confirmed.count { it == Fix.MISSING }
-                    differing += confirmed.count { it == Fix.DIFFERING }
-                    extra += confirmed.count { it == Fix.EXTRA }
+                    total += settle(type, candidates.toSet(), src, dst, repair)
                 }
             }
         }
-        return Diff(missing, differing, extra).also { lastDiffClean = it.clean }
+        return total
+    }
+
+    /**
+     * [ids] read again from both clusters, point reads close together, and counted (and, with
+     * [repair], fixed from the source's fresh read) only where they still differ: a write between
+     * two snapshots is no divergence, since in the overlap every write lands in both.
+     */
+    private suspend fun settle(
+        type: Type,
+        ids: Set<String>,
+        src: Int,
+        dst: Int,
+        repair: Boolean,
+    ): Diff {
+        val confirmed =
+            coroutineScope {
+                ids
+                    .map { id ->
+                        async {
+                            val a = read(type, id, src)
+                            val b = read(type, id, dst)
+                            when {
+                                a != null && b == null -> Fix.MISSING.also { if (repair) put(type, a, dst, ifAbsent = true) }
+                                a != null && type.compareFields && canonical(a["fields"]) != canonical(b!!["fields"]) -> Fix.DIFFERING.also { if (repair) put(type, a, dst, ifAbsent = false) }
+                                a == null && b != null -> Fix.EXTRA.also { if (repair) remove(type, id, dst) }
+                                else -> null
+                            }
+                        }
+                    }.awaitAll()
+            }
+        return Diff(confirmed.count { it == Fix.MISSING }.toLong(), confirmed.count { it == Fix.DIFFERING }.toLong(), confirmed.count { it == Fix.EXTRA }.toLong())
     }
 
     /** Whether the last [diff] found nothing: what [finish] requires. */
@@ -347,9 +475,10 @@ class BucketMove(
         cluster: Int,
         buckets: List<Int>,
         fieldSet: String,
+        extra: String = "",
         onPage: suspend (List<JsonObject>) -> Unit,
     ) {
-        val base = visitBase(type, cluster, buckets) + "&fieldSet=${URLEncoder.encode(fieldSet, "UTF-8")}&wantedDocumentCount=$PAGE"
+        val base = visitBase(type, cluster, buckets) + "&fieldSet=${URLEncoder.encode(fieldSet, "UTF-8")}&wantedDocumentCount=$PAGE$extra"
         coroutineScope {
             (0 until SLICES)
                 .map { slice ->
@@ -431,6 +560,19 @@ class BucketMove(
 
         /** Documents one diff batch may hold in memory (ids, plus whole documents for reputation): ~200 MB of ids. */
         const val DIFF_BUDGET = 2_000_000.0
+
+        /** How far the content nodes' clocks may run behind this client's ([changedSince]): generous, as it only widens a pass. */
+        const val CLOCK_MARGIN_MS = 10 * 60_000L
+
+        /** A 64-bit hash of a document id (FNV-1a), for the per-bucket id-set digests. */
+        fun idHash(id: String): Long {
+            var h = -0x340d631b7bdddcdbL
+            for (c in id) {
+                h = h xor c.code.toLong()
+                h *= 0x100000001b3L
+            }
+            return h
+        }
 
         /** Concurrent slices of one visit: within the ~64-session ceiling that wedged a small node's document API (VespaVisits). */
         const val SLICES = 8

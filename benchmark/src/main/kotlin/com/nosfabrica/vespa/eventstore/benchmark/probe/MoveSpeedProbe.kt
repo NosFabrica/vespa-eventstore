@@ -44,7 +44,8 @@ import kotlin.random.Random
  *
  * Against a FRESH Vespa: loads [events] notes by [AUTHORS] hash-keyed authors and their reputation
  * documents (each subject scored by ~60% of 40 services) at the engine level, deploys the overlap,
- * then times `copy`, `diff` (one pass, which finds nothing to repair with no writes running),
+ * then times `copy`, `diff` (the incremental diff: one pass, which finds nothing to repair with no
+ * writes running), `fullDiff` (the one that compares everything, with BENCH_DIFF_BUDGET's batches),
  * the final deploy and `cleanup`. Two references beside them: `load`, the host's write rate through
  * the store's feed path (the ceiling a copy's puts meet), and `scan`, the moving buckets visited
  * with no writes (the read side alone). Rates are the moving documents (`scan`'s count) per second,
@@ -103,7 +104,10 @@ object MoveSpeedProbe {
             val loadSecs = secs(loadStart)
 
             val steps = LinkedHashMap<String, String>()
-            BucketMove(url, from, to).use { mv ->
+            // BENCH_DIFF_BUDGET lowered (1500) makes the full diff take one bucket per batch, as a
+            // production bucket (~3.7 M documents) does against the default 2 M budget.
+            val diffBudget = System.getenv("BENCH_DIFF_BUDGET")?.toDouble() ?: 2_000_000.0
+            BucketMove(url, from, to, diffBudget = diffBudget).use { mv ->
                 check(deployer.deployIfChanged(url, VespaApp.zipBytes(null, mv.overlap)))
                 steps["load"] = "{\"seconds\":$loadSecs,\"docsPerSecond\":${((events + AUTHORS) / loadSecs).toLong()}}"
                 // The moving buckets visited with no writes ([id] only): the read side's own speed.
@@ -118,6 +122,10 @@ object MoveSpeedProbe {
                 t = System.nanoTime()
                 val diff = mv.diff(repair = true)
                 steps["diff"] = "{\"seconds\":${secs(t)},\"result\":\"$diff\"}"
+                // The diff that compares everything, on the same copy, for the comparison.
+                t = System.nanoTime()
+                val full = mv.diff(repair = true, full = true)
+                steps["fullDiff"] = "{\"seconds\":${secs(t)},\"budget\":$diffBudget,\"result\":\"$full\"}"
                 val zip = VespaApp.zipBytes(null, to)
                 t = System.nanoTime()
                 var deployNanos = 0L

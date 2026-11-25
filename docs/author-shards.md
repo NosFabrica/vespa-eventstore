@@ -266,6 +266,24 @@ collection.
    short or stale. The source is complete and receives every write, so it is the reference. Each
    candidate difference is read again from both clusters before it counts, because two
    snapshots taken seconds apart under live writes always disagree a little.
+
+   After a copy the diff is INCREMENTAL. Measured on Vespa 8, the copy writes each document with
+   a new timestamp. So a write that reached the new cluster first is overwritten by the older
+   copy, and a delete that reached it first is undone: the document comes back. The diff finds
+   both without re-reading everything:
+   - **Changed documents:** one visit of the source from just before the copy began
+     (`fromTimestamp`). Each document written since is read in both clusters and settled.
+   - **Undone deletes:** a delete leaves nothing to visit (`includeRemoves` is ignored by the
+     document API; measured), so one streaming pass per cluster takes a digest per author bucket:
+     a count and a sum of 64-bit hashes. For events the hash is of ids, since events never change
+     in place; for reputation documents it is of ids with their fields, so a write that reached
+     the new cluster alone also shows. Only buckets whose digests differ are read whole.
+
+   The diff it replaced read each batch of buckets whole from both clusters, and a visit scans
+   the whole source whatever its selection. At production's bucket sizes (~3.7 M events each,
+   over the 2 M-document memory budget) that is one full scan per moving bucket: ~128 for an
+   even two-way split of ~945 M events. `diff(full = true)` still runs it, as a last complete
+   check.
 4. **Switch every store to the final map.** The new cluster serves. The old owner still holds
    copies, so a read over every cluster can meet a document twice. A sharded client drops
    repeated hits by id, and asks again for more when a page shrank below its limit, so a
