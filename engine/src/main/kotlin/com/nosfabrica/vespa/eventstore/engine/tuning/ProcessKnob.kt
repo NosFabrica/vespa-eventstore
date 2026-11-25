@@ -61,12 +61,22 @@ class ProcessKnob<T : Any>(
     /** Fix the value for the rest of the process; see the class KDoc for why a second, different pin throws. */
     @Synchronized
     fun pin(to: T) {
+        checkPin(to)
+        pinned = to
+    }
+
+    /**
+     * Throw exactly as [pin] would, and change nothing: a caller pinning several knobs
+     * as one (`EngineTuning.pinProcessKnobs`) checks every one first, so a conflict on
+     * the last leaves the first unpinned.
+     */
+    @Synchronized
+    fun checkPin(to: T) {
         val held = pinned
         check(held == null || held == to) {
             "$env is process-wide and an earlier open() already set it to $held; this one asks for $to. " +
                 "Open every store in one process with the same value."
         }
-        pinned = to
     }
 
     /** Test seam: forget the pin. A test that pins must not leak it into the next test's JVM state. */

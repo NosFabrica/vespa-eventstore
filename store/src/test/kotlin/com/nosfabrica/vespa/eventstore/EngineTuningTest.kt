@@ -23,6 +23,9 @@ package com.nosfabrica.vespa.eventstore
 import com.nosfabrica.vespa.eventstore.engine.MockVespaEngine
 import com.nosfabrica.vespa.eventstore.engine.client.FeedCompression
 import com.nosfabrica.vespa.eventstore.engine.client.RecencyStrategy
+import com.nosfabrica.vespa.eventstore.engine.tuning.ProcessKnob
+import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_DEDUP_CHUNK
+import com.nosfabrica.vespa.eventstore.runtime.StoreKnobs
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -194,5 +197,34 @@ class EngineTuningTest {
     fun `a config url is the query host on 19071`() {
         assertEquals("http://vespa.internal:19071", VespaEventStore.deriveConfigUrl("http://vespa.internal:8080"))
         assertEquals("https://10.0.0.5:19071", VespaEventStore.deriveConfigUrl("https://10.0.0.5"))
+    }
+
+    /**
+     * pinProcessKnobs checks every pin before it applies any, so a tuning that
+     * conflicts with an earlier open leaves NOTHING pinned. Pinned in order, the
+     * knobs before the conflicting one stayed pinned by a tuning that threw, and
+     * the next open with a different value failed on a knob it never disagreed on.
+     */
+    @Test
+    fun `a conflicting tuning leaves nothing half-pinned`() {
+        try {
+            StoreKnobs.expirySweepPage.pin(5)
+            assertFailsWith<IllegalStateException> { EngineTuning(dedupChunk = 7, expirySweepPage = 6).pinProcessKnobs() }
+            assertEquals(DEFAULT_DEDUP_CHUNK, StoreKnobs.dedupChunk.value, "dedupChunk was pinned by a tuning that failed")
+            // And the tuning that agrees still pins whole.
+            EngineTuning(dedupChunk = 7, expirySweepPage = 5).pinProcessKnobs()
+            assertEquals(7, StoreKnobs.dedupChunk.value)
+        } finally {
+            unpin(StoreKnobs.expirySweepPage)
+            unpin(StoreKnobs.dedupChunk)
+        }
+    }
+
+    /** [ProcessKnob.unpin] is internal to `:engine`; this module's tests reach it by reflection. */
+    private fun unpin(knob: ProcessKnob<*>) {
+        ProcessKnob::class.java
+            .getDeclaredField("pinned")
+            .apply { isAccessible = true }
+            .set(knob, null)
     }
 }
