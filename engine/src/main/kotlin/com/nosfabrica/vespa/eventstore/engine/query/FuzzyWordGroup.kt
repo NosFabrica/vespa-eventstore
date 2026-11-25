@@ -84,6 +84,13 @@ internal object FuzzyWordGroup {
     const val MAX_TYPO_EDITS = 3
 
     /**
+     * How much of a word the trigram nets read ([gramHead]): as long as the longest near
+     * element ([NearText.MAX_ELEMENT_LEN]), the length past which this engine already treats a
+     * "name" as data noise.
+     */
+    const val MAX_GRAM_CHARS = NearText.MAX_ELEMENT_LEN
+
+    /**
      * Minimum word length for a prefix clause: 1-2 Latin characters would
      * sweep a large corpus slice for no precision gain, and 3 matches the
      * trigram floor.
@@ -244,15 +251,19 @@ internal object FuzzyWordGroup {
             // The folded twin rides out-of-band too. Floors and budgets use
             // the FOLDED form — the string the attribute dictionaries hold.
             val folded = NearText.fold(literal)
-            params["f$name"] = folded
-            clauses += nearClauses("@f$name", folded, allowFuzzy = !synthetic)
+            val near = nearClauses("@f$name", folded, allowFuzzy = !synthetic)
+            if (near.isNotEmpty()) {
+                params["f$name"] = folded
+                clauses += near
+            }
         }
         if (!synthetic) {
+            val gramWord = gramHead(literal)
             for (gramField in INFIX_GRAM_FIELDS) {
-                andGramClause(literal, gramField, MIN_AND_GRAMS_NAME)?.let { clauses += it }
+                andGramClause(gramWord, gramField, MIN_AND_GRAMS_NAME)?.let { clauses += it }
             }
             for (gramField in TEXT_GRAM_FIELDS) {
-                andGramClause(literal, gramField, MIN_AND_GRAMS_TEXT)?.let { clauses += it }
+                andGramClause(gramWord, gramField, MIN_AND_GRAMS_TEXT)?.let { clauses += it }
             }
             // PROTOTYPE (#161): with [bodyEdge], a word the edge column can serve
             // is ONE term against it; only the words it cannot (unspaced scripts,
@@ -264,7 +275,7 @@ internal object FuzzyWordGroup {
                 clauses += "($EDGE_FIELD contains @e$name)"
             } else if (bodyGram) {
                 for (gramField in PHRASE_GRAM_FIELDS) {
-                    phraseGramClause(literal, gramField)?.let { clauses += it }
+                    phraseGramClause(gramWord, gramField)?.let { clauses += it }
                 }
             }
             // The word's STEM in the stemmed body column of the language the search
@@ -279,6 +290,23 @@ internal object FuzzyWordGroup {
             }
         }
         return "(${clauses.joinToString(" or ")})"
+    }
+
+    /**
+     * The part of a word its gram nets read: the first [MAX_GRAM_CHARS] chars, cut at a code point.
+     *
+     * A gram net costs one term per character on every gram field — five AND nets and the body
+     * phrase — so a word the search caps let through at its full length
+     * ([IndexableChars.MAX_WORD_CHARS]) built ~50 KB of YQL alone, and 32 of them 1.5 MB.
+     * The head's trigrams are a subset of the word's, so the net only gets LOOSER (every
+     * document the whole word's net reaches, this one reaches too), and a run of 62 trigrams
+     * ANDed, or as a phrase, is as specific as a partial-word match needs to be. Words up to
+     * the cap, which is every name and nearly every word, are untouched.
+     */
+    private fun gramHead(word: String): String {
+        if (word.length <= MAX_GRAM_CHARS) return word
+        val end = if (Character.isHighSurrogate(word[MAX_GRAM_CHARS - 1])) MAX_GRAM_CHARS - 1 else MAX_GRAM_CHARS
+        return word.substring(0, end)
     }
 
     /**
@@ -308,6 +336,13 @@ internal object FuzzyWordGroup {
      * typo hit. prefixLength:2 bounds the fuzzy matcher's dictionary walk.
      * Only the TOP edit budget is emitted: maxEditDistance:N subsumes every
      * smaller N, so per-tier clauses would be duplicate matching work.
+     *
+     * Nothing for a word no element can answer: [NearText] drops elements
+     * longer than [NearText.MAX_ELEMENT_LEN] chars, so no element STARTS with
+     * a longer word, and none lies within the typo budget of a word more than
+     * that budget longer (code points, which is what an edit counts, are never
+     * more than chars). Such a clause matches nothing and still walks its
+     * dictionary — on a pasted URL or a concatenation of many words.
      */
     private fun nearClauses(
         param: String,
@@ -317,11 +352,11 @@ internal object FuzzyWordGroup {
         val clauses = ArrayList<String>()
         // Prefix goes to every near/weak attribute alike; only fuzzy is
         // restricted to [NEAR_FIELDS] (hence [PREFIX_ONLY_FIELDS]' name).
-        if (folded.length >= minPrefixLen(folded)) {
+        if (folded.length >= minPrefixLen(folded) && folded.length <= NearText.MAX_ELEMENT_LEN) {
             for (field in ALL_NEAR_FIELDS) clauses += "($field contains ({prefix:true}$param))"
         }
         val edits = if (allowFuzzy) wordMaxEdits(folded) else 0
-        if (edits > 0) {
+        if (edits > 0 && folded.codePointCount(0, folded.length) <= NearText.MAX_ELEMENT_LEN + edits) {
             for (field in NEAR_FIELDS) clauses += "($field contains ({maxEditDistance:$edits,prefixLength:2}fuzzy($param)))"
         }
         return clauses

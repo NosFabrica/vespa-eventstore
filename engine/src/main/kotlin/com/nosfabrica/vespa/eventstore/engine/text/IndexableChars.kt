@@ -52,6 +52,89 @@ object IndexableChars {
     /** U+FE0F, which asks for an emoji's colour rendering; standing alone it is indexed as a word of its own. */
     const val VARIATION_SELECTOR = '\uFE0F'
 
+    /**
+     * The most words of one search the engine is asked for ([searchWords]); the FIRST ones
+     * are kept. Each word is a match group of its own (ten exact clauses, the near terms, five
+     * gram nets) and, past two words, an adjacent-pair group too, so the query grew with every
+     * word without bound: 10,000 words built 38 MB of YQL and 40,007 parameters, and the relay
+     * admits 262,144-character messages. A real NIP-50 search is a handful of words — a name,
+     * a topic, a title: the 55 topics of `benchmark/rank_cases.json`, gathered from reported
+     * searches, run from one word to four (counted 2026-11-25). 16 is four times the longest
+     * of them, and small enough that the worst search the three caps allow still fits Vespa's
+     * query-tree limit of 10,000 items (measured on the local Vespa, 2026-11-25: 32 words of
+     * 256 random letters built 14,030 items and the engine refused the query with an HTTP 400).
+     */
+    const val MAX_SEARCH_WORDS = 16
+
+    /**
+     * The most Vespa TOKENS one search's words may hold together ([searchWords]); the word
+     * that crosses it is cut at a token, and the words after it are dropped. Each exact clause
+     * is `userInput()`, which turns a word into one item per token on each of ten fields, and
+     * the pair and joined groups repeat every token, so a word like `a.b.c.d…` costs ~40 items
+     * per character it holds: [MAX_SEARCH_WORDS] of them would pass the engine's 10,000-item
+     * limit on their own. Counted the way [tokens] reads text, which errs HIGH (a combining mark
+     * separates there and not in Vespa). A typed word is one token, a pasted URL five or six.
+     */
+    const val MAX_SEARCH_TOKENS = 32
+
+    /**
+     * The most characters of one search word the engine is asked for ([searchWords]): a longer
+     * word is cut to its first [MAX_WORD_CHARS], at a code point. Every character of a word
+     * costs a copy in each parameter that carries it and, up to the gram nets' own cap, a
+     * trigram on each gram field, so one 100,000-character word built 17 MB of YQL. The longest
+     * real words are what people paste: a URL, a bech32 `nevent`/`naddr` with relay hints, a
+     * 64-character hex id. Past this, a word is data, not something typed to find a note.
+     */
+    const val MAX_WORD_CHARS = 256
+
+    /**
+     * A search's words as the engine is asked for them: [queryText]-cleaned, split on
+     * whitespace, each cut to [MAX_WORD_CHARS], the vacuous ones (nothing [hasIndexable])
+     * dropped, and of what is left the first [MAX_SEARCH_WORDS] holding at most
+     * [MAX_SEARCH_TOKENS] tokens between them. The query compiler and the in-memory reference
+     * read the same list, so the two cannot disagree on which words count.
+     */
+    fun searchWords(search: String): List<String> {
+        val out = ArrayList<String>()
+        var spent = 0
+        for (raw in queryText(search).split(WHITESPACE)) {
+            if (out.size == MAX_SEARCH_WORDS || spent == MAX_SEARCH_TOKENS) break
+            val word = cutWord(raw)
+            if (!hasIndexable(word)) continue
+            val left = MAX_SEARCH_TOKENS - spent
+            val end = tokenEnd(word, left)
+            out += if (end < word.length) word.substring(0, end) else word
+            spent += minOf(tokens(word).size, left)
+        }
+        return out
+    }
+
+    /** [word]'s first [MAX_WORD_CHARS] chars, one fewer where the cut would split a surrogate pair. */
+    private fun cutWord(word: String): String {
+        if (word.length <= MAX_WORD_CHARS) return word
+        val end = if (Character.isHighSurrogate(word[MAX_WORD_CHARS - 1])) MAX_WORD_CHARS - 1 else MAX_WORD_CHARS
+        return word.substring(0, end)
+    }
+
+    /** Where [word]'s token number [max] + 1 starts, by the [tokens] rule; its length when it holds no more than [max]. */
+    private fun tokenEnd(
+        word: String,
+        max: Int,
+    ): Int {
+        var count = 0
+        var inRun = false
+        var i = 0
+        while (i < word.length) {
+            val cp = word.codePointAt(i)
+            val letter = Character.isLetterOrDigit(cp)
+            val starts = (letter && !inRun) || Character.getType(cp) == Character.OTHER_SYMBOL.toInt()
+            if (starts && ++count > max) return i
+            inRun = letter
+            i += Character.charCount(cp)
+        }
+        return word.length
+    }
+
     fun isIndexable(codePoint: Int): Boolean = Character.isLetterOrDigit(codePoint) || Character.getType(codePoint) == Character.OTHER_SYMBOL.toInt()
 
     /** True when [s] holds a code point some index can match — the "is this word vacuous?" test. */

@@ -20,6 +20,8 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.query
 import com.nosfabrica.vespa.eventstore.engine.app.VespaApp
+import com.nosfabrica.vespa.eventstore.engine.text.IndexableChars
+import com.nosfabrica.vespa.eventstore.engine.text.NearText
 import com.nosfabrica.vespa.eventstore.engine.text.StemText
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -29,6 +31,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.io.ByteArrayInputStream
 import java.util.zip.ZipInputStream
+import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -939,6 +942,60 @@ class EventYqlTest {
         assertEquals("José", q.params["w0"])
         assertEquals("jose", q.params["fw0"])
         assertTrue("({prefix:true}@fw0)" in q.yql)
+    }
+
+    /**
+     * A search's YQL grew by every word and by every character of a word (one trigram per
+     * character on each of five gram fields): 10,000 words built 38 MB of YQL and 40,007
+     * parameters, one 100,000-character word 17 MB, and the relay admits 262,144-character
+     * messages. A search is cut to [IndexableChars.MAX_SEARCH_WORDS] words of at most
+     * [IndexableChars.MAX_WORD_CHARS] characters, so the worst one stays bounded.
+     */
+    @Test
+    fun `a search is cut to a bounded number of words of bounded length`() {
+        fun size(q: VespaQuery) = q.yql.length + q.params.entries.sumOf { it.key.length + it.value.length }
+        val many = (0 until 10_000).joinToString(" ") { "w${it}x${"abcdefgh".substring(it % 4)}" }
+        val wide = EventYql.build(EventQuery(search = many, limit = 50))!!
+        assertTrue(size(wide) < 256 * 1024, "10,000 words built ${size(wide)} chars")
+        assertEquals("w0xabcdefgh", wide.params["w0"], "the FIRST words are kept")
+        assertNotNull(wide.params["w${IndexableChars.MAX_SEARCH_WORDS - 1}"])
+        assertNull(wide.params["w${IndexableChars.MAX_SEARCH_WORDS}"])
+        assertEquals(IndexableChars.MAX_SEARCH_WORDS.toString(), wide.params["ranking.features.query(n_words)"])
+
+        // The worst words the caps allow: every one as long as a word may be, no two alike —
+        // all letters (the most trigrams), or a token at every other character.
+        val r = Random(7)
+        val worst = (0 until 100).joinToString(" ") { (0 until 1_000).map { 'a' + r.nextInt(26) }.joinToString("") }
+        val big = EventYql.build(EventQuery(search = worst, limit = 50))!!
+        assertTrue(size(big) < 256 * 1024, "100 words of 1,000 letters built ${size(big)} chars")
+        val dotted = (0 until 100).joinToString(" ") { (0 until 500).joinToString(".") { "${'a' + r.nextInt(26)}" } }
+        val dense = EventYql.build(EventQuery(search = dotted, limit = 50))!!
+        assertTrue(size(dense) < 256 * 1024, "100 words of 500 tokens built ${size(dense)} chars")
+
+        val long = "q".repeat(100_000)
+        val one = EventYql.build(EventQuery(search = long, limit = 50))!!
+        assertTrue(size(one) < 64 * 1024, "one 100,000-char word built ${size(one)} chars")
+        assertEquals(IndexableChars.MAX_WORD_CHARS, one.params["w0"]!!.length)
+        // Cut at a code point, never between the halves of a surrogate pair.
+        val emoji = "a".repeat(IndexableChars.MAX_WORD_CHARS - 1) + "🔥".repeat(10)
+        assertEquals("a".repeat(IndexableChars.MAX_WORD_CHARS - 1), EventYql.build(EventQuery(search = emoji))!!.params["w0"])
+    }
+
+    @Test
+    fun `a word longer than any near element gets no prefix or typo clause`() {
+        // NearText drops elements over MAX_ELEMENT_LEN, so a prefix of a longer word, or a word
+        // further than the typo budget from one, can match nothing and still walks the dictionary.
+        val long = EventYql.build(EventQuery(search = "k".repeat(1_000)))!!
+        for (field in FuzzyWordGroup.ALL_NEAR_FIELDS) assertFalse("$field contains" in long.yql, field)
+        assertNull(long.params["fw0"], "no folded twin is sent for clauses that are not there")
+        val edge = "k".repeat(NearText.MAX_ELEMENT_LEN)
+        val atEdge = EventYql.build(EventQuery(search = edge))!!
+        assertTrue("(name_near contains ({prefix:true}@fw0))" in atEdge.yql, "a word as long as an element can still prefix it")
+        assertTrue("fuzzy(@fw0)" in atEdge.yql)
+        val past = EventYql.build(EventQuery(search = edge + "kk"))!!
+        assertFalse("prefix:true}@fw0" in past.yql, "no element is long enough to start with it")
+        assertTrue("fuzzy(@fw0)" in past.yql, "an element two edits shorter can still be its typo")
+        assertFalse("fuzzy(@fw0)" in EventYql.build(EventQuery(search = edge + "kkkk"))!!.yql)
     }
 
     @Test

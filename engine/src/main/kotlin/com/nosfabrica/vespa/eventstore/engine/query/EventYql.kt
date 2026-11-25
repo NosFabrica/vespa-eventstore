@@ -1400,7 +1400,9 @@ object EventYql {
         q.notExpiredAt?.let { clauses += "expires_at > $it" }
 
         // Every word the caller typed goes into the query — never silently
-        // dropped for speed. Exception: a word with nothing an index holds
+        // dropped for speed — up to [IndexableChars.MAX_SEARCH_WORDS] words of
+        // [IndexableChars.MAX_WORD_CHARS] characters, the bound that keeps one
+        // search from building megabytes of YQL. Exception: a word with nothing an index holds
         // ([IndexableChars]: no letter, digit or emoji — "₿", "∞", "#") is
         // erased by tokenization on the doc side too, and a query of only such
         // terms is an HTTP 400 (NullItem); it is dropped, and a query that is
@@ -1422,11 +1424,7 @@ object EventYql {
                 .orEmpty()
                 .split(WHITESPACE)
                 .filter { it.isNotEmpty() }
-        val matchable =
-            IndexableChars
-                .queryText(q.search?.trim().orEmpty())
-                .split(WHITESPACE)
-                .filter(IndexableChars::hasIndexable)
+        val matchable = IndexableChars.searchWords(q.search?.trim().orEmpty())
         if (words.isNotEmpty() && matchable.isEmpty()) return null
         if (matchable.isNotEmpty()) {
             // The body phrase only where a body can exist: on body-less kinds it

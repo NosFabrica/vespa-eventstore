@@ -74,6 +74,22 @@ class IndexableCharsTest {
     }
 
     @Test
+    fun `search words are capped in number, in tokens and in length, keeping the first`() {
+        val many = (1..40).joinToString(" ") { "w$it" }
+        assertEquals((1..IndexableChars.MAX_SEARCH_WORDS).map { "w$it" }, IndexableChars.searchWords(many))
+        // Vacuous words cost nothing: they are dropped before the caps count.
+        assertEquals(listOf("a", "b"), IndexableChars.searchWords("# a ₿ b"))
+        // Four tokens a word: the budget holds eight of them, and the rest are dropped.
+        assertEquals(List(8) { "a.b.c.d" }, IndexableChars.searchWords(List(12) { "a.b.c.d" }.joinToString(" ")))
+        // The word that crosses the budget is cut at a token, never inside one.
+        val dense = (1..40).joinToString(".") { "t$it" }
+        assertEquals((1..IndexableChars.MAX_SEARCH_TOKENS).joinToString(".") { "t$it" } + ".", IndexableChars.searchWords(dense).single())
+        assertEquals(listOf("one", "zap⚡"), IndexableChars.searchWords("one zap⚡ " + (1..40).joinToString(" ") { "x$it" }).take(2))
+        val long = "z".repeat(10_000)
+        assertEquals(IndexableChars.MAX_WORD_CHARS, IndexableChars.searchWords(long).single().length)
+    }
+
+    @Test
     fun `an exclusion drops a lone selector only when one token is left`() {
         assertEquals("❤", IndexableChars.exclusionText("❤️"), "-❤️ drops every heart")
         assertEquals("👍", IndexableChars.exclusionText("👍🏽"))

@@ -23,7 +23,6 @@ import com.nosfabrica.vespa.eventstore.engine.text.EdgeText
 import com.nosfabrica.vespa.eventstore.engine.text.IndexableChars
 import com.nosfabrica.vespa.eventstore.engine.text.NearText
 import com.nosfabrica.vespa.eventstore.engine.text.StemText
-import com.nosfabrica.vespa.eventstore.engine.text.WHITESPACE
 
 /**
  * The derived, kind-specific search surface of one event; all-null = invisible
@@ -87,7 +86,9 @@ data class SearchFields(
      * recall. An emoji is indexed, and required like any word. The text is
      * cleaned exactly as EventYql cleans what it sends
      * ([IndexableChars.queryText]: "bitcoin*" is bitcoin, "❤️" finds a plain ❤,
-     * 👍🏽 is 👍).
+     * 👍🏽 is 👍), and cut as EventYql cuts it ([IndexableChars.searchWords]: the
+     * first [IndexableChars.MAX_SEARCH_WORDS] words, each at most
+     * [IndexableChars.MAX_WORD_CHARS] characters).
      *
      * [stemLanguage] is [EventQuery.stemLanguage]: a word also matches when its
      * stem is in this document's stemmed body column for that language, exactly
@@ -98,11 +99,7 @@ data class SearchFields(
         term: String,
         stemLanguage: String? = null,
     ): Boolean {
-        val words =
-            IndexableChars
-                .queryText(term)
-                .split(WHITESPACE)
-                .filter(IndexableChars::hasIndexable)
+        val words = IndexableChars.searchWords(term)
         if (words.isEmpty()) return false
         val values = fields().values
         val stems by lazy { stemLanguage?.let { stemFields()[StemText.field(it)] }?.split(' ')?.toHashSet() ?: emptySet() }
