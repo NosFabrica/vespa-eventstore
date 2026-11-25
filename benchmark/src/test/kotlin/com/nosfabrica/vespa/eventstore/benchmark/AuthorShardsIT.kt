@@ -272,6 +272,16 @@ class AuthorShardsIT {
             index.search(gated().copy(authors = listOf(TRUSTED_1, LOW_1))).map { it.id },
             "the gate inside one author-scoped cluster",
         )
+        // Those reads are text-free, so they went as JSON `select`, scoped by `model.sources`. An
+        // engine refusing that would have been asked again as YQL and answered the same, with
+        // `select` parked for good: the answers above cannot tell, the counter can.
+        assertEquals(
+            0L,
+            com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
+                .snapshot()["query.select.refused"]
+                ?.calls ?: 0L,
+            "Vespa took the author-scoped select",
+        )
         val visitedReputations = ArrayList<String>()
         reputation.visitPubkeys { page ->
             visitedReputations += page

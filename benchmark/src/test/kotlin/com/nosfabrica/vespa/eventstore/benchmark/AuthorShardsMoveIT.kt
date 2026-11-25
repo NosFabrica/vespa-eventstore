@@ -183,6 +183,10 @@ class AuthorShardsMoveIT {
                         val extraId = "f".repeat(63) + "0"
                         val stale = moving.first()
                         damage(url, destination, damaged, extraId, stale)
+                        // The pending cluster now holds an event no one wrote: a read on the
+                        // overlap map must not serve it, whether it goes as YQL (`from sources`) or
+                        // as `select` (`model.sources`), which text-free reads like these do.
+                        assertExact(reader, oracle, "overlap, the pending cluster holding a planted extra: read by no one")
                         var diff = mv.diff(repair = true)
                         println("move: first diff, after damaging the destination: $diff")
                         assertTrue(diff.missing >= 1 && diff.differing >= 1 && diff.extra >= 1, "the diff finds what the copy can leave wrong: $diff")

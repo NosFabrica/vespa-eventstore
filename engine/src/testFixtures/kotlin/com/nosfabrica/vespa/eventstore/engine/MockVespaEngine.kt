@@ -297,6 +297,18 @@ class MockVespaEngine(
     /** Answer the batch handler's path with 404, as an application package that predates it does. */
     @Volatile var batchHandlerAbsent: Boolean = false
 
+    /**
+     * Refuse every write as a content cluster past its disk or memory limit does: the batch handler
+     * lists each put `INSUFFICIENT_STORAGE`, and `/document/v1` answers 507. [documentPutAttempts]
+     * counts the latter, so a test can see whether a refused batch was re-put document by document.
+     */
+    @Volatile var feedBlocked: Boolean = false
+
+    /** `/document/v1` puts asked of this mock, refused ones included. */
+    val documentPutAttempts =
+        java.util.concurrent.atomic
+            .AtomicInteger()
+
     /** Answer the batch handler's updates as a package from before it took them does: each refused before dispatch. */
     @Volatile var batchHandlerPredatesUpdates: Boolean = false
 
@@ -455,6 +467,9 @@ class MockVespaEngine(
     /** Every `/search/` request's parameters, in order — a test reads the rung each query of a descent asked for. */
     val searchRequests = java.util.concurrent.CopyOnWriteArrayList<Map<String, String>>()
 
+    /** Every JSON `select` query this mock refused, as its request body. */
+    val selectRequests = java.util.concurrent.CopyOnWriteArrayList<String>()
+
     /**
      * Serve recall hits with the id order REVERSED within each equal-created_at
      * group — the engine's single-key sort leaves tie order ARBITRARY, and the
@@ -606,6 +621,8 @@ class MockVespaEngine(
         }
         return when {
             method == "POST" && path.startsWith(docPrefix) -> {
+                documentPutAttempts.incrementAndGet()
+                if (feedBlocked) return Reply(507, """{"pathId":"$path","message":"[UNKNOWN(251009) @ tcp/vespa:19115/default]: ReturnCode(NO_SPACE, External feed is blocked due to resource exhaustion)"}""")
                 val fields =
                     Json
                         .parseToJsonElement(body)
@@ -646,6 +663,9 @@ class MockVespaEngine(
                     return Reply(200, """{"count":${all.size},"failed":[${failed.joinToString(",") { """{"index":$it,"outcome":"ERROR"}""" }}]}""")
                 }
                 val ops = all.map { it.getValue("fields").jsonObject }
+                if (feedBlocked) {
+                    return Reply(200, """{"count":${all.size},"failed":[${all.indices.joinToString(",") { """{"index":$it,"outcome":"INSUFFICIENT_STORAGE","message":"ReturnCode(NO_SPACE, External feed is blocked due to resource exhaustion)"}""" }}]}""")
+                }
                 ops.firstNotNullOfOrNull { refusal(it) }?.let { return it }
                 batchRequestsCount.incrementAndGet()
                 // A put may carry a test-and-set condition, which the real handler's JSON feed
@@ -707,7 +727,16 @@ class MockVespaEngine(
             // a flat JSON object of the same request parameters.
             method == "POST" && path == "/search/" -> {
                 val json = Json.parseToJsonElement(body).jsonObject
-                search(json.mapValues { (_, v) -> v.jsonPrimitive.content })
+                // This mock interprets YQL only, so it answers a JSON `select` query as an engine
+                // that does not take one: 400, which the client meets by asking the same query as
+                // YQL and sending YQL from then on. The refused request is kept, so a test can see
+                // the client tried `select` first.
+                if ("select" in json) {
+                    selectRequests += json.toString()
+                    Reply(400, """{"root":{"errors":[{"code":4,"summary":"Invalid query parameter","message":"this mock does not take select queries"}]}}""")
+                } else {
+                    search(json.mapValues { (_, v) -> v.jsonPrimitive.content })
+                }
             }
 
             else -> {

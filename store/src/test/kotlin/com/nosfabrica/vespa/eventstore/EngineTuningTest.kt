@@ -155,7 +155,7 @@ class EngineTuningTest {
         assertEquals(500, EngineTuning.DEFAULT_DEDUP_CHUNK)
         assertEquals(200, EngineTuning.DEFAULT_ID_FIRST_MAX_DIRECT_HITS)
         assertEquals(EngineTuning.VARIABLES.size, EngineTuning.VARIABLES.toSet().size, "each variable once")
-        assertEquals(27, EngineTuning.VARIABLES.size)
+        assertEquals(28, EngineTuning.VARIABLES.size)
     }
 
     /** The shard count decides where documents live, so it parses strictly and reaches the client. */
