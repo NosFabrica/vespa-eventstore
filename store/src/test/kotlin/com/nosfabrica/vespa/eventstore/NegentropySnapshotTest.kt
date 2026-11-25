@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.eventstore
 
 import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
+import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryReputationIndex
@@ -30,10 +31,12 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
 import com.vitorpamplona.quartz.nip10Notes.TextNoteEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -64,6 +67,11 @@ class NegentropySnapshotTest {
             override suspend fun search(query: EventQuery): List<EventDoc> {
                 searched += query
                 return inner.search(query)
+            }
+
+            override suspend fun searchRanked(query: EventQuery): List<Ranked<EventDoc>> {
+                searched += query
+                return inner.searchRanked(query)
             }
 
             override suspend fun visitIds(
@@ -112,6 +120,38 @@ class NegentropySnapshotTest {
         assertEquals(service, q.rankKey, "the token resolves to the service its 10040 names, not the empty lens")
         assertEquals(50.0, q.minRank)
     }
+
+    /**
+     * STORE-O01: query, count and snapshot answer the same set under the same
+     * observer, and the CONNECTION's observer (NIP-42, off [StoreQueryContext]) is
+     * one: quartz builds every authenticated NEG-OPEN under the caller's context,
+     * as it does a REQ. The walk read only the `observer:` token, so an
+     * authenticated reconcile covered the ungated corpus while the REQ beside it
+     * served the gated set. Both snapshot entry points share the walk.
+     */
+    @Test
+    fun `a connection observer gates the walk as it gates the REQ`() {
+        seed()
+        withObserver {
+            searched.clear()
+            store.query<TextNoteEvent>(Filter(kinds = listOf(1)))
+            val req = searched.last { it.kinds == listOf(1) }
+            assertEquals(EventYql.RANK_RECENCY_GATED, req.ranking, "the REQ is gated")
+            listOf<suspend () -> Unit>(
+                { store.snapshotIdsForNegentropy(listOf(Filter(kinds = listOf(1))), null, null) },
+                { store.sealedNegentropyStorage(listOf(Filter(kinds = listOf(1))), 1_000) },
+            ).forEach { snapshotOf ->
+                walked.clear()
+                snapshotOf()
+                val q = walked.single()
+                assertEquals(req.ranking, q.ranking, "REQ gated as ${req.ranking}, the walk as ${q.ranking}")
+                assertEquals(req.minRank, q.minRank)
+                assertEquals(service, q.rankKey, "the walk reads the connection observer's lens")
+            }
+        }
+    }
+
+    private fun withObserver(block: suspend () -> Unit) = runBlocking { withContext(StoreQueryContext(setOf(observer))) { block() } }
 
     @Test
     fun `every lens mode reaches the walk as the set its REQ serves`() {

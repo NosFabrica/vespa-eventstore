@@ -1118,8 +1118,9 @@ class NostrSemanticsStore(
      * (created_at, id) pairs straight off the docs — no Event materialization.
      * Every TERMLESS filter goes to the engine's id walk, so a negentropy
      * session sees the COMPLETE set even when it dwarfs a search page, and a
-     * GATED one — an `observer:` declared on the filter — through the lens that
-     * observer's 10040 resolves to (the walk gates engine-side on
+     * GATED one — an `observer:` declared on the filter, or the connection's
+     * observer off [StoreQueryContext], as a REQ and a COUNT read it — through
+     * the lens that observer's 10040 resolves to (the walk gates engine-side on
      * EventYql.gateFloor, the rule the REQ gates on). A limit'd walk is the
      * newest N with NIP-01's id tiebreak, the page a recency read serves; a
      * limit'd TRUST SORT's first N are its most trusted, so the engine answers
@@ -1218,8 +1219,14 @@ class NostrSemanticsStore(
         // only add to the union — is work a fan-out has already done. Worth
         // revisiting for the uncapped NIP-77 catch-up, with the heap measured.
         // lensed: a filter's `observer:` token must reach the engine as the
-        // services its 10040 names, or the gate reads an empty lens.
-        for (q in lensed(filters.mapNotNull { it.toExpiryQuery(cutoff) })) {
+        // services its 10040 names, or the gate reads an empty lens. The
+        // CONNECTION's observer is the other way in, as on a REQ and a COUNT
+        // (STORE-O01: the three answer one set under one observer). Quartz
+        // builds an authenticated NEG-OPEN under the caller's StoreQueryContext,
+        // and a walk that read only the token reconciled the ungated corpus
+        // beside a REQ that served the gated one.
+        val observer = connectionObserver()
+        for (q in lensed(filters.mapNotNull { it.toExpiryQuery(cutoff, observer) })) {
             // Already over budget: the filters left can only add to the union.
             if (cap != null && count >= cap) break
             if (q.search == null && q.phrases.isEmpty()) {
