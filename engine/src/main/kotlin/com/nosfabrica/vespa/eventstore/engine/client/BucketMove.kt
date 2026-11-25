@@ -28,6 +28,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.future.await
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -94,6 +95,12 @@ class BucketMove(
     tuning: ClientTuning = ClientTuning(),
     /** Documents one [fullDiff] batch may hold in memory; lowered only to measure the full diff at production's bucket sizes (`MoveSpeedProbe`). */
     private val diffBudget: Double = DIFF_BUDGET,
+    /**
+     * How far the content nodes' clocks may run behind this client's ([changedSince]): generous by
+     * default, since it only widens the incremental diff's first pass. A probe that loads its corpus
+     * just before moving it narrows it, or every document reads as changed.
+     */
+    private val clockMarginMs: Long = CLOCK_MARGIN_MS,
 ) : AutoCloseable {
     /** bucket -> (source cluster, destination cluster). */
     val moves: Map<Int, Pair<Int, Int>> = from.movesTo(to)
@@ -159,7 +166,7 @@ class BucketMove(
     suspend fun copy(): Counts {
         // Before the first document is read: anything written from here on may be what the copy
         // gets wrong, and [diff] reads it again.
-        if (changedSince == null) changedSince = (System.currentTimeMillis() - CLOCK_MARGIN_MS) * 1000
+        if (changedSince == null) changedSince = (System.currentTimeMillis() - clockMarginMs) * 1000
         return counts { type, buckets, src, dst ->
             val n = writeVisit(type, src, buckets, "&destinationCluster=${URLEncoder.encode(AuthorShards.clusterName(dst), "UTF-8")}", delete = false)
             // Sizes [diff]'s batches; a document API that reported no count leaves the conservative default.
@@ -186,7 +193,7 @@ class BucketMove(
         val since = changedSince
         val result = if (since == null || full) fullDiff(repair, pairs) else incrementalDiff(repair, since)
         // The next pass needs only what was written from this one's start on.
-        if (since != null) changedSince = (startedMs - CLOCK_MARGIN_MS) * 1000
+        if (since != null) changedSince = (startedMs - clockMarginMs) * 1000
         return result.also { lastDiffClean = it.clean }
     }
 
@@ -334,23 +341,40 @@ class BucketMove(
         dst: Int,
         repair: Boolean,
     ): Diff {
-        val confirmed =
-            coroutineScope {
-                ids
-                    .map { id ->
-                        async {
-                            val a = read(type, id, src)
-                            val b = read(type, id, dst)
-                            when {
-                                a != null && b == null -> Fix.MISSING.also { if (repair) put(type, a, dst, ifAbsent = true) }
-                                a != null && type.compareFields && canonical(a["fields"]) != canonical(b!!["fields"]) -> Fix.DIFFERING.also { if (repair) put(type, a, dst, ifAbsent = false) }
-                                a == null && b != null -> Fix.EXTRA.also { if (repair) remove(type, id, dst) }
-                                else -> null
+        // Bounded: a copy under live writes can leave millions of changed documents, and every one
+        // in flight at once was answered 429 by the engine (measured, MoveSpeedProbe).
+        val gate = kotlinx.coroutines.sync.Semaphore(SETTLE_CONCURRENCY)
+        val confirmed = ArrayList<Fix?>(ids.size)
+        for (chunk in ids.chunked(SETTLE_CHUNK)) {
+            confirmed +=
+                coroutineScope {
+                    chunk
+                        .map { id ->
+                            async {
+                                gate.withPermit { settleOne(type, id, src, dst, repair) }
                             }
-                        }
-                    }.awaitAll()
-            }
+                        }.awaitAll()
+                }
+        }
         return Diff(confirmed.count { it == Fix.MISSING }.toLong(), confirmed.count { it == Fix.DIFFERING }.toLong(), confirmed.count { it == Fix.EXTRA }.toLong())
+    }
+
+    /** One id of [settle]: read from both clusters, compared, and with [repair] fixed from the source. */
+    private suspend fun settleOne(
+        type: Type,
+        id: String,
+        src: Int,
+        dst: Int,
+        repair: Boolean,
+    ): Fix? {
+        val a = read(type, id, src)
+        val b = read(type, id, dst)
+        return when {
+            a != null && b == null -> Fix.MISSING.also { if (repair) put(type, a, dst, ifAbsent = true) }
+            a != null && type.compareFields && canonical(a["fields"]) != canonical(b!!["fields"]) -> Fix.DIFFERING.also { if (repair) put(type, a, dst, ifAbsent = false) }
+            a == null && b != null -> Fix.EXTRA.also { if (repair) remove(type, id, dst) }
+            else -> null
+        }
     }
 
     /** Whether the last [diff] found nothing: what [finish] requires. */
@@ -563,6 +587,12 @@ class BucketMove(
 
         /** How far the content nodes' clocks may run behind this client's ([changedSince]): generous, as it only widens a pass. */
         const val CLOCK_MARGIN_MS = 10 * 60_000L
+
+        /** Point reads [settle] keeps in flight. */
+        const val SETTLE_CONCURRENCY = 64
+
+        /** Ids [settle] starts coroutines for at a time, so millions of candidates are not millions of coroutines. */
+        const val SETTLE_CHUNK = 10_000
 
         /** A 64-bit hash of a document id (FNV-1a), for the per-bucket id-set digests. */
         fun idHash(id: String): Long {

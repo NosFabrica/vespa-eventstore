@@ -107,7 +107,9 @@ object MoveSpeedProbe {
             // BENCH_DIFF_BUDGET lowered (1500) makes the full diff take one bucket per batch, as a
             // production bucket (~3.7 M documents) does against the default 2 M budget.
             val diffBudget = System.getenv("BENCH_DIFF_BUDGET")?.toDouble() ?: 2_000_000.0
-            BucketMove(url, from, to, diffBudget = diffBudget).use { mv ->
+            // The corpus was loaded a minute ago, where production's was written long before a move:
+            // a narrow clock margin (one host, one clock) keeps the load out of "changed since".
+            BucketMove(url, from, to, diffBudget = diffBudget, clockMarginMs = System.getenv("BENCH_CLOCK_MARGIN_MS")?.toLong() ?: 5_000).use { mv ->
                 check(deployer.deployIfChanged(url, VespaApp.zipBytes(null, mv.overlap)))
                 steps["load"] = "{\"seconds\":$loadSecs,\"docsPerSecond\":${((events + AUTHORS) / loadSecs).toLong()}}"
                 // The moving buckets visited with no writes ([id] only): the read side's own speed.
