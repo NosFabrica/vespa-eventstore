@@ -1731,10 +1731,52 @@ Measured through vespa-relay, the same seeded store, two runs each, identical pa
 | REQ/s, limit 10, 200 clients | 1,796 / 2,016 | 2,027 / 2,084 |
 | REQ/s, limit 100, 200 clients | 812 / 843 | 877 / 933 |
 
-Not taken: setting the query language to skip detection (3%). On a free-text search
-the language picks the stemming, and a fixed one would change what a NIP-50 search
-matches; on a recency read the terms are pubkeys and tag values, where it would be
-safe, but that is a second rule for a small share.
+**Naming the language on a text-free read (2026-11-25).** With no language set, the
+container detects one (OpenNLP) on every query. On a free-text search that language
+picks the stemming, so a search keeps detection; a read with no search terms, phrases
+or exclusions filters only on `cased` attributes (id, pubkey, kind, created_at,
+tag_index, owner, expires_at), where no language processing applies, so it now sends
+`model.language=en` (`EventYql.isTextFree`, in `filterClauses` and the existence
+probe). Measured by replaying the same 1,000 `#t` reads (limit 20, `nip01`, 20 hits
+each) straight at Vespa with vespa-fbench, 32 clients, Vespa pinned to 2 cores and the
+client to the other 2, after a warm-up, three 30 s rounds in rotated order, CPU of
+`default/container.0` from `/proc`; the first 50 reads of every variant returned the
+same ids in the same order:
+
+| container CPU per query, three rounds | queries/s |
+|---|---|
+| detected: 900 / 971 / 978 µs (mean 950) | 1,069 |
+| `model.language=en`: 838 / 855 / 899 µs (mean **864, −9%**) | 1,152 |
+
+**Text-free reads as JSON `select` (2026-11-25).** The query container parses YQL with
+a full grammar on every request, at a fixed cost however short the query. Vespa's JSON
+`select` (`{"select":{"where":…}}`, `sorting=-created_at` for `order by`, `hits` for
+`limit`, `model.restrict=event` for `from event`) builds the same query tree from JSON.
+It takes `in` too, though its reference does not list it (checked against a live
+engine: the same counts as YQL's `in` for kinds and pubkeys). Same harness as above,
+the same session, three rotated rounds:
+
+| read | form | container CPU per query | proton | queries/s |
+|---|---|---|---|---|
+| `#t` limit 20 | YQL | 950 µs | | 1,069 |
+| | `select` | 817 µs (−14%) | | 1,227 |
+| | `select` + language | 774 µs (−19%) | | 1,255 |
+| 200 authors, limit 20 (13.7 KB of YQL) | YQL | ~1,530 µs | ~1,510 µs | ~590 |
+| | YQL + language | ~1,460 µs | ~1,510 µs | ~600 |
+| | `select` + language | **~1,220 µs (−20%)** | ~1,460 µs | **~670 (+13%)** |
+
+So a text-free read (no search terms, phrases, exclusions, weighted key sets or id
+prefix: nearly every relay REQ) now carries a `SelectForm` (`EventYql.selectWhere`,
+mirroring `filterClauses` clause for clause) and goes to the engine as `select`; YQL
+stays the query's description and the fallback. An engine that refuses `select` with a
+400 (one predating `select.fields`, Vespa 8.680.18) is asked the same query as YQL at
+once, and `SchemaFallbacks.selectAvailable` parks `select` for five minutes, then the next
+read tries it again (`query.select.refused` counts each park). The where-node is rendered
+only when a read is really sent as `select`. `VESPA_SELECT_QUERIES=0` sends YQL. `EventYqlTest`
+renders every shape's where-node back to the YQL clause `build` writes;
+`SelectQueryIT` reads 33 shapes both ways against a real Vespa under two strategies
+and requires the same ids in the same order. The unit tests' mock engine answers
+`select` as a refusing engine would, so they run on YQL as before.
 
 ### Small batches take the bulk path (2026-11-23)
 
@@ -3362,8 +3404,8 @@ So a put with nothing else in flight now skips it (`VespaEventIndex.putDirect`):
 `/document/v1` POST on the read client, taken only while the feed client holds no
 unanswered operation and no batch write is running, one at a time, so it cannot overtake
 an earlier write to the same document (`DirectPutTest`, "a put waits its turn behind a
-write the feed client still holds"). A refused or failed POST goes the feed client's way,
-retries and all. `feedStatus` counts them (`direct`). The same build with and without it,
+write the feed client still holds"). A 507 (a feed block) throws `EngineRefusesWrites` at once, as the batch
+path does; any other refused or failed POST goes the feed client's way, retries and all. `feedStatus` counts them (`direct`). The same build with and without it,
 four rounds ABBA:
 
 | | before | direct | won |

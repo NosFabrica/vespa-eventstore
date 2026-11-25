@@ -56,7 +56,7 @@ tasks.test {
     // Vespa, an observer to lens through). Gradle does NOT forward the daemon's
     // system properties to the test JVM, so a test reading them sees null and
     // self-skips — which looks exactly like a passing run.
-    listOf("itVespa", "itCorpus", "itObserver").forEach { name ->
+    listOf("itVespa", "itCorpus", "itObserver", "itAuthorShards").forEach { name ->
         System.getProperty(name)?.let { systemProperty(name, it) }
     }
 
@@ -347,4 +347,86 @@ tasks.register<JavaExec>("reindexLockProbe") {
     mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.ReindexLockProbe")
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
     workingDir = rootDir
+}
+
+// More author shards than hosts: one Vespa host at K content clusters, a fixed corpus and read
+// mix, run once per K against a fresh Vespa. See ShardScaleProbe.kt and docs/author-shards.md.
+tasks.register<JavaExec>("shardScaleProbe") {
+    group = "verification"
+    description = "Query latency/throughput and search-process memory at K author-shard clusters on one host"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.ShardScaleProbe")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
+}
+
+// The corpus by author bucket, read-only, before an author split is chosen. See BucketReport.kt.
+tasks.register<JavaExec>("shardPackage") {
+    group = "verification"
+    description = "An operator's own application package split into author-shard clusters, checked against the live deployment's guard"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.load.ShardPackage")
+}
+
+tasks.register<JavaExec>("bucketReport") {
+    group = "verification"
+    description = "Events and reputation documents per author bucket, and even bucket maps for a few cluster counts"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.load.BucketReport")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
+}
+
+// What the trust copy costs per cell, and how its disk grows under churn. See TrustFootprintProbe.kt.
+tasks.register<JavaExec>("trustFootprintProbe") {
+    group = "verification"
+    description = "Reputation memory per cell (float vs bfloat16 follower counts) and disk growth under cell churn, against a fresh Vespa"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.TrustFootprintProbe")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
+}
+
+tasks.register<JavaExec>("oneClusterAbProbe") {
+    group = "verification"
+    description = "One-cluster read mix for an A/B between two versions (temporary)"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.OneClusterAbProbe")
+    maxHeapSize = "3g"
+}
+
+// A real, read-only slice of the production relay for the growth simulation. See RelaySlice.kt.
+tasks.register<JavaExec>("relaySlice") {
+    group = "verification"
+    description = "Pull 10040 lists, template services' 30382 cards and recent events from the live relay (read-only) into build/relay-slice"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.load.RelaySlice")
+    workingDir = projectDir
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "4g"
+}
+
+// New users arriving on real data, and the author split they force. See GrowthSimulation.kt and
+// docs/growth-simulation.md. Needs a fresh Vespa and a relaySlice.
+tasks.register<JavaExec>("growthSimulation") {
+    group = "verification"
+    description = "Load a relay slice, add users one by one, split one cluster into two mid-growth, verify (needs a fresh Vespa)"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.GrowthSimulation")
+    workingDir = projectDir
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "4g"
+}
+
+// One trust tensor or two: memory per cell in each layout, the same cells. See TensorLayoutProbe.kt.
+tasks.register<JavaExec>("tensorLayoutProbe") {
+    group = "verification"
+    description = "Reputation attribute memory for two mapped tensors vs one mixed tensor (float, bfloat16), against a fresh Vespa"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.TensorLayoutProbe")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
+}
+
+// How fast a bucket move is with nothing else running, on a fixed corpus. See MoveSpeedProbe.kt.
+tasks.register<JavaExec>("moveSpeedProbe") {
+    group = "verification"
+    description = "Times BucketMove's copy, diff and cleanup splitting one cluster into two, against a fresh Vespa"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.MoveSpeedProbe")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "3g"
 }

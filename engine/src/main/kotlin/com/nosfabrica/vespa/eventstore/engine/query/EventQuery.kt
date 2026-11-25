@@ -20,9 +20,12 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.query
 
+import com.vitorpamplona.quartz.utils.Hex
+
 /**
  * A NIP-01 filter as plain values. The relay module maps a REQ's Filter into
- * this, which keeps this module Nostr-library-agnostic. Empty lists mean "no
+ * this, so the filter itself carries no Nostr-library type; quartz's `Hex` is
+ * used only to recognize hex author keys ([AuthorFilter]). Empty lists mean "no
  * constraint". A filter that arrived with a present-but-empty list matches
  * nothing, and the caller must handle that before building.
  */
@@ -396,7 +399,93 @@ data class VespaQuery(
      * LAST, so no positional argument or componentN shifts.
      */
     val completeCoverage: Boolean = false,
+    /**
+     * The query's author clauses ([EventYql.authorFilterOf]); null when it names no author and can
+     * match anyone. Under author sharding the client sends the query only to the clusters these
+     * authors live in. After [completeCoverage].
+     */
+    val authorFilter: AuthorFilter? = null,
+    /**
+     * The same query in Vespa's JSON `select` form, when [EventYql] can write it ([SelectForm]):
+     * a text-free read, which is nearly every relay REQ. Sent in place of [yql], which the query
+     * container parses at a fixed cost per request; [yql] stays the query's description for logs
+     * and the fallback for an engine that refuses `select`. LAST, after [authorFilter].
+     */
+    val select: SelectForm? = null,
 )
+
+/**
+ * A query's author clauses as the caller gave them — [authors] and [weighted]'s keys, each an AND-ed
+ * clause — held by reference and normalized only when [scope] is asked for, which only a sharded
+ * client does. A one-cluster store pays for nothing but this object.
+ */
+class AuthorFilter(
+    private val authors: List<String>,
+    private val weighted: Collection<String>,
+) {
+    /**
+     * The authors EVERY match must have, spelled as the clause spells them (lowercase 64-hex, the
+     * rest dropped): [authors], intersected with [weighted] when both are set. `pubkey` matches
+     * `cased`, so a stored event matching one of these has exactly that pubkey and lives in that
+     * pubkey's author shard. Null only when neither clause is set.
+     */
+    fun scope(): Set<String>? {
+        fun hexes(keys: Collection<String>) = keys.mapNotNullTo(HashSet()) { k -> k.lowercase().takeIf(Hex::isHexKey) }
+        val a = authors.takeIf { it.isNotEmpty() }?.let(::hexes)
+        val w = weighted.takeIf { it.isNotEmpty() }?.let(::hexes)
+        return when {
+            a != null && w != null -> a intersect w
+            else -> a ?: w
+        }
+    }
+}
+
+/**
+ * A text-free read as Vespa's JSON `select` query, the equivalent of [VespaQuery.yql]:
+ * `select <fields> from event where <where> [order by created_at desc] [limit N]`.
+ *
+ * WHY. The query container parses YQL with a full grammar on every request, and the store's
+ * reads are a handful of templates. Replaying the same reads straight at Vespa (32 clients,
+ * Vespa pinned to 2 cores, three rotated rounds, identical answers), the JSON form cost the
+ * container 14% less CPU per `#t` read and 20% less per 200-author read, with proton's share
+ * unchanged (benchmark/README.md, "The query container's own cost").
+ *
+ * [where] is the JSON text of the where-node (`true`, one clause, or `{"and":[...]}`), RENDERED
+ * WHEN FIRST ASKED, so a read sent as YQL (select off, or parked after a refusal) never pays for
+ * it: an author recall's where runs to tens of kilobytes. Null only if [EventYql.selectWhere]
+ * cannot write a query [EventYql.build] could, which [EventYql.selectable] rules out; the read
+ * then goes as YQL. [fields] is the summary field list, null for every field of the summary class
+ * the request names; [newestFirst] is `order by created_at desc` (sent as `sorting=-created_at`);
+ * [limit] is the YQL `limit`, sent as `hits`. Equal when all four are.
+ */
+class SelectForm private constructor(
+    private val rendered: Lazy<String?>,
+    val fields: List<String>?,
+    val newestFirst: Boolean,
+    val limit: Int?,
+) {
+    constructor(
+        query: EventQuery,
+        fields: List<String>?,
+        newestFirst: Boolean,
+        limit: Int?,
+    ) : this(lazy(LazyThreadSafetyMode.PUBLICATION) { EventYql.selectWhere(query) }, fields, newestFirst, limit)
+
+    /** The where-node's JSON text; see the class KDoc. */
+    val where: String? get() = rendered.value
+
+    /** The same query naming [fields] (a summary rewrite), sharing one rendering of [where]. */
+    fun withFields(fields: List<String>?): SelectForm = SelectForm(rendered, fields, newestFirst, limit)
+
+    /** The same query with page size [limit], sharing one rendering of [where]: an author-shard refetch of a page that lost repeats. */
+    fun withLimit(limit: Int?): SelectForm = SelectForm(rendered, fields, newestFirst, limit)
+
+    override fun equals(other: Any?): Boolean = other is SelectForm && where == other.where && fields == other.fields && newestFirst == other.newestFirst && limit == other.limit
+
+    override fun hashCode(): Int = ((where.hashCode() * 31 + fields.hashCode()) * 31 + newestFirst.hashCode()) * 31 + (limit ?: 0)
+
+    override fun toString(): String = "SelectForm(where=$where, fields=$fields, newestFirst=$newestFirst, limit=$limit)"
+}
 
 /** The shape of a query carrying no clause worth naming. */
 const val SHAPE_PLAIN = "plain"

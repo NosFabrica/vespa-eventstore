@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore
 
+import com.nosfabrica.vespa.eventstore.engine.app.AuthorShards
 import com.nosfabrica.vespa.eventstore.engine.app.VespaApp
 import com.nosfabrica.vespa.eventstore.engine.client.ClientTuning
 import com.nosfabrica.vespa.eventstore.engine.client.FeedCompression
@@ -61,7 +62,8 @@ import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_DEDUP_CHUNK as STORE_DEFA
  *    `open()` asking for a different value fails rather than silently
  *    re-tuning the first store.
  *  - PER DEPLOY: [accessLog], which rewrites the application package `open()`
- *    deploys.
+ *    deploys; and [authorShards], which both rewrites it and tells the engine
+ *    client how many content clusters a visit walks.
  *
  * Each field is documented with its variable; the measured reason for each
  * default is at the code that reads it (named in the field's KDoc).
@@ -92,6 +94,8 @@ class EngineTuning(
     val idFirst: Boolean? = null,
     /** `VESPA_RECENCY_MEMORY` — remember per read shape where its page was found. Default on (`RecencyWindowMemory`). */
     val recencyMemory: Boolean? = null,
+    /** `VESPA_SELECT_QUERIES` — send a text-free read as Vespa's JSON `select` instead of YQL. Default on (`SelectForm`). */
+    val selectQueries: Boolean? = null,
     /** `VESPA_BODY_EDGE` — PROTOTYPE (#161): feed the body's edge n-grams. Default off. */
     val bodyEdgeFeed: Boolean? = null,
     /** `VESPA_ADDRESS_KEYED` — store replaceables under their NIP-01 address. Default off (`VespaEventIndex.putIfNewer`). */
@@ -130,6 +134,20 @@ class EngineTuning(
      * (`VespaEventIndex.idFirstMaxDirectHits`, which holds the measured reasons).
      */
     val idFirstMaxDirectHits: Int? = null,
+    // ---- per deploy AND per store, added after it: LAST for the same reason ---
+    /**
+     * `VESPA_AUTHOR_SHARDS` — PROTOTYPE: split the corpus by author across this many content
+     * clusters, 1..256 (`AuthorShards`, `docs/author-shards.md`). Default 1, the package as built.
+     * The deployed package and the client must agree on it, which is why it is one setting; and
+     * changing it on a fed corpus deletes documents (the selections are what each cluster keeps).
+     */
+    val authorShards: Int? = null,
+    /**
+     * `VESPA_AUTHOR_BUCKETS` — PROTOTYPE: an explicit author bucket map, e.g. `00-99=0,9a-ff=1`
+     * (`AuthorShards.BucketMap`), for a split that is not even or a bucket move in flight. Wins over
+     * an even [authorShards]; refused when the two disagree on the cluster count.
+     */
+    val authorBuckets: String? = null,
 ) {
     init {
         feedBatch?.let { require(it in 0..MAX_FEED_BATCH) { "feedBatch $it is outside 0..$MAX_FEED_BATCH" } }
@@ -137,6 +155,8 @@ class EngineTuning(
         for ((name, v) in positives()) v?.let { require(it >= 1) { "$name $it is below 1" } }
         visitConcurrency?.let { require(it in 1..100) { "visitConcurrency $it is outside 1..100" } }
         idFirstMaxDirectHits?.let { require(it >= 0) { "idFirstMaxDirectHits $it is below 0" } }
+        authorShards?.let { require(it in 1..AuthorShards.MAX) { "authorShards $it is outside 1..${AuthorShards.MAX}" } }
+        bucketMap()
     }
 
     private fun positives() =
@@ -170,10 +190,13 @@ class EngineTuning(
             recencyStrategy = recencyStrategy,
             idFirst = idFirst,
             recencyMemory = recencyMemory,
+            selectQueries = selectQueries,
             bodyEdgeFeed = bodyEdgeFeed,
             addressKeyed = addressKeyed,
             unboundedHits = unboundedHits,
             idFirstMaxDirectHits = idFirstMaxDirectHits,
+            authorShards = authorShards,
+            authorBuckets = authorBuckets,
         )
 
     /**
@@ -197,6 +220,21 @@ class EngineTuning(
     /** The access-log choice for the deployed package: this tuning's, else `VESPA_ACCESS_LOG` as before. */
     internal fun accessLogOrEnv(): String? = accessLog ?: System.getenv(VespaApp.ACCESS_LOG_ENV)
 
+    /**
+     * The author bucket map for the deployed package and the client alike: [authorBuckets], else an
+     * even split of [authorShards], else one cluster. Read from the environment only by [fromEnv].
+     */
+    internal fun bucketMap(): AuthorShards.BucketMap {
+        val explicit = authorBuckets?.let(AuthorShards.BucketMap::parse)
+        if (explicit != null) {
+            require(authorShards == null || authorShards == explicit.clusters) {
+                "authorShards $authorShards disagrees with authorBuckets, which names ${explicit.clusters} clusters"
+            }
+            return explicit
+        }
+        return AuthorShards.BucketMap.even(authorShards ?: 1)
+    }
+
     /** The settings this tuning names, for a boot line; empty when it names none. */
     override fun toString(): String =
         listOf(
@@ -213,6 +251,7 @@ class EngineTuning(
             "idFirst" to idFirst,
             "idFirstMaxDirectHits" to idFirstMaxDirectHits,
             "recencyMemory" to recencyMemory,
+            "selectQueries" to selectQueries,
             "bodyEdgeFeed" to bodyEdgeFeed,
             "addressKeyed" to addressKeyed,
             "unboundedHits" to unboundedHits,
@@ -225,6 +264,8 @@ class EngineTuning(
             "trustGateSlice" to trustGateSlice,
             "expirySweepPage" to expirySweepPage,
             "accessLog" to accessLog,
+            "authorShards" to authorShards,
+            "authorBuckets" to authorBuckets,
         ).filter { it.second != null }
             .joinToString(", ", prefix = "EngineTuning(", postfix = ")") { (k, v) -> "$k=$v" }
 
@@ -263,6 +304,7 @@ class EngineTuning(
                 ClientTuning.ID_FIRST,
                 ClientTuning.ID_FIRST_MAX_DIRECT_HITS,
                 ClientTuning.RECENCY_MEMORY,
+                ClientTuning.SELECT_QUERIES,
                 ClientTuning.BODY_EDGE,
                 ClientTuning.ADDRESS_KEYED,
                 ClientTuning.UNBOUNDED_HITS,
@@ -275,6 +317,8 @@ class EngineTuning(
                 StoreKnobs.trustGateSlice.env,
                 StoreKnobs.expirySweepPage.env,
                 VespaApp.ACCESS_LOG_ENV,
+                AuthorShards.ENV,
+                AuthorShards.BUCKETS_ENV,
             )
 
         private val PIN_LOCK = Any()
@@ -317,6 +361,21 @@ class EngineTuning(
             ): T? = setting(key)?.let { raw -> parse(raw) ?: null.also { problems += "$key='$raw' is not one of $choices" } }
 
             val atLeastOne = 1..Int.MAX_VALUE
+            val shards = int(AuthorShards.ENV, 1..AuthorShards.MAX)
+            val bucketsRaw = setting(AuthorShards.BUCKETS_ENV)
+            val buckets =
+                bucketsRaw?.let { raw ->
+                    runCatching { AuthorShards.BucketMap.parse(raw) }.fold({ it }, { e -> null.also { problems += "${AuthorShards.BUCKETS_ENV}: ${e.message}" } })
+                }
+            // Checked here, with the rest, rather than left to the constructor's own check, which
+            // would throw before the other bad settings were reported.
+            val agreeing =
+                if (shards != null && buckets != null && shards != buckets.clusters) {
+                    problems += "${AuthorShards.ENV}=$shards disagrees with ${AuthorShards.BUCKETS_ENV}, which names ${buckets.clusters} clusters"
+                    false
+                } else {
+                    true
+                }
             val tuning =
                 EngineTuning(
                     feedBatch = int(ClientTuning.FEED_BATCH, 0..MAX_FEED_BATCH),
@@ -337,6 +396,7 @@ class EngineTuning(
                         ),
                     idFirst = flag(ClientTuning.ID_FIRST),
                     recencyMemory = flag(ClientTuning.RECENCY_MEMORY),
+                    selectQueries = flag(ClientTuning.SELECT_QUERIES),
                     bodyEdgeFeed = flag(ClientTuning.BODY_EDGE),
                     addressKeyed = flag(ClientTuning.ADDRESS_KEYED),
                     unboundedHits = int(ClientTuning.UNBOUNDED_HITS, atLeastOne),
@@ -351,6 +411,8 @@ class EngineTuning(
                         choice(VespaApp.ACCESS_LOG_ENV, { v -> v.lowercase().takeIf { it in VespaApp.ACCESS_LOG_VALUES } }, VespaApp.ACCESS_LOG_VALUES.sorted().joinToString()),
                     expirySweepPage = int(StoreKnobs.expirySweepPage.env, atLeastOne),
                     idFirstMaxDirectHits = int(ClientTuning.ID_FIRST_MAX_DIRECT_HITS, 0..Int.MAX_VALUE),
+                    authorShards = shards,
+                    authorBuckets = bucketsRaw.takeIf { buckets != null && agreeing },
                 )
             require(problems.isEmpty()) { "the store's environment has ${problems.size} bad setting(s): ${problems.joinToString("; ")}" }
             return tuning
