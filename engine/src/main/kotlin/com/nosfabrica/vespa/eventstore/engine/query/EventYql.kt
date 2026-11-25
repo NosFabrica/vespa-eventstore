@@ -589,6 +589,22 @@ object EventYql {
     fun walksGated(q: EventQuery): Boolean = q.search.isNullOrBlank() && q.phrases.isEmpty() && gateFloor(q) != null
 
     /**
+     * WHETHER ANYTHING [q] COMPILES TO CAN READ ITS LENS — its observer, [EventQuery.rankKey] or
+     * [EventQuery.followersKey]. False means every builder here sends the same request whoever the
+     * observer is and whatever lens it resolved to (`EventYqlTest` holds every builder to that), so a
+     * store need not resolve a lens for it at all — and must not, when the lookup can fail: a read
+     * that cannot use the lens would then fail for a signed-in caller and answer an anonymous one.
+     *
+     * The readers it covers: a trust or text profile in [build] (a `sort:`, or text making it
+     * [RANK_SEARCH]); the gated walk ([walksGated], [gateFloor]); the link builders ([isLensed], a
+     * gated `ranking`); and, in the store, everything keyed on a ranked or searching read — the
+     * `sort:links` rerank and the reference expansion. A SUPERSET, deliberately cheap to state: a
+     * `sort:text` or `include:spam sort:recent` read sends lens features nothing scores by, and is
+     * counted as reading them.
+     */
+    fun readsLens(q: EventQuery): Boolean = q.ranking != null || q.search != null || q.phrases.isNotEmpty() || gateFloor(q) != null
+
+    /**
      * Whether a LIMIT'D walk of [q] is the page its read serves: plain recall,
      * or the recency-gated pair, whose score IS created_at — the newest N either
      * way. A trust sort's first N are its most trusted, not its newest, so a

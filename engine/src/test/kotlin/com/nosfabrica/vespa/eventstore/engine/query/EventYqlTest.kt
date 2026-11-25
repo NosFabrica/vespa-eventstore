@@ -391,6 +391,65 @@ class EventYqlTest {
         ungated.forEach { (name, q) -> assertNull(EventYql.gateFloor(q), name) }
     }
 
+    /**
+     * WHAT READS NO LENS IS THE SAME REQUEST FOR EVERY CALLER. The store resolves a lens only where
+     * [EventYql.readsLens] holds, so wherever it does not, every builder must send exactly the request
+     * it would send with no observer and no resolved lens — else that skipped resolution would change
+     * an answer. A matrix of query shapes, each built with a lens and without one; and the other way
+     * round, the predicate is not vacuous: a gated read and a search are lens reads.
+     */
+    @Test
+    fun `a query that reads no lens compiles the same whoever the observer is`() {
+        val o = "c".repeat(64)
+        val shapes =
+            buildList {
+                for (ranking in listOf(null, EventYql.RANK_UNRANKED, EventYql.RANK_RECENCY, EventYql.RANK_RECENCY_GATED, EventYql.RANK_RECENCY_GATED_EXACT, EventYql.RANK_DESC, EventYql.RANK_ASC, EventYql.RANK_FOLLOWERS, EventYql.RANK_TEXT, EventYql.RANK_SEARCH)) {
+                    for (search in listOf(null, "", "pizza")) {
+                        for (phrases in listOf(emptyList(), listOf("pizza pie"))) {
+                            for (minRank in listOf(null, 0.0, 2.0)) {
+                                for (limit in listOf(null, 5)) {
+                                    // A recent `until` and an old one: the recency profile keys on it.
+                                    for (until in listOf(null, 1_000L)) {
+                                        add(EventQuery(kinds = listOf(1, 9735), until = until, ranking = ranking, search = search, phrases = phrases, notSearch = listOf("spam"), minRank = minRank, limit = limit, includeSpam = minRank == 0.0))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        val keys = listOf("e:" + "d".repeat(64))
+        val builders: List<Pair<String, (EventQuery) -> Any?>> =
+            listOf(
+                "build" to EventYql::build,
+                "buildIdTime" to { q -> EventYql.buildIdTime(q) },
+                "buildIdTime(withDTag)" to { q -> EventYql.buildIdTime(q, withDTag = true) },
+                "buildCount" to EventYql::buildCount,
+                "countProfileOf" to EventYql::countProfileOf,
+                "buildDistinctAuthors" to EventYql::buildDistinctAuthors,
+                "buildDistinctTagValues" to EventYql::buildDistinctTagValues,
+                "buildLinkPeople" to { q -> EventYql.buildLinkPeople(keys, q) },
+                "buildLinkZaps" to { q -> EventYql.buildLinkZaps(keys, q) },
+                "memberProfileOf" to EventYql::memberProfileOf,
+                "usesGatedMatchPhase" to EventYql::usesGatedMatchPhase,
+            )
+        var unread = 0
+        for (bare in shapes) {
+            val lensed = bare.copy(observer = o, rankKey = "5e".repeat(32), followersKey = "5f".repeat(32))
+            if (EventYql.readsLens(lensed)) continue
+            unread++
+            for ((name, build) in builders) assertEquals(build(bare), build(lensed), "$name differs under a lens it does not read: $bare")
+        }
+        assertEquals(12, unread, "the matrix exercises the unread side")
+        val o2 = EventQuery(kinds = listOf(1), observer = o, rankKey = "5e".repeat(32))
+        assertTrue(EventYql.readsLens(o2.copy(ranking = EventYql.RANK_RECENCY_GATED, minRank = 2.0)), "the observer gate")
+        assertTrue(EventYql.readsLens(o2.copy(search = "pizza")), "a search ranks through the lens")
+        assertTrue(EventYql.readsLens(o2.copy(phrases = listOf("pizza pie"))), "a phrase is a search")
+        assertTrue(EventYql.readsLens(o2.copy(ranking = EventYql.RANK_DESC)), "a trust sort")
+        assertFalse(EventYql.readsLens(o2), "plain recall with the floor waived")
+        assertFalse(EventYql.readsLens(o2.copy(notSearch = listOf("spam"))), "exclusions alone are recall")
+    }
+
     /** A limit'd walk is the page only where the page is the newest N. */
     @Test
     fun `walksInOrder holds for recency reads and not for rankings`() {

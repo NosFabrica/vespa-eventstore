@@ -8,25 +8,43 @@ mavenPublish = "0.37.0"
 # FROM MAGPIE, so the published POM names com.vitorpamplona.quartz:quartz-jvm:<pin> and a consumer of
 # this store needs Magpie serving quartz's groups (settings.gradle.kts); it needs no JitPack.
 #
-# 2.27.0 = vitorpamplona/quartz's release 2.27.0 (the v2.27.0 tag 762cf50d8), 7 commits over 2.25.2 (below)
-# plus 5 merges, which it descends from; 2.26.0 between them was never pinned. Nothing this store calls
-# changes contract:
-#  - SEARCH. No SearchableEvent or nip50Search diff. No reindex.
-#  - STORE CONTRACT. StoreConformance gains "count union with the empty filter" (STORE-F07 + F10:
-#    `[{kinds:[1],since}, {}]` counts everything); this store already answered it so (the random-filter
-#    diff against quartz's SQLite store found the bug there, quartz#155). IEventStore's
-#    liveNegentropySnapshot KDoc: LiveEventStore takes it only for an unauthenticated NEG-OPEN, and a
-#    store gating even those returns null; this store does not override it (null), so every NEG-OPEN
-#    keeps the gated scan path.
-#  - RELAY SERVER (vespa-relay constructs it). LiveEventStore keeps up to 8 NEG-OPEN snapshots (2M ids
-#    together, 30 s TTL), shares one walk between concurrent opens of a key, and, for a store other than
-#    quartz's own, drops every snapshot on each accepted write unless the app passes writeIsFilterLocal
-#    (quartz#154).
-#  - QUARTZ'S SQLITE STORE (the parity reference): a union holding `{}` matches everything in query,
-#    count and the negentropy snapshot; delete still reads it as nothing (quartz#155).
-#  - Also in the range, nothing this store calls: EsploraClient on every platform behind an HTTP
-#    transport (nipBC, quartz#158).
-#  - The distributed skill (.claude/skills/quartz) has no diff in the range.
+# 2.28.0 = vitorpamplona/quartz's release 2.28.0 (the v2.28.0 tag 0756eabe7, quartz main's head), 9
+# commits over 2.25.2 (below) plus 6 merges, which it descends from, through 2.26.0 (v2.26.0 =
+# a84b9b161) and 2.27.0 (v2.27.0 = 762cf50d8), never pinned. Nothing this store calls changes contract:
+#  - SEARCH. nip50Search (SearchQuery) has no diff, and no event class or SearchFieldExtractor is
+#    touched (the two changed files naming SearchableEvent are IEventStore's KDoc and the skill's search
+#    reference): no kind becomes or stops being searchable. No reindex.
+#  - STORE CONTRACT. IEventStore changes KDoc only: a store's search locality is its own knowledge, which
+#    LiveEventStore asks for (searchIsFilterLocal), and liveNegentropySnapshot's index is the ungated set,
+#    asked for only by an unauthenticated caller or of quartz's SQLite store (NostrSemanticsStore keeps
+#    the null default). The conformance battery (nip01Core.store.conformance) gains ONE check, "count
+#    union with the empty filter" ([{kinds:[1], since}, {}] counts everything, STORE-F07/F10), found by
+#    a random-filter diff of THIS store against SQLite, which was the one that got it wrong; so VespaParityIT
+#    and StoreParityTest run one check more. Filter matching (relay.filters), nip85TrustedAssertions,
+#    nip40Expiration, nip09Deletions, nip62RequestToVanish, the hint providers and the tag codecs have no diff.
+#  - RELAY SERVER (LiveEventStore, NegentropySnapshotCache; this store constructs none outside tests,
+#    vespa-relay does). 2.26.0: the NEG-OPEN snapshot cache keeps 8 snapshots (2M ids together, 30 s TTL),
+#    shares one walk between concurrent opens of a key, and on an accepted write drops only those the
+#    store rules say it can change, given writeIsFilterLocal (a fourth constructor argument; null = true
+#    on quartz's SQLite EventStore, false on any other store, so every write drops all of ours); search
+#    filters were dropped on every write. 2.28.0: a fifth, searchIsFilterLocal ((Filter) -> Boolean)?,
+#    lets a store keep a search filter's snapshot judged by its other fields, and
+#    LiveEventStore.DEFAULT_MAX_HELD_BEFORE_EOSE (1,000) is public. This store's answers to both are
+#    FilterLocality.writeIsFilterLocal / searchIsFilterLocal, which a relay passes to
+#    LiveEventStore(store, ingest, DEFAULT_MAX_HELD_BEFORE_EOSE, writeIsFilterLocal, searchIsFilterLocal).
+#    The two-, three- and four-argument constructors keep their signatures (the store's tests use the
+#    first two).
+#  - KITE / CORE. No diff: Event, EventFactory, Kite's JSON, Hex and TagArray are unchanged.
+#  - QUARTZ'S SQLITE STORE (the parity reference): a query, COUNT or negentropy snapshot whose union holds
+#    the empty filter (or one carrying only a blank or extensions-only search) matches every row, where
+#    its union builder had dropped that branch; delete still reads it as nothing. The quartz commit
+#    reports this store already answered that way; the new battery check re-asks it. Its NEG-OPEN of a search is each event's FTS match cut to `limit` by created_at
+#    (its REQs rank by bm25), which is why its default searchIsFilterLocal is true.
+#  - Also in the range, nothing this store calls: nipBCOnchainZaps' EsploraClient in commonMain behind an
+#    EsploraHttpTransport (2.27.0; EsploraBackend deprecated for 3.0.0), and the release commits.
+#  - The distributed skill (.claude/skills/quartz) is re-copied from the v2.28.0 tag: search-and-stores.md
+#    gains "Keeping NEG-OPEN snapshots cached on a gating store"; SKILL.md and the NIP-85 reference have
+#    no diff.
 #
 # Prev 2.25.2 = vitorpamplona/quartz's release 2.25.2 (the v2.25.2 tag ddc66ff18, quartz main's head), 66
 # commits over 4456c57f06 (below) plus 13 merges, which it descends from; 2.25.0 (v2.25.0 = 2e60d4eb9)
@@ -474,7 +492,7 @@ mavenPublish = "0.37.0"
 # catch-all; SearchableEvent grows the read-path forEachIndexableField, no reindex).
 # Prev cecc3287b2 (2026-09-01: 17 catch-all kinds split into title/body roles, four
 # affiliation URLs, six doubled `t`-tag scans dropped; a ranking backfill).
-quartz = "2.27.0"
+quartz = "2.28.0"
 coroutines = "1.11.0"
 serialization = "1.12.0"
 # Matches what Quartz brings transitively; Gradle would resolve to it regardless.
