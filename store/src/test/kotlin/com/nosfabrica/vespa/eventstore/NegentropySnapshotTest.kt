@@ -22,18 +22,28 @@ package com.nosfabrica.vespa.eventstore
 
 import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
+import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
+import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import com.vitorpamplona.quartz.nip01Core.relay.server.backend.EventIngest
+import com.vitorpamplona.quartz.nip01Core.relay.server.backend.LiveEventStore
+import com.vitorpamplona.quartz.nip01Core.relay.server.backend.RequestContext
+import com.vitorpamplona.quartz.nip01Core.relay.server.policies.IRelayPolicy
+import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import com.vitorpamplona.quartz.nip01Core.store.RawEvent
+import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
 import com.vitorpamplona.quartz.nip10Notes.TextNoteEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -47,8 +57,9 @@ import kotlin.test.assertTrue
  * a reconcile covered the newest `default_limit` events and reported that as
  * the set; and the `observer:` token's gate ran with no lens resolved — the
  * empty tensor, "trusts nobody" — so an observer-declared reconcile was EMPTY.
- * What reaches the engine is pinned here; what comes back needs a real Vespa
- * (the in-memory reference cannot gate) and is FilterMatrixIT's snapshot column.
+ * What reaches the engine is pinned here, and what comes back through [gated], a
+ * model of the engine's floor over the fixture's ranks (the in-memory reference
+ * cannot gate); the real engine's answer is FilterMatrixIT's snapshot column.
  */
 class NegentropySnapshotTest {
     private val observer = "0b".repeat(32)
@@ -59,12 +70,32 @@ class NegentropySnapshotTest {
     private val walked = mutableListOf<EventQuery>()
     private val searched = mutableListOf<EventQuery>()
     private val inner = InMemoryEventIndex()
+
+    /**
+     * The engine's observer gate over the fixture: a gated query admits an author whose rank under
+     * the query's resolved service clears [EventYql.gateFloor]; an unresolved lens admits nobody.
+     */
+    private fun gated(
+        query: EventQuery,
+        pubkey: String,
+    ): Boolean {
+        val floor = EventYql.gateFloor(query) ?: return true
+        val rank = if (query.rankKey == service) ranks.getOrNull(authors.indexOf(pubkey)) ?: 0 else 0
+        return rank >= floor
+    }
+
     private val recording =
         object : EventIndex by inner {
             override suspend fun search(query: EventQuery): List<EventDoc> {
                 searched += query
-                return inner.search(query)
+                return inner.search(query).filter { gated(query, it.pubkey) }
             }
+
+            override suspend fun rawSearch(query: EventQuery): List<RawEvent> = inner.rawSearch(query).filter { gated(query, it.pubKey) }
+
+            override suspend fun searchRanked(query: EventQuery): List<Ranked<EventDoc>> = inner.searchRanked(query).filter { gated(query, it.hit.pubkey) }
+
+            override suspend fun rawSearchRanked(query: EventQuery): List<Ranked<RawEvent>> = inner.rawSearchRanked(query).filter { gated(query, it.hit.pubKey) }
 
             override suspend fun visitIds(
                 query: EventQuery,
@@ -72,10 +103,14 @@ class NegentropySnapshotTest {
                 onPage: suspend (List<DocRef>) -> Boolean,
             ) {
                 walked += query
-                inner.visitIds(query, withDTag, onPage)
+                inner.visitIds(query, withDTag) { page -> onPage(page.filter { ref -> inner.get(ref.id)?.let { gated(query, it.pubkey) } ?: false }) }
             }
         }
-    private val store = NostrSemanticsStore(TrustProjection(recording, InMemoryReputationIndex()), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"))
+
+    /** The store's clock; a test moves it to let an event expire after it was stored. */
+    private var clock = System.currentTimeMillis() / 1000
+
+    private val store = NostrSemanticsStore(TrustProjection(recording, InMemoryReputationIndex()), relay = RelayUrlNormalizer.normalize("ws://localhost:7777"), nowSecs = { clock })
 
     private var seq = 0
 
@@ -205,5 +240,179 @@ class NegentropySnapshotTest {
         val n = snapshot(all).size
         assertEquals(n, runBlocking { store.snapshotIdsForNegentropy(listOf(all), Int.MAX_VALUE, null) }.size)
         assertEquals(n, runBlocking { store.sealedNegentropyStorage(listOf(all), Int.MAX_VALUE)?.size() })
+    }
+
+    // ---- the connection's own lens (NIP-42) ----------------------------------
+
+    /** An observer whose 10040 was never stored: it resolves to no lens, and so trusts nobody. */
+    private val lensless = "0c".repeat(32)
+
+    private fun <T> asCaller(
+        who: String?,
+        block: suspend () -> T,
+    ): T = runBlocking { if (who == null) block() else withContext(StoreQueryContext(setOf(who))) { block() } }
+
+    private fun servedTo(
+        who: String?,
+        filter: Filter,
+    ): Set<String> =
+        asCaller(who) {
+            val ids = HashSet<String>()
+            store.rawQuery(listOf(filter)) { ids += it.id }
+            check(store.query<Event>(filter).map { it.id }.toSet() == ids) { "query and rawQuery disagree" }
+            ids
+        }
+
+    private fun snapshotOf(
+        who: String?,
+        filter: Filter,
+    ): Set<String> = asCaller(who) { store.snapshotIdsForNegentropy(listOf(filter), null, null).map { it.id }.toSet() }
+
+    private fun sealedOf(
+        who: String?,
+        filters: List<Filter>,
+        maxEntries: Int = 1_000,
+    ): Set<String>? =
+        asCaller(who) {
+            store.sealedNegentropyStorage(filters, maxEntries)?.let { storage -> (0 until storage.size()).map { storage.getItem(it).id.toHexString() }.toSet() }
+        }
+
+    @Test
+    fun `an authenticated snapshot is the set the same connection's REQ serves`() {
+        seed()
+        val notes = Filter(kinds = listOf(1))
+        val req = servedTo(observer, notes)
+        assertEquals(notesBy(minRank = 2), req, "the REQ drops the author below the default floor")
+        assertEquals(req, snapshotOf(observer, notes), "a NEG-OPEN of the same filter on the same connection")
+        assertEquals(req, sealedOf(observer, listOf(notes)), "the sealed storage a NEG-OPEN is served from")
+        // Two filters take the dedup path rather than the single-filter walk; the lens rides both.
+        val two = listOf(notes, Filter(authors = authors.take(2)))
+        assertEquals(asCaller(observer) { store.query<Event>(two).map { it.id }.toSet() }, sealedOf(observer, two))
+    }
+
+    @Test
+    fun `a by-id read on an authenticated connection is gated, and its snapshot with it`() {
+        seed()
+        val low = notesBy(minRank = 0) - notesBy(minRank = 2)
+        val byId = Filter(ids = low.toList())
+        assertEquals(emptySet(), servedTo(observer, byId), "a plain ids REQ is read through the connection's lens")
+        assertEquals(emptySet(), snapshotOf(observer, byId))
+        assertEquals(low, servedTo(observer, byId.copy(search = "include:spam")))
+        assertEquals(low, snapshotOf(observer, byId.copy(search = "include:spam")))
+    }
+
+    @Test
+    fun `include spam opts an authenticated snapshot out of the connection's lens`() {
+        seed()
+        val all = Filter(kinds = listOf(1), search = "include:spam")
+        assertEquals(notesBy(minRank = 0), servedTo(observer, all))
+        assertEquals(servedTo(observer, all), snapshotOf(observer, all))
+        // Under a lens that trusts nobody, too: the waiver is what a mirror reads with.
+        assertEquals(notesBy(minRank = 0), snapshotOf(lensless, all))
+        assertEquals(servedTo(lensless, all), snapshotOf(lensless, all))
+    }
+
+    @Test
+    fun `an observer token outranks the connection's lens on a snapshot, as on a REQ`() {
+        seed()
+        val token = Filter(kinds = listOf(1), search = "observer:$observer filter:rank:gte:50")
+        assertEquals(notesBy(minRank = 50), servedTo(lensless, token))
+        assertEquals(servedTo(lensless, token), snapshotOf(lensless, token))
+        assertEquals(emptySet(), snapshotOf(lensless, Filter(kinds = listOf(1))), "the connection's own lens, which trusts nobody")
+    }
+
+    @Test
+    fun `an unauthenticated snapshot is ungated, through the same walk as before`() {
+        seed()
+        walked.clear()
+        assertEquals(notesBy(minRank = 0), snapshotOf(null, Filter(kinds = listOf(1))))
+        val q = walked.single()
+        assertNull(q.ranking, "no lens, no gate")
+        assertNull(q.observer)
+        assertNull(q.minRank)
+    }
+
+    @Test
+    fun `an authenticated snapshot still drops what has expired`() {
+        seed()
+        val trusted = authors[0]
+        val expired = TextNoteEvent(id(), trusted, 1_700_000_000L, arrayOf(arrayOf("expiration", (clock + 10).toString())), "gone", "")
+        runBlocking { store.insert(expired) }
+        assertTrue(expired.id in snapshotOf(observer, Filter(kinds = listOf(1))), "stored, and admitted, until it expires")
+        clock += 60
+        val notes = Filter(kinds = listOf(1))
+        assertTrue(expired.id !in servedTo(observer, notes))
+        assertTrue(expired.id !in snapshotOf(observer, notes))
+        assertEquals(servedTo(observer, notes), snapshotOf(observer, notes))
+    }
+
+    @Test
+    fun `the cap counts the set the lens admits`() {
+        seed()
+        val notes = Filter(kinds = listOf(1))
+        val n = servedTo(observer, notes).size
+        assertTrue(n < notesBy(minRank = 0).size, "the fixture gates something")
+        assertEquals(n, sealedOf(observer, listOf(notes), maxEntries = n)?.size)
+        assertNull(sealedOf(observer, listOf(notes), maxEntries = n - 1), "one over the gated set is over budget")
+        assertEquals(n, asCaller(observer) { store.snapshotIdsForNegentropy(listOf(notes), n - 1, null) }.size, "maxEntries + 1, the overflow sentinel")
+    }
+
+    private class Caller(
+        override val connectionId: Long,
+        override val authenticatedUsers: Set<String>,
+    ) : RequestContext {
+        override val policy: IRelayPolicy get() = error("not asked")
+    }
+
+    private val noIngest =
+        object : EventIngest {
+            override suspend fun submit(
+                event: Event,
+                skipVerify: Boolean,
+                onComplete: (IEventStore.InsertOutcome) -> Unit,
+            ) = error("no writes here")
+
+            override fun hasBacklog(): Boolean = false
+
+            override fun close() {}
+        }
+
+    /** Quartz's relay backend caches NEG-OPEN snapshots per caller; each caller must get its own lens. */
+    @Test
+    fun `a cached snapshot never answers one caller with another's lens`() {
+        seed()
+        val live = LiveEventStore(store, noIngest)
+        val notes = listOf(Filter(kinds = listOf(1)))
+
+        fun negOpen(caller: Caller): Set<String>? =
+            runBlocking {
+                live.sealedNegentropyStorage(caller, notes, 1_000)?.let { storage -> (0 until storage.size()).map { storage.getItem(it).id.toHexString() }.toSet() }
+            }
+        val trusting = Caller(1, setOf(observer))
+        val anonymous = Caller(2, emptySet())
+        val nobody = Caller(3, setOf(lensless))
+        assertEquals(servedTo(observer, notes[0]), negOpen(trusting))
+        assertEquals(notesBy(minRank = 0), negOpen(anonymous), "not the authenticated caller's cached set")
+        assertEquals(emptySet(), negOpen(nobody), "a lens that trusts nobody")
+        assertEquals(servedTo(observer, notes[0]), negOpen(trusting), "and back")
+        assertEquals(notesBy(minRank = 0), negOpen(anonymous))
+    }
+
+    /**
+     * Quartz serves a single empty filter from a store's always-current full-set index when it keeps
+     * one (`liveNegentropySnapshot`), and that path reads no caller: this store must keep none, so
+     * the whole-corpus NEG-OPEN a mirror sends by default is gated like any other.
+     */
+    @Test
+    fun `a whole-corpus NEG-OPEN is not served past the caller's lens`() {
+        seed()
+        assertNull(runBlocking { store.liveNegentropySnapshot(1_000) })
+        val live = LiveEventStore(store, noIngest)
+        val whole =
+            runBlocking {
+                live.sealedNegentropyStorage(Caller(9, setOf(observer)), listOf(Filter()), 1_000)?.let { storage -> (0 until storage.size()).map { storage.getItem(it).id.toHexString() }.toSet() }
+            }
+        assertEquals(servedTo(observer, Filter()), whole)
+        assertTrue(whole!!.containsAll(notesBy(minRank = 2)) && (notesBy(minRank = 0) - notesBy(minRank = 2)).none { it in whole })
     }
 }
