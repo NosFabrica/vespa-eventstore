@@ -155,7 +155,7 @@ class EngineTuningTest {
         assertEquals(500, EngineTuning.DEFAULT_DEDUP_CHUNK)
         assertEquals(200, EngineTuning.DEFAULT_ID_FIRST_MAX_DIRECT_HITS)
         assertEquals(EngineTuning.VARIABLES.size, EngineTuning.VARIABLES.toSet().size, "each variable once")
-        assertEquals(25, EngineTuning.VARIABLES.size)
+        assertEquals(26, EngineTuning.VARIABLES.size)
     }
 
     /** A per-store setting reaches the store it opens: feedBatch 0 leaves the batch path unbuilt. */

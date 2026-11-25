@@ -1668,11 +1668,34 @@ same ids in the same order:
 | detected: 900 / 971 / 978 µs (mean 950) | 1,069 |
 | `model.language=en`: 838 / 855 / 899 µs (mean **864, −9%**) | 1,152 |
 
-Measured against the same corpus in the same session: the JSON `select` form instead
-of YQL (`{"select":{"where":…}}`, `sorting=-created_at`) cost 817 µs (−14%), and 774 µs
-with the language named (−19%). Not taken yet: every builder, the summary-class and
-id-only rewrites, `SchemaFallbacks` and the unit tests' mock engine work on YQL text,
-and `select` documents no `in`, which the author and id recalls use.
+**Text-free reads as JSON `select` (2026-11-25).** The query container parses YQL with
+a full grammar on every request, at a fixed cost however short the query. Vespa's JSON
+`select` (`{"select":{"where":…}}`, `sorting=-created_at` for `order by`, `hits` for
+`limit`, `model.restrict=event` for `from event`) builds the same query tree from JSON.
+It takes `in` too, though its reference does not list it (checked against a live
+engine: the same counts as YQL's `in` for kinds and pubkeys). Same harness as above,
+the same session, three rotated rounds:
+
+| read | form | container CPU per query | proton | queries/s |
+|---|---|---|---|---|
+| `#t` limit 20 | YQL | 950 µs | | 1,069 |
+| | `select` | 817 µs (−14%) | | 1,227 |
+| | `select` + language | 774 µs (−19%) | | 1,255 |
+| 200 authors, limit 20 (13.7 KB of YQL) | YQL | ~1,530 µs | ~1,510 µs | ~590 |
+| | YQL + language | ~1,460 µs | ~1,510 µs | ~600 |
+| | `select` + language | **~1,220 µs (−20%)** | ~1,460 µs | **~670 (+13%)** |
+
+So a text-free read (no search terms, phrases, exclusions, weighted key sets or id
+prefix: nearly every relay REQ) now carries a `SelectForm` (`EventYql.selectWhere`,
+mirroring `filterClauses` clause for clause) and goes to the engine as `select`; YQL
+stays the query's description and the fallback. An engine that refuses `select` with a
+400 (one predating `select.fields`, Vespa 8.680.18) is asked the same query as YQL at
+once, and `SchemaFallbacks.selectAvailable` sends YQL from then on
+(`query.select.refused` counts it). `VESPA_SELECT_QUERIES=0` sends YQL. `EventYqlTest`
+renders every shape's where-node back to the YQL clause `build` writes;
+`SelectQueryIT` reads 33 shapes both ways against a real Vespa under two strategies
+and requires the same ids in the same order. The unit tests' mock engine answers
+`select` as a refusing engine would, so they run on YQL as before.
 
 ### Small batches take the bulk path (2026-11-23)
 

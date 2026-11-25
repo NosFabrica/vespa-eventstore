@@ -396,6 +396,35 @@ data class VespaQuery(
      * LAST, so no positional argument or componentN shifts.
      */
     val completeCoverage: Boolean = false,
+    /**
+     * The same query in Vespa's JSON `select` form, when [EventYql] can write it ([SelectForm]):
+     * a text-free read, which is nearly every relay REQ. Sent in place of [yql], which the query
+     * container parses at a fixed cost per request; [yql] stays the query's description for logs
+     * and the fallback for an engine that refuses `select`. LAST, after [completeCoverage].
+     */
+    val select: SelectForm? = null,
+)
+
+/**
+ * A text-free read as Vespa's JSON `select` query, the equivalent of [VespaQuery.yql]:
+ * `select <fields> from event where <where> [order by created_at desc] [limit N]`.
+ *
+ * WHY. The query container parses YQL with a full grammar on every request, and the store's
+ * reads are a handful of templates. Replaying the same reads straight at Vespa (32 clients,
+ * Vespa pinned to 2 cores, three rotated rounds, identical answers), the JSON form cost the
+ * container 14% less CPU per `#t` read and 20% less per 200-author read, with proton's share
+ * unchanged (benchmark/README.md, "The query container's own cost").
+ *
+ * [where] is the JSON text of the where-node (`true`, one clause, or `{"and":[...]}`); [fields]
+ * is the summary field list, null for every field of the summary class the request names;
+ * [newestFirst] is `order by created_at desc` (sent as `sorting=-created_at`); [limit] is the
+ * YQL `limit`, sent as `hits`.
+ */
+data class SelectForm(
+    val where: String,
+    val fields: List<String>?,
+    val newestFirst: Boolean,
+    val limit: Int?,
 )
 
 /** The shape of a query carrying no clause worth naming. */

@@ -102,6 +102,19 @@ internal class SchemaFallbacks {
         eventSummaryAvailable = false
     }
 
+    /**
+     * Whether the engine takes Vespa's JSON `select` query (VespaEventIndex.queryBodyAsIs). It
+     * flips for good the first time a `select` is refused with a 400 and the same query then
+     * answers as YQL: an engine predating `select.fields` (Vespa 8.680.18), or one that does not
+     * take a form the store writes. Reads go as YQL from then on, as they did before `select`.
+     */
+    @Volatile var selectAvailable = true
+        private set
+
+    fun markSelectRefused() {
+        selectAvailable = false
+    }
+
     fun isMissingEventSummary(e: IllegalArgumentException): Boolean = e.message?.contains("400") == true && e.message?.contains(EventYql.SUMMARY_EVENT) == true
 
     /** The attribute-only `idtime` summary the id-first fetch resolves pages with (VespaEventIndex.recallSummaries). */

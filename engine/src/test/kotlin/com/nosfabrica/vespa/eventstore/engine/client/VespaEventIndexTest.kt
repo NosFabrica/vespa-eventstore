@@ -869,6 +869,36 @@ class VespaEventIndexTest {
         }
 
     /**
+     * AN ENGINE THAT REFUSES `select` COSTS ONE REQUEST. A text-free read goes as Vespa's JSON
+     * `select` first; refused with a 400 (this mock, like an engine predating `select.fields`),
+     * the same query is asked as YQL at once, served, and every later read goes as YQL. With
+     * `VESPA_SELECT_QUERIES` off nothing tries `select` at all.
+     */
+    @Test
+    fun `a refused select query falls back to yql once and for good`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            seedStrategyCorpus(now)
+            val q = EventQuery(kinds = listOf(1), authors = listOf(BUSY), limit = 5, nowSecs = now)
+            val refusedBefore = IngestStats.snapshot()[VespaEventIndex.SELECT_REFUSED_STAGE]?.calls ?: 0L
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE).use { index ->
+                val first = index.search(q).map { it.createdAt }
+                assertEquals((1..5).map { now - it }, first, "the YQL answer, served on the first read")
+                assertEquals(1, mock.selectRequests.size, "select tried once")
+                assertTrue(mock.selectRequests.single().contains("\"select\":{\"where\":"), mock.selectRequests.single())
+                assertEquals(first, index.search(q.copy(limit = 5)).map { it.createdAt })
+                index.search(EventQuery(kinds = listOf(7), limit = 3, nowSecs = now))
+                assertEquals(1, mock.selectRequests.size, "every later read goes as YQL")
+            }
+            assertEquals(refusedBefore + 1, IngestStats.snapshot()[VespaEventIndex.SELECT_REFUSED_STAGE]?.calls ?: 0L)
+            mock.selectRequests.clear()
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE, selectQueries = false).use { index ->
+                index.search(q)
+                assertEquals(0, mock.selectRequests.size, "switched off: YQL only")
+            }
+        }
+
+    /**
      * THE PRIOR PAYS ON THE FIRST READ. Every value of a `#p` feed is a new exact
      * shape, so the window memory never answers its first read: each cold one
      * spends an attempt, then the fallback. Once [NarrowPrior.MIN_SAMPLES] of

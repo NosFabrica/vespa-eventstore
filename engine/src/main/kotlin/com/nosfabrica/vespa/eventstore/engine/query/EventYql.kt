@@ -25,6 +25,10 @@ import com.nosfabrica.vespa.eventstore.engine.tuning.ProcessKnobs
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.tags.isIndexableTagName
 import com.vitorpamplona.quartz.utils.Hex
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * Builds YQL over the `event` schema from an [EventQuery]. Returns null when
@@ -347,6 +351,12 @@ object EventYql {
      */
     const val SUMMARY_EVENT = "nip01"
 
+    /** [SUMMARY_FIELDS] as a list, the `fields` of a [SelectForm] that names them. */
+    val SUMMARY_FIELD_LIST: List<String> = SUMMARY_FIELDS.split(", ")
+
+    /** The two attributes an [idTimeOnly] read names. */
+    val ID_TIME_FIELDS: List<String> = listOf("id", "created_at")
+
     /** The `select …` a read built here starts with, naming [SUMMARY_FIELDS]. */
     private const val SELECT_EVENT = "select $SUMMARY_FIELDS from "
 
@@ -363,7 +373,11 @@ object EventYql {
         eventSummary: Boolean,
     ): VespaQuery {
         if (!eventSummary || "presentation.summary" in vq.params || !vq.yql.startsWith(SELECT_EVENT)) return vq
-        return vq.copy(yql = "select * from " + vq.yql.substring(SELECT_EVENT.length), params = vq.params + ("presentation.summary" to SUMMARY_EVENT))
+        return vq.copy(
+            yql = "select * from " + vq.yql.substring(SELECT_EVENT.length),
+            params = vq.params + ("presentation.summary" to SUMMARY_EVENT),
+            select = vq.select?.copy(fields = null),
+        )
     }
 
     /**
@@ -383,6 +397,7 @@ object EventYql {
         vq.copy(
             yql = vq.yql.replaceFirst("select $SUMMARY_FIELDS from ", "select id, created_at from "),
             params = vq.params + ("presentation.summary" to SUMMARY_IDTIME),
+            select = vq.select?.copy(fields = ID_TIME_FIELDS),
         )
 
     // Attribute-only projections for snapshot walks — see buildIdTime.
@@ -704,7 +719,8 @@ object EventYql {
         // This sort also invites Vespa's own match-phase cut on `unranked`,
         // which the client refuses; only the id walk opts out — see
         // [SORT_DEGRADING] for the measurement and why the scope stops there.
-        val order = if (ranking == RANK_UNRANKED || ranking == RANK_RECENCY) " order by created_at desc" else ""
+        val newestFirst = ranking == RANK_UNRANKED || ranking == RANK_RECENCY
+        val order = if (newestFirst) " order by created_at desc" else ""
         val limit = q.limit?.let { if (it <= 0) return null else " limit $it" } ?: ""
         return VespaQuery(
             yql = "select $SUMMARY_FIELDS from event where $where$order$limit",
@@ -714,6 +730,7 @@ object EventYql {
             sampled = q.sampled,
             acceptsPartial = q.acceptsPartial,
             shape = clauseShape(q),
+            select = selectWhere(q)?.let { SelectForm(it, SUMMARY_FIELD_LIST, newestFirst, q.limit) },
         )
     }
 
@@ -1191,6 +1208,65 @@ object EventYql {
         if (q.since != null) parts += "since"
         if (q.until != null) parts += "until"
         return if (parts.isEmpty()) SHAPE_PLAIN else parts.joinToString(",")
+    }
+
+    /**
+     * [q]'s WHERE as the JSON text of a Vespa `select` where-node ([SelectForm]), or null when it
+     * has no such form here: a read with free text (search, phrases, exclusions), a weighted key
+     * set or an id prefix stays YQL-only, and so does one [filterClauses] proves matches nothing.
+     *
+     * MIRRORS [filterClauses]' text-free branches clause for clause, with the same value rules
+     * ([hexIn]'s lowercase-validate-dedupe, [tagClause]'s unquotable-value rule), so the two forms
+     * match the same documents: `EventYqlTest` renders this back to YQL and compares it with
+     * [build]'s, and `SelectQueryIT` reads every shape both ways against a real Vespa. A clause
+     * added there wants its form here, or reads with it silently stay YQL (never a wrong answer).
+     */
+    internal fun selectWhere(q: EventQuery): String? {
+        if (!isTextFree(q) || q.idWeights.isNotEmpty() || q.authorWeights.isNotEmpty() || q.idPrefix != null) return null
+        val clauses = ArrayList<JsonElement>()
+
+        fun hexes(values: List<String>): JsonArray? {
+            val set = LinkedHashSet<String>(values.size * 2)
+            values.forEach { v -> v.lowercase().let { if (Hex.isHexKey(it)) set += it } }
+            return if (set.isEmpty()) null else JsonArray(set.map(::JsonPrimitive))
+        }
+
+        fun inClause(
+            field: String,
+            values: JsonArray,
+        ) = JsonObject(mapOf("in" to JsonArray(listOf(JsonPrimitive(field)) + values)))
+
+        fun contains(term: String) = JsonObject(mapOf("contains" to JsonArray(listOf(JsonPrimitive("tag_index"), JsonPrimitive(term)))))
+
+        fun range(
+            field: String,
+            op: String,
+            value: Long,
+        ) = JsonObject(mapOf("range" to JsonArray(listOf(JsonPrimitive(field), JsonObject(mapOf(op to JsonPrimitive(value)))))))
+
+        if (q.ids.isNotEmpty()) clauses += inClause("id", hexes(q.ids) ?: return null)
+        if (q.kinds.isNotEmpty()) clauses += inClause("kind", JsonArray(q.kinds.map(::JsonPrimitive)))
+        if (q.authors.isNotEmpty()) clauses += inClause("pubkey", hexes(q.authors) ?: return null)
+        if (q.owners.isNotEmpty()) clauses += inClause("owner", hexes(q.owners) ?: return null)
+        for ((name, values) in q.tags) {
+            if (!isIndexableTagName(name) || values.isEmpty()) return null
+            val usable = values.filter(::isQuotable)
+            if (usable.isEmpty()) return null
+            clauses += if (usable.size > 1) inClause("tag_index", JsonArray(usable.map { JsonPrimitive("$name:$it") })) else contains("$name:${usable[0]}")
+        }
+        for ((name, values) in q.tagsAll) {
+            if (!isIndexableTagName(name) || values.isEmpty() || !values.all(::isQuotable)) return null
+            clauses += if (values.size == 1) contains("$name:${values[0]}") else JsonObject(mapOf("and" to JsonArray(values.map { contains("$name:$it") })))
+        }
+        q.since?.let { clauses += range("created_at", ">=", it) }
+        q.until?.let { clauses += range("created_at", "<=", it) }
+        q.expiresBefore?.let { clauses += range("expires_at", "<", it) }
+        q.notExpiredAt?.let { clauses += range("expires_at", ">", it) }
+        return when (clauses.size) {
+            0 -> "true"
+            1 -> clauses[0].toString()
+            else -> JsonObject(mapOf("and" to JsonArray(clauses))).toString()
+        }
     }
 
     /**

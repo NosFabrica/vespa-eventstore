@@ -448,6 +448,9 @@ class MockVespaEngine(
     /** Every `/search/` request's parameters, in order — a test reads the rung each query of a descent asked for. */
     val searchRequests = java.util.concurrent.CopyOnWriteArrayList<Map<String, String>>()
 
+    /** Every JSON `select` query this mock refused, as its request body. */
+    val selectRequests = java.util.concurrent.CopyOnWriteArrayList<String>()
+
     /**
      * Serve recall hits with the id order REVERSED within each equal-created_at
      * group — the engine's single-key sort leaves tie order ARBITRARY, and the
@@ -700,7 +703,16 @@ class MockVespaEngine(
             // a flat JSON object of the same request parameters.
             method == "POST" && path == "/search/" -> {
                 val json = Json.parseToJsonElement(body).jsonObject
-                search(json.mapValues { (_, v) -> v.jsonPrimitive.content })
+                // This mock interprets YQL only, so it answers a JSON `select` query as an engine
+                // that does not take one: 400, which the client meets by asking the same query as
+                // YQL and sending YQL from then on. The refused request is kept, so a test can see
+                // the client tried `select` first.
+                if ("select" in json) {
+                    selectRequests += json.toString()
+                    Reply(400, """{"root":{"errors":[{"code":4,"summary":"Invalid query parameter","message":"this mock does not take select queries"}]}}""")
+                } else {
+                    search(json.mapValues { (_, v) -> v.jsonPrimitive.content })
+                }
             }
 
             else -> {

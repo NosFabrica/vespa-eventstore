@@ -92,6 +92,8 @@ class EngineTuning(
     val idFirst: Boolean? = null,
     /** `VESPA_RECENCY_MEMORY` — remember per read shape where its page was found. Default on (`RecencyWindowMemory`). */
     val recencyMemory: Boolean? = null,
+    /** `VESPA_SELECT_QUERIES` — send a text-free read as Vespa's JSON `select` instead of YQL. Default on (`SelectForm`). */
+    val selectQueries: Boolean? = null,
     /** `VESPA_BODY_EDGE` — PROTOTYPE (#161): feed the body's edge n-grams. Default off. */
     val bodyEdgeFeed: Boolean? = null,
     /** `VESPA_ADDRESS_KEYED` — store replaceables under their NIP-01 address. Default off (`VespaEventIndex.putIfNewer`). */
@@ -170,6 +172,7 @@ class EngineTuning(
             recencyStrategy = recencyStrategy,
             idFirst = idFirst,
             recencyMemory = recencyMemory,
+            selectQueries = selectQueries,
             bodyEdgeFeed = bodyEdgeFeed,
             addressKeyed = addressKeyed,
             unboundedHits = unboundedHits,
@@ -213,6 +216,7 @@ class EngineTuning(
             "idFirst" to idFirst,
             "idFirstMaxDirectHits" to idFirstMaxDirectHits,
             "recencyMemory" to recencyMemory,
+            "selectQueries" to selectQueries,
             "bodyEdgeFeed" to bodyEdgeFeed,
             "addressKeyed" to addressKeyed,
             "unboundedHits" to unboundedHits,
@@ -263,6 +267,7 @@ class EngineTuning(
                 ClientTuning.ID_FIRST,
                 ClientTuning.ID_FIRST_MAX_DIRECT_HITS,
                 ClientTuning.RECENCY_MEMORY,
+                ClientTuning.SELECT_QUERIES,
                 ClientTuning.BODY_EDGE,
                 ClientTuning.ADDRESS_KEYED,
                 ClientTuning.UNBOUNDED_HITS,
@@ -337,6 +342,7 @@ class EngineTuning(
                         ),
                     idFirst = flag(ClientTuning.ID_FIRST),
                     recencyMemory = flag(ClientTuning.RECENCY_MEMORY),
+                    selectQueries = flag(ClientTuning.SELECT_QUERIES),
                     bodyEdgeFeed = flag(ClientTuning.BODY_EDGE),
                     addressKeyed = flag(ClientTuning.ADDRESS_KEYED),
                     unboundedHits = int(ClientTuning.UNBOUNDED_HITS, atLeastOne),
