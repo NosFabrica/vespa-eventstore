@@ -1140,13 +1140,23 @@ class NostrSemanticsStore(
      * STRICT, never under [AcceptPartial]: a reconcile acts on absence, so a
      * set read from part of a degraded cluster, or a lens resolved from part of
      * the provider lists, would have a peer delete or re-push what it was not
-     * shown. On a degraded cluster with a cold provider map a signed-in NEG-OPEN
-     * therefore fails (the relay answers NEG-ERR) where its REQ is served partial. A limit'd walk is the
+     * shown. So on a degraded cluster ANY NEG-OPEN fails (the relay answers
+     * NEG-ERR) where its REQ is served partial: the walk never accepts a partial
+     * answer, signed in or not. One that reads a lens ([EventYql.readsLens]) has a
+     * second way to fail: its lens lookup is never accepted partial either, so
+     * with the provider map cold and the 10040s unreadable it fails even where the
+     * walk itself could be answered. A read that reads no lens — `include:spam`,
+     * no text, no `sort:`, no floor — never looks one up, so it fails or answers
+     * alike for every caller. A limit'd walk is the
      * newest N with NIP-01's id tiebreak, the page a recency read serves; a
      * limit'd TRUST SORT's first N are its most trusted, so the engine answers
      * it with the same ranked search its REQ runs (VespaEventIndex.visitIds).
      * Only searching filters keep the search path here, since their semantics
-     * live there.
+     * live there — and there the NEG set and the REQ page can still differ: the
+     * snapshot takes the engine's ranked hits (`index.search`) as they are, while
+     * the REQ's page assembly adds the reference expansion's pointers and spliced
+     * subjects and applies the per-author cap. A searching filter is a relevance
+     * question, which a reconcile does not answer exactly; documented, not fixed.
      *
      * Both used to go wrong on a relay that stamped its REQ `default_limit` on
      * NEG-OPEN: a limit'd filter left the walk for one bounded search page, so

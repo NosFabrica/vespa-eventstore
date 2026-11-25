@@ -479,12 +479,15 @@ class NegentropySnapshotTest {
     }
 
     /**
-     * A reconcile is answered strictly: where a REQ under AcceptPartial would rank from what a
-     * degraded cluster can still search, a signed-in NEG-OPEN whose lens cannot be resolved fails
-     * (a NEG-ERR) rather than answer a partial or ungated set a peer would act on.
+     * A reconcile is answered strictly. Every NEG-OPEN fails on a degraded cluster, since the walk
+     * never accepts a partial answer; this fixture degrades only the provider lists, which isolates
+     * the second rule: a NEG-OPEN that reads a lens never accepts a lens resolved from part of
+     * them either. Where a REQ under AcceptPartial would rank from what the cluster can still
+     * search, it fails (a NEG-ERR) rather than answer a partial or ungated set a peer would act on;
+     * a snapshot that reads no lens — the anonymous one here — is untouched by the lists.
      */
     @Test
-    fun `a signed-in snapshot fails rather than answer ungated when the lens cannot be read`() {
+    fun `a snapshot that reads a lens fails rather than answer ungated when the lens cannot be read`() {
         seed()
         // Cold, as after a 10040 write or a restart: the next lensed read must build the pass.
         trust.recompute.invalidateProviders()
@@ -492,7 +495,7 @@ class NegentropySnapshotTest {
         val notes = Filter(kinds = listOf(1))
         val down = runCatching { snapshotOf(observer, notes) }
         assertTrue(down.isFailure, "no set at all, not an ungated one: got ${down.getOrNull()?.size} ids, searched=${searched.count { TrustProviderListEvent.KIND in it.kinds }}")
-        assertEquals(notesBy(minRank = 0), snapshotOf(null, notes), "an anonymous walk needs no lens")
+        assertEquals(notesBy(minRank = 0), snapshotOf(null, notes), "an anonymous walk reads no lens")
         providerListsDown = false
         assertEquals(servedTo(observer, notes), snapshotOf(observer, notes))
     }

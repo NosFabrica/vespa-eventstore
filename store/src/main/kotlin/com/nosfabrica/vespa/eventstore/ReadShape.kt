@@ -70,7 +70,9 @@ class ReadShape private constructor(
      * Whether the read answers the same set on every connection: it names its own lens, which
      * wins over a connection's, or it waives the floor and leaves a connection's lens nothing to
      * act on (no text, no `sort:`, no explicit floor). A NEG-OPEN of such filters may share one
-     * snapshot across callers; any other read must be answered as the caller.
+     * snapshot across callers; any other read must be answered as the caller. Alike in failure
+     * too: the store looks a lens up only for a read that reads one, so a waived floor never
+     * waits on the provider lists, and a named lens is looked up for every caller the same way.
      */
     val answersEveryConnectionAlike: Boolean get() = observer != null || (includeSpam && !ranked && !floored)
 
