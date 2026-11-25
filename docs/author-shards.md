@@ -284,6 +284,20 @@ collection.
    over the 2 M-document memory budget) that is one full scan per moving bucket: ~128 for an
    even two-way split of ~945 M events. `diff(full = true)` still runs it, as a last complete
    check.
+
+   Measured with `moveSpeedProbe` (one 4-core host, 218.7 k moving documents, both diffs on one
+   copy). `BENCH_DIFF_BUDGET=1500` makes the full diff take one bucket per batch, as production's
+   bucket sizes do:
+
+   | | incremental diff | full diff, one bucket per batch |
+   |---|---|---|
+   | only the documents written since the copy began (5 s clock margin) | **24.9 s** | 676.1 s |
+   | every moving document "changed" (the 10-minute default margin over a corpus loaded a minute earlier) | **113.0 s** | 671.4 s |
+
+   Every run was clean, both diffs agreeing the copy was exact. The second row is the incremental
+   diff's worst case, settling all ~218 k documents by point reads. Its first version launched
+   them all at once, and Vespa answered `429`. `settle` now keeps 64 reads in flight, in chunks of
+   10,000 ids.
 4. **Switch every store to the final map.** The new cluster serves. The old owner still holds
    copies, so a read over every cluster can meet a document twice. A sharded client drops
    repeated hits by id, and asks again for more when a page shrank below its limit, so a
