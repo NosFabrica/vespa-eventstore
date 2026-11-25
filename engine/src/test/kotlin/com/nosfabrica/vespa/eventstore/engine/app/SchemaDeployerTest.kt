@@ -46,6 +46,18 @@ class SchemaDeployerTest {
 
     private val deploys = AtomicInteger()
 
+    /** No application deployed: the content API answers what Vespa's does then (measured, 404 NOT_FOUND). */
+    @Volatile private var noApplication = false
+
+    /** The content API failing (a config server under load): neither the package nor its absence is known. */
+    @Volatile private var contentFails = false
+
+    /** What the fake container's document count answers; null fails the count. */
+    @Volatile private var storedTotal: Long? = null
+
+    /** The content clusters the fake container names when asked for one it lacks; null answers nothing useful. */
+    @Volatile private var servedClusters: List<String>? = null
+
     /** Generations the services advance by per converge poll after a deploy, so the wait is observable. */
     private val polls = AtomicInteger()
 
@@ -70,6 +82,24 @@ class SchemaDeployerTest {
                             // The services catch up a poll or two after the activation, as Vespa's do.
                             if (current < wanted && polls.incrementAndGet() % 2 == 0) current += 1
                             200 to """{"currentGeneration":$current,"wantedGeneration":$wanted,"converged":${current == wanted}}""".toByteArray()
+                        }
+
+                        path == "/search/" -> {
+                            storedTotal?.let { 200 to """{"root":{"fields":{"totalCount":$it}}}""".toByteArray() } ?: (503 to ByteArray(0))
+                        }
+
+                        path.startsWith("/document/v1/") -> {
+                            servedClusters?.let { c ->
+                                400 to """{"message":"Your Vespa deployment has no content cluster 'no-such-cluster', only ${c.joinToString(", ") { "'$it'" }}"}""".toByteArray()
+                            } ?: (503 to ByteArray(0))
+                        }
+
+                        noApplication && path.contains("/content/") -> {
+                            404 to """{"error-code":"NOT_FOUND","message":"Unknown application id 'default.default.default'"}""".toByteArray()
+                        }
+
+                        contentFails && path.contains("/content/") -> {
+                            500 to ByteArray(0)
                         }
 
                         path.endsWith("/content/") -> {
@@ -147,6 +177,41 @@ class SchemaDeployerTest {
     fun aGenerationThatNeverArrivesTimesOutWithoutThrowing() {
         wanted = 99
         assertFalse(deployer.awaitConverged(99, timeout = Duration.ofMillis(300), poll = Duration.ofMillis(50)))
+    }
+
+    @Test
+    fun aShardedPackageDeploysOntoAnEmptyVespa() {
+        // Nothing deployed and no container to count documents: there is nothing to lose.
+        noApplication = true
+        assertTrue(deployer.deployIfChanged(base, VespaApp.zipBytes(null, 2), convergeTimeout = Duration.ofSeconds(5)))
+        assertEquals(1, deploys.get())
+    }
+
+    @Test
+    fun anUnreadableActivePackageIsJudgedByTheDocumentsItHolds() {
+        // A two-cluster deployment whose package the content API cannot hand back right now.
+        active = SchemaDeployer.files(VespaApp.zipBytes(null, 2))
+        contentFails = true
+        storedTotal = 1_000
+        val e = kotlin.test.assertFailsWith<IllegalStateException> { deployer.checkShardChange(base, pkg) }
+        assertTrue("1000 documents" in e.message.orEmpty(), e.message)
+        storedTotal = null
+        kotlin.test.assertFailsWith<IllegalStateException>("a count that cannot be read refuses too") { deployer.checkShardChange(base, pkg) }
+        servedClusters = listOf("content", "content1")
+        kotlin.test.assertFailsWith<IllegalStateException>("a sharded container does not vouch for a one-cluster package") { deployer.checkShardChange(base, pkg) }
+        storedTotal = 0
+        deployer.checkShardChange(base, pkg)
+    }
+
+    @Test
+    fun anUnreadablePackageOverOneServedClusterStillTakesAOneClusterPackage() {
+        // Production's shape: one cluster, a changed package, the content API failing for a moment.
+        // The container names its one cluster, which keeps every bucket under either package.
+        contentFails = true
+        storedTotal = 1_000
+        servedClusters = listOf("content")
+        deployer.checkShardChange(base, pkg)
+        kotlin.test.assertFailsWith<IllegalStateException>("but not a sharded one over it") { deployer.checkShardChange(base, VespaApp.zipBytes(null, 2)) }
     }
 
     private companion object {

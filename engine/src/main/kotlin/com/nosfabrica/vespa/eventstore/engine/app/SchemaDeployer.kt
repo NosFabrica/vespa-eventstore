@@ -123,8 +123,9 @@ class SchemaDeployer(
      * [allowNarrowing] is the move tool's cut-over, made only after it verified that the buckets'
      * new owner holds every document ([com.nosfabrica.vespa.eventstore.engine.app.AuthorShards.BucketMap]).
      * A package whose clusters are not this store's (`content`, `content1`, …) is compared by
-     * cluster ids, as is an active one that cannot be read. Throws [IllegalStateException];
-     * deploys nothing either way.
+     * cluster ids. With no application deployed it passes; with an active one that cannot be read
+     * it is judged by the document count alone, so it passes only over an empty deployment.
+     * Throws [IllegalStateException]; deploys nothing either way.
      */
     fun checkShardChange(
         queryUrl: String,
@@ -132,16 +133,35 @@ class SchemaDeployer(
         allowNarrowing: Boolean = false,
     ) {
         val wantedXml = files(zip)[SERVICES]?.decodeToString() ?: return
-        val activeXml = activeServices()
+        val activeXml =
+            when (val read = activePackage()) {
+                // Nothing deployed: no cluster keeps anything, so no package can drop it.
+                ActivePackage.None -> return
+
+                ActivePackage.Unreadable -> null
+
+                is ActivePackage.Services -> read.xml
+            }
         val wanted = keptBy(wantedXml)
         val active = activeXml?.let(::keptBy)
         val lost: Map<String, Set<Int>>? =
             if (active != null && wanted != null) {
                 active.mapValues { (cluster, kept) -> kept - wanted[cluster].orEmpty() }.filterValues { it.isNotEmpty() }
             } else {
+                // A package that cannot be read is NOT taken for a compatible one (the first cut
+                // did, for a one-cluster package): it falls to the document count below.
                 val wantedIds = VespaApp.contentClusters(wantedXml)
                 val activeIds = activeXml?.let(VespaApp::contentClusters)
-                if (activeIds == wantedIds || (wantedIds.size <= 1 && (activeIds == null || activeIds.size <= 1))) emptyMap() else null
+                when {
+                    activeIds != null -> if (activeIds == wantedIds || (wantedIds.size <= 1 && activeIds.size <= 1)) emptyMap() else null
+
+                    // Unreadable: the container names the clusters it serves. Only one cluster to
+                    // one cluster is decided by that alone (it keeps every bucket either way); a
+                    // sharded side would need the bucket maps, so the count decides.
+                    wantedIds.size <= 1 && servedContentClusters(queryUrl)?.size == 1 -> emptyMap()
+
+                    else -> null
+                }
             }
         if (lost != null && (lost.isEmpty() || allowNarrowing)) return
         val stored = storedDocuments(queryUrl)
@@ -165,8 +185,52 @@ class SchemaDeployer(
         return ids.withIndex().associate { (i, id) -> id to map.bucketsOf(i).toSet() }
     }
 
-    /** The ACTIVE application's services.xml; null when it cannot be read. */
-    private fun activeServices(): String? = runCatching { get("$root$INSTANCE/content/$SERVICES").decodeToString() }.getOrNull()
+    /**
+     * The content clusters the container at [queryUrl] serves, read off its refusal of a visit to
+     * one that does not exist ([AuthorShards.deployedClustersOf]); null when it does not say.
+     */
+    private fun servedContentClusters(queryUrl: String): List<String>? =
+        runCatching {
+            val req =
+                HttpRequest
+                    .newBuilder(URI.create("$queryUrl/document/v1/event/event/docid?cluster=$NO_SUCH_CLUSTER&wantedDocumentCount=1&fieldSet=%5Bid%5D"))
+                    .timeout(Duration.ofSeconds(10))
+                    .GET()
+                    .build()
+            AuthorShards.deployedClustersOf(http.send(req, HttpResponse.BodyHandlers.ofString()).body())
+        }.getOrNull()
+
+    /** What the config server says is ACTIVE: no application, one it could not hand back, or its services.xml. */
+    private sealed interface ActivePackage {
+        data object None : ActivePackage
+
+        data object Unreadable : ActivePackage
+
+        class Services(
+            val xml: String,
+        ) : ActivePackage
+    }
+
+    /**
+     * The ACTIVE application's services.xml. A deployed package always has one, so a 404
+     * `NOT_FOUND` is no application at all (measured, Vespa 8: "Unknown application id"); any
+     * other failure is [ActivePackage.Unreadable], which the guard never reads as either.
+     */
+    private fun activePackage(): ActivePackage =
+        runCatching {
+            val req =
+                HttpRequest
+                    .newBuilder(URI.create("$root$INSTANCE/content/$SERVICES"))
+                    .timeout(Duration.ofSeconds(5))
+                    .GET()
+                    .build()
+            val res = http.send(req, HttpResponse.BodyHandlers.ofString())
+            when {
+                res.statusCode() == 200 -> ActivePackage.Services(res.body())
+                res.statusCode() == 404 && "NOT_FOUND" in res.body() -> ActivePackage.None
+                else -> ActivePackage.Unreadable
+            }
+        }.getOrDefault(ActivePackage.Unreadable)
 
     /** The content cluster ids of the application Vespa has ACTIVE, off its services.xml; null when it cannot be read. */
     fun activeContentClusters(): List<String>? = runCatching { VespaApp.contentClusters(get("$root$INSTANCE/content/$SERVICES").decodeToString()) }.getOrNull()
@@ -281,6 +345,9 @@ class SchemaDeployer(
 
     companion object {
         private const val SERVICES = "services.xml"
+
+        /** A cluster name no package of this store declares, for [servedContentClusters]. */
+        private const val NO_SUCH_CLUSTER = "no-such-cluster"
 
         /** The one application instance a self-hosted Vespa runs, as the config server's REST paths name it. */
         private const val INSTANCE = "/application/v2/tenant/default/application/default/environment/prod/region/default/instance/default"

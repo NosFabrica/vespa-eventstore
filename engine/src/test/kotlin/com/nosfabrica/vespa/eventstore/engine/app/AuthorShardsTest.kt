@@ -167,5 +167,6 @@ class AuthorShardsTest {
         assertFailsWith<IllegalArgumentException>("cluster 0 only receiving") { AuthorShards.BucketMap.parse("00-ff=1+0") }
         assertFailsWith<IllegalArgumentException>("same cluster twice") { AuthorShards.BucketMap.parse("00-7f=0+0,80-ff=1") }
         assertFailsWith<IllegalArgumentException>("not hex") { AuthorShards.BucketMap.parse("00-zz=0") }
+        assertFailsWith<IllegalArgumentException>("a range with three ends is a typo, not 00-7f") { AuthorShards.BucketMap.parse("00-7f-9a=0,80-ff=1") }
     }
 }

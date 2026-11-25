@@ -102,7 +102,8 @@ object BucketReport {
             val left = BUCKETS - b
             val clustersLeft = k - cluster
             // Move on when this cluster has its share, keeping at least one bucket for every cluster after it.
-            if (cluster < k - 1 && (acc >= total.toDouble() * (cluster + 1) / k || left == clustersLeft - 1)) cluster++
+            // Never before bucket 0: cluster 0 must own one, however many non-hex keys it already holds.
+            if (b > 0 && cluster < k - 1 && (acc >= total.toDouble() * (cluster + 1) / k || left == clustersLeft - 1)) cluster++
             owner[b] = cluster
             acc += events[b]
         }

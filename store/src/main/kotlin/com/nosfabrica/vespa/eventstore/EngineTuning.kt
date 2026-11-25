@@ -336,6 +336,21 @@ class EngineTuning(
             ): T? = setting(key)?.let { raw -> parse(raw) ?: null.also { problems += "$key='$raw' is not one of $choices" } }
 
             val atLeastOne = 1..Int.MAX_VALUE
+            val shards = int(AuthorShards.ENV, 1..AuthorShards.MAX)
+            val bucketsRaw = setting(AuthorShards.BUCKETS_ENV)
+            val buckets =
+                bucketsRaw?.let { raw ->
+                    runCatching { AuthorShards.BucketMap.parse(raw) }.fold({ it }, { e -> null.also { problems += "${AuthorShards.BUCKETS_ENV}: ${e.message}" } })
+                }
+            // Checked here, with the rest, rather than left to the constructor's own check, which
+            // would throw before the other bad settings were reported.
+            val agreeing =
+                if (shards != null && buckets != null && shards != buckets.clusters) {
+                    problems += "${AuthorShards.ENV}=$shards disagrees with ${AuthorShards.BUCKETS_ENV}, which names ${buckets.clusters} clusters"
+                    false
+                } else {
+                    true
+                }
             val tuning =
                 EngineTuning(
                     feedBatch = int(ClientTuning.FEED_BATCH, 0..MAX_FEED_BATCH),
@@ -369,11 +384,8 @@ class EngineTuning(
                     accessLog =
                         choice(VespaApp.ACCESS_LOG_ENV, { v -> v.lowercase().takeIf { it in VespaApp.ACCESS_LOG_VALUES } }, VespaApp.ACCESS_LOG_VALUES.sorted().joinToString()),
                     expirySweepPage = int(StoreKnobs.expirySweepPage.env, atLeastOne),
-                    authorShards = int(AuthorShards.ENV, 1..AuthorShards.MAX),
-                    authorBuckets =
-                        setting(AuthorShards.BUCKETS_ENV)?.let { raw ->
-                            runCatching { AuthorShards.BucketMap.parse(raw) }.fold({ raw }, { e -> null.also { problems += "${AuthorShards.BUCKETS_ENV}: ${e.message}" } })
-                        },
+                    authorShards = shards,
+                    authorBuckets = bucketsRaw.takeIf { buckets != null && agreeing },
                 )
             require(problems.isEmpty()) { "the store's environment has ${problems.size} bad setting(s): ${problems.joinToString("; ")}" }
             return tuning

@@ -60,14 +60,23 @@ import java.util.concurrent.atomic.AtomicLong
  *     a delete undone by the copy). The source is complete and keeps receiving every write,
  *     so it is the reference: what the destination lacks or holds differently is copied, what it
  *     holds and the source does not is removed (`route=<destination>`).
- *  4. Every store switches to [to]: the destinations serve. Until step 6 the sources still hold
- *     copies, so a read naming both may meet a document twice; a sharded client drops repeated
- *     hits by id, and a COUNT over-reports for that window.
- *  5. The final package deploys. It NARROWS the sources, which the guard refuses unless told the
- *     copy was verified (`SchemaDeployer.checkShardChange(allowNarrowing = true)`).
- *  6. [cleanup]: the moved documents removed from their source by a document-API `DELETE` by
- *     selection in that cluster, instead of waiting for garbage collection (hourly by default).
- *     [remaining] confirms none are left.
+ *  4. Every store switches to [to]: the destinations serve. The sources still hold copies, so a
+ *     read naming both may meet a document twice; a sharded client drops repeated hits by id
+ *     (and asks again for a page that shrank), and a COUNT over-reports for that window.
+ *  5. [finish], in this order:
+ *     - the moved documents are removed from their sources, by a document-API `DELETE` by
+ *       selection, BEFORE the final package narrows them. The overlap package is still active,
+ *       so a source keeps receiving every write to the moved buckets, and any copy a read
+ *       meets there is current. Removing after the narrowing (the first cut) left the sources
+ *       holding copies no write reached any more, for the whole cleanup: a delete in that window
+ *       was served again from the old copy, and a moved author was gated on stale trust.
+ *     - the final package deploys ([finish]'s caller). It NARROWS the sources, which the guard
+ *       refuses unless told the copy was verified (`SchemaDeployer.checkShardChange(allowNarrowing = true)`).
+ *     - a second removal takes what was written to the sources between the two, the only copies
+ *       that can be stale, and only until it finishes. [remaining] confirms none are left.
+ *
+ *     A [diff] after [finish] has begun is refused: with the sources emptied it would take the
+ *     moved documents for extras and delete them from their new owner.
  *
  * Holds, per batch of buckets, the destination's ids (and reputation documents) in memory during
  * [diff], batches sized to a fixed budget from what [copy] counted. Copy and cleanup run inside
@@ -159,6 +168,7 @@ class BucketMove(
      * still differs. A race can still slip past a pass; the next pass catches it.
      */
     suspend fun diff(repair: Boolean = false): Diff {
+        check(!finishing) { "no diff once finish() has begun: the sources are being emptied, and a diff would delete the moved documents from their new owner" }
         var missing = 0L
         var differing = 0L
         var extra = 0L
@@ -212,19 +222,39 @@ class BucketMove(
                 }
             }
         }
-        return Diff(missing, differing, extra)
+        return Diff(missing, differing, extra).also { lastDiffClean = it.clean }
     }
+
+    /** Whether the last [diff] found nothing: what [finish] requires. */
+    @Volatile private var lastDiffClean = false
+
+    /** Set when [finish] starts removing from the sources; [diff] refuses from then on. */
+    @Volatile private var finishing = false
 
     private enum class Fix { MISSING, DIFFERING, EXTRA }
 
     /**
-     * Step 6: the moved documents removed from their sources, which serve them no longer: a
-     * document-API `DELETE` by selection in the source cluster, removed by the content nodes with
-     * nothing passing through this client (the first cut removed them one by one from here, at
-     * ~3,100 documents/s). Garbage collection may remove some first, as the narrowed selection
-     * allows; the count is what this call removed.
+     * Step 5, once a [diff] came back clean and every store reads by [to]: the moved documents
+     * removed from their sources while the overlap package still sends them every write, then
+     * [deployFinal] (the caller deploys the final package and waits for it to converge), then
+     * the documents written to the sources in between removed too. What the two removals took.
      */
-    suspend fun cleanup(): Counts = counts { type, buckets, src, _ -> writeVisit(type, src, buckets, "", delete = true) }
+    suspend fun finish(deployFinal: suspend () -> Unit): Counts {
+        check(lastDiffClean) { "finish() needs a clean diff() first: the destination must hold every moved document before the sources lose theirs" }
+        finishing = true
+        val before = cleanup()
+        deployFinal()
+        val after = cleanup()
+        return Counts(before.events + after.events, before.reputations + after.reputations)
+    }
+
+    /**
+     * The moved documents removed from their sources by a document-API `DELETE` by selection in
+     * each source cluster, by the content nodes, with nothing passing through this client (the
+     * first cut removed them one by one from here, at ~3,100 documents/s). Garbage collection
+     * may remove some first once the sources are narrowed; the count is what this call removed.
+     */
+    private suspend fun cleanup(): Counts = counts { type, buckets, src, _ -> writeVisit(type, src, buckets, "", delete = true) }
 
     /**
      * A visit of [buckets]' documents of [type] in [cluster] that WRITES inside Vespa ([VespaHttp.writeVisit]):
@@ -279,7 +309,7 @@ class BucketMove(
     /** What [copy] moved per (source, destination, type): [diff] sizes its batches from it. */
     private val seen = ConcurrentHashMap<Triple<Int, Int, String>, Long>()
 
-    /** The moving buckets' documents still in their sources: zero after [cleanup]. */
+    /** The moving buckets' documents still in their sources: zero after [finish]. */
     suspend fun remaining(): Counts =
         counts { type, buckets, src, _ ->
             val n = AtomicLong()

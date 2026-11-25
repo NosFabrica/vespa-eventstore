@@ -2669,12 +2669,39 @@ class VespaEventIndex(
     }
 
     /**
+     * [searchRootOnce], and under author sharding with a document met twice served once
+     * ([distinctHits]). Vespa applies `hits` before the client can see the repeats, so a page that
+     * came back FULL but shrank when deduplicated is asked again for more, until it holds [hits]
+     * distinct documents or the engine runs out: a reader that stops on a short page would
+     * otherwise stop early. Repeats exist only while a bucket move's old owner still holds copies
+     * ([BucketMove]); outside one, no page shrinks and nothing is asked twice.
+     */
+    private suspend fun searchRoot(
+        vq: VespaQuery,
+        hits: Int,
+    ): SearchRoot {
+        val first = searchRootOnce(vq, hits)
+        if (!authorClusters.sharded) return first
+        var asked = hits
+        var root = first
+        repeat(MAX_REPEAT_REFETCHES) {
+            val kept = distinctHits(root)
+            if (kept.children.size >= hits || root.children.size < asked) return kept.trimmedTo(hits)
+            asked *= 2
+            root = searchRootOnce(vq, asked)
+        }
+        return distinctHits(root).trimmedTo(hits)
+    }
+
+    private fun SearchRoot.trimmedTo(hits: Int): SearchRoot = if (children.size <= hits) this else SearchRoot(children.take(hits), coverage, fields, errors)
+
+    /**
      * The recall paths' `/search/` funnel, streamed straight into DTOs.
      * Together with [queryRoot] (the grouping/count paths, which need the tree)
      * it is the only way a response reaches a caller, and both refuse reported
      * errors and verify coverage — so nothing can accidentally accept a degraded answer.
      */
-    private suspend fun searchRoot(
+    private suspend fun searchRootOnce(
         vq: VespaQuery,
         hits: Int,
     ): SearchRoot {
@@ -2735,7 +2762,7 @@ class VespaEventIndex(
         } else if (vq.completeCoverage) {
             root.requireFull()
         }
-        return if (authorClusters.sharded) distinctHits(root) else root
+        return root
     }
 
     /**
@@ -2968,6 +2995,9 @@ class VespaEventIndex(
         }
 
         private val SCOPABLE = listOf(EVENT_DOCTYPE, "reputation")
+
+        /** How many times a sharded page that lost repeats is asked again, each for twice the hits ([searchRoot]). */
+        private const val MAX_REPEAT_REFETCHES = 4
 
         /** A group LIMIT in a grouping pipeline, `max(10)`, never the `max(expr)` aggregator. */
         private val GROUP_LIMIT = Regex("""\bmax\(\s*\d+\s*\)""")

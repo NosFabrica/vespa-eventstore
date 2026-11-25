@@ -3693,4 +3693,23 @@ class VespaEventIndexTest {
             index.group(EventQuery(kinds = listOf(1)), "all(group(pubkey) max(10) each(output(count())))")
             Unit
         }
+
+    /**
+     * A bucket move's cut-over: an unscoped read meets a moved document in its old and new
+     * cluster, and Vespa cuts the page at `hits` before the client sees the repeats. The page must
+     * still hold `limit` distinct documents, newest first, rather than a short one a reader would
+     * take for the end.
+     */
+    @Test
+    fun `a sharded page that loses repeats is asked again until it is full`() =
+        runBlocking {
+            val docs = (0 until 10).map { doc(at = 2_000L - it) }
+            seedBulk(docs)
+            mock.repeatFirstHits = 3
+            VespaEventIndex(mock.url, tuning = ClientTuning(authorShards = 2)).use { sharded ->
+                assertEquals(docs.take(5).map { it.id }, sharded.search(EventQuery(kinds = listOf(1), limit = 5)).map { it.id })
+                assertEquals(docs.map { it.id }, sharded.search(EventQuery(kinds = listOf(1), limit = 50)).map { it.id }, "a page the corpus cannot fill ends where the corpus does")
+            }
+            assertEquals(8, index.search(EventQuery(kinds = listOf(1), limit = 8)).size, "one cluster never deduplicates: it cannot hold a document twice")
+        }
 }

@@ -120,16 +120,7 @@ internal class AuthorClusters(
     }
 
     companion object {
-        private val ONLY = Regex("""no content cluster '[^']*', only (.+)""")
-        private val QUOTED = Regex("""'([^']+)'""")
-
-        /** The clusters a "no content cluster 'x', only 'a', 'b'" refusal names; null for any other body. */
-        fun deployedOf(body: String): List<String>? =
-            ONLY
-                .find(body)
-                ?.groupValues
-                ?.get(1)
-                ?.let { list -> QUOTED.findAll(list).map { it.groupValues[1] }.toList() }
-                ?.takeIf { it.isNotEmpty() }
+        /** The clusters a "no content cluster 'x', only 'a', 'b'" refusal names; null for any other body ([AuthorShards.deployedClustersOf]). */
+        fun deployedOf(body: String): List<String>? = AuthorShards.deployedClustersOf(body)
     }
 }

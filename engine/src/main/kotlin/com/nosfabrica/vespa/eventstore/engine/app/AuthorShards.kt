@@ -72,6 +72,22 @@ object AuthorShards {
     /** The content cluster the bundled package declares; shard 0 keeps its name, so one shard is the package unchanged. */
     const val BASE_CLUSTER = "content"
 
+    /**
+     * The content clusters a document-API refusal names: a visit of a cluster that does not exist
+     * answers "no content cluster 'x', only 'a', 'b'" (measured, Vespa 8), which is how a client
+     * reads what the CONTAINER serves without the config server. Null for any other body.
+     */
+    fun deployedClustersOf(body: String): List<String>? =
+        DEPLOYED_ONLY
+            .find(body)
+            ?.groupValues
+            ?.get(1)
+            ?.let { list -> DEPLOYED_QUOTED.findAll(list).map { it.groupValues[1] }.toList() }
+            ?.takeIf { it.isNotEmpty() }
+
+    private val DEPLOYED_ONLY = Regex("""no content cluster '[^']*', only (.+)""")
+    private val DEPLOYED_QUOTED = Regex("""'([^']+)'""")
+
     private const val HEX = "0123456789abcdef"
 
     /** The bucket [pubkey] falls in, 0..255; null unless its first `2 * BUCKET_BYTE + 2` characters are all lowercase hex. */
@@ -263,7 +279,9 @@ object AuthorShards {
                 val also = IntArray(256) { -1 }
                 for (part in spec.split(',').map { it.trim() }.filter { it.isNotEmpty() }) {
                     val (range, who) = part.split('=').map { it.trim() }.takeIf { it.size == 2 } ?: throw IllegalArgumentException("'$part' is not range=cluster")
-                    val (lo, hi) = range.split('-').map { parseBucket(it.trim(), part) }.let { if (it.size == 1) it[0] to it[0] else it[0] to it[1] }
+                    val ends = range.split('-')
+                    require(ends.size in 1..2) { "'$part': '$range' is not a bucket or a lo-hi range" }
+                    val (lo, hi) = ends.map { parseBucket(it.trim(), part) }.let { if (it.size == 1) it[0] to it[0] else it[0] to it[1] }
                     require(lo <= hi) { "'$part': $range runs backwards" }
                     val owners = who.split('+').map { it.trim().toIntOrNull() ?: throw IllegalArgumentException("'$part': '$who' is not a cluster index") }
                     require(owners.size in 1..2) { "'$part': a bucket has one owner and at most one cluster receiving it" }

@@ -192,6 +192,13 @@ class MockVespaEngine(
      */
     @Volatile var degradeNextSearches: Int = 0
 
+    /**
+     * Serve each of the first N matches of a hit search TWICE, side by side, before `hits` cuts the
+     * page: a bucket move's cut-over, where a read over every cluster meets a moved document in
+     * its old owner and its new one.
+     */
+    @Volatile var repeatFirstHits: Int = 0
+
     /** What [degradeNextSearches] degrades with. `non-ideal-state` is a cluster still settling. */
     @Volatile var transientReason: String = NON_IDEAL_STATE
 
@@ -822,7 +829,8 @@ class MockVespaEngine(
                         sorted
                     }
                 }
-        val matches = query.limit?.let { admitted.take(it) } ?: admitted
+        val limited = query.limit?.let { admitted.take(it) } ?: admitted
+        val matches = if (repeatFirstHits > 0 && !grouped) limited.flatMapIndexed { i, d -> if (i < repeatFirstHits) listOf(d, d) else listOf(d) } else limited
         // Simulated match-phase under-delivery: fewer hits than the limit, with
         // ONLY the match-phase degradation flag set (see [matchPhaseUnderdeliver]).
         val underdeliver = matchPhaseUnderdeliver > 0 && !grouped && (params["ranking"] == "recency" || params["ranking"] == "recency_gated")

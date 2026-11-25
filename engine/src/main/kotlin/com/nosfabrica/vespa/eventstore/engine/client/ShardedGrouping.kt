@@ -41,9 +41,17 @@ import kotlinx.serialization.json.JsonPrimitive
  * original pipeline has. That is EXACT where Vespa's own one-cluster answer is not: it estimates
  * (2–4% off at ~55 k pubkeys), and for a multi-value field such as `tag_index` it answered 1
  * where a cluster held 2 values (measured, `AuthorShardsIT`). It costs one group per distinct
- * value, the price the matching `each(output(count()))` statistic already pays. Every other group-level
- * count over a non-author field is refused, as a group `max(n)` is: a merged answer would only
- * look right.
+ * value, so it is CAPPED: each cluster returns at most [DISTINCT_CAP] + 1 groups, and a merged
+ * list longer than [DISTINCT_CAP] is refused rather than answered. A field with millions of
+ * values (`tag_index` on production) would otherwise materialize every value in the container
+ * and here, where one cluster pays nothing for the same question. Every other group-level count
+ * over a non-author field is refused, as a group `max(n)` is: a merged answer would only look
+ * right.
+ *
+ * So is an `order(…)` over groups that come from several clusters: the merge lists groups as it
+ * first meets them (cluster by cluster), so "the most common kind first" could name the wrong
+ * one. Only groups inside an `each(…)` under a `group(pubkey)` all come from one cluster, and
+ * their order stands.
  */
 internal object ShardedGrouping {
     /** How a pipeline is answered across clusters. */
@@ -68,8 +76,14 @@ internal object ShardedGrouping {
     fun plan(pipeline: String): Plan {
         val top = calls(pipeline.trim()).singleOrNull() ?: return Plan.AsIs
         if (top.name != "all" && top.name != "each") return Plan.AsIs
+        unpartitionedOrder(top, partitioned = false)?.let { field ->
+            return Plan.Refused(
+                "an order() over `$field` groups cannot be kept across author-shard clusters: the merged list holds each cluster's groups as they came; " +
+                    "drop the order() and sort the merged groups by their outputs",
+            )
+        }
         distinctOf(top)?.let { field ->
-            return if (field == AUTHOR_FIELD) Plan.AsIs else Plan.Distinct("all(group($field) output(count()) each(output(count())))")
+            return if (field == AUTHOR_FIELD) Plan.AsIs else Plan.Distinct("all(group($field) max(${DISTINCT_CAP + 1}) output(count()) each(output(count())))")
         }
         val offender = groupLevelCount(top, authorKeyed = false) ?: return Plan.AsIs
         return Plan.Refused(
@@ -115,6 +129,34 @@ internal object ShardedGrouping {
     }
 
     /**
+     * The group expression of the first scope under [scope] that orders groups merged from several
+     * clusters, or null. Groups inside an `each(…)` of a `group(pubkey)` scope ([partitioned]) all
+     * come from one cluster.
+     */
+    private fun unpartitionedOrder(
+        scope: Call,
+        partitioned: Boolean,
+    ): String? {
+        val items = calls(scope.args)
+        val group = items.firstOrNull { it.name == "group" }?.args?.trim()
+        if (group != null && !partitioned && items.any { it.name == "order" }) return group
+        val inner = partitioned || group == AUTHOR_FIELD
+        for (child in items) {
+            val found =
+                when (child.name) {
+                    "each" -> unpartitionedOrder(child, inner)
+                    "all" -> unpartitionedOrder(child, partitioned)
+                    else -> null
+                }
+            if (found != null) return found
+        }
+        return null
+    }
+
+    /** The most distinct values [Plan.Distinct] counts; more are refused, not materialized. */
+    const val DISTINCT_CAP = 100_000
+
+    /**
      * [root] (a merged answer to [Plan.Distinct.pipeline]) as Vespa answers the original
      * `all(group(F) output(count()))`: a bare `group:root` whose `count()` is the number of
      * distinct groups, here counted off the merged list, and no children (measured, Vespa 8: the
@@ -143,6 +185,10 @@ internal object ShardedGrouping {
                 .mapNotNull { it as? JsonObject }
                 .filter { (it["id"] as? JsonPrimitive)?.content?.startsWith("grouplist:") == true }
                 .sumOf { ((it["children"] as? JsonArray)?.size ?: 0).toLong() }
+        // Each cluster sent at most DISTINCT_CAP + 1: a merged list within the cap was cut nowhere.
+        require(groups <= DISTINCT_CAP) {
+            "more than $DISTINCT_CAP distinct values: too many to count exactly across author-shard clusters without materializing every one"
+        }
         val fields = (groupRoot["fields"] as? JsonObject).orEmpty() + ("count()" to JsonPrimitive(groups))
         return JsonObject(groupRoot - "children" + ("fields" to JsonObject(fields)))
     }

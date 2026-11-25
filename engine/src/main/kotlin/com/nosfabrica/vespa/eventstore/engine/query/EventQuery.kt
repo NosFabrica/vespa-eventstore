@@ -24,7 +24,8 @@ import com.vitorpamplona.quartz.utils.Hex
 
 /**
  * A NIP-01 filter as plain values. The relay module maps a REQ's Filter into
- * this, which keeps this module Nostr-library-agnostic. Empty lists mean "no
+ * this, so the filter itself carries no Nostr-library type; quartz's `Hex` is
+ * used only to recognize hex author keys ([AuthorFilter]). Empty lists mean "no
  * constraint". A filter that arrived with a present-but-empty list matches
  * nothing, and the caller must handle that before building.
  */

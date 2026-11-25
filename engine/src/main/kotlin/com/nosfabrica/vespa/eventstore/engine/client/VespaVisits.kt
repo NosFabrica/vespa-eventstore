@@ -155,30 +155,51 @@ internal class VespaVisits(
     ): DocsPage {
         if (clusters.size == 1) return clusterDocsPage(clusters[0], selection, resumeFrom, maxDocs)
         verify()
-        // Several clusters: the token is `<cluster index>:<that cluster's token>`, and a cluster
-        // walked to its end hands over to the next one within the same call, so a page comes back
-        // empty only when the last cluster is done.
-        // A token without the prefix is one this walk never issued — saved before sharding, or under
-        // another shard count — and reading it as "cluster 0, from the start" would silently restart
-        // the walk. Refused instead.
-        var index = 0
-        var inner: String? = null
-        if (resumeFrom != null) {
-            index = resumeFrom.substringBefore(':', "").toIntOrNull()?.takeIf { it in clusters.indices }
-                ?: throw IllegalArgumentException("visit continuation '${resumeFrom.take(40)}' was not issued by a walk over these ${clusters.size} clusters")
-            inner = resumeFrom.substringAfter(':').takeIf { it.isNotEmpty() }
-        }
+        // Several clusters: the token is `<cluster count>/<cluster index>:<that cluster's token>`
+        // ([ClusterToken]), and a cluster walked to its end hands over to the next one within the
+        // same call, so a page comes back empty only when the last cluster is done.
+        var (index, inner) = resumeFrom?.let { ClusterToken.parse(it, clusters.size) } ?: (0 to null)
         while (true) {
             val page = clusterDocsPage(clusters[index], selection, inner, maxDocs)
             val next =
                 when {
-                    page.continuation != null -> "$index:${page.continuation}"
-                    index + 1 < clusters.size -> "${index + 1}:"
+                    page.continuation != null -> ClusterToken.format(clusters.size, index, page.continuation)
+                    index + 1 < clusters.size -> ClusterToken.format(clusters.size, index + 1, null)
                     else -> null
                 }
             if (page.docs.isNotEmpty() || next == null) return DocsPage(page.docs, next)
-            index = next.substringBefore(':').toInt()
-            inner = next.substringAfter(':').takeIf { it.isNotEmpty() }
+            val (i, t) = ClusterToken.parse(next, clusters.size)
+            index = i
+            inner = t
+        }
+    }
+
+    /**
+     * A multi-cluster walk's continuation: `<cluster count>/<cluster index>:<that cluster's token>`.
+     * The count is in it so a token saved under another shard count is REFUSED: its index would
+     * name a different cluster's walk (the first cut carried the index alone, and resumed such a
+     * token into the wrong cluster). So is a token with no prefix, one saved before sharding,
+     * which read as "cluster 0, from the start" would silently restart the walk.
+     */
+    internal object ClusterToken {
+        fun format(
+            clusters: Int,
+            index: Int,
+            inner: String?,
+        ): String = "$clusters/$index:${inner.orEmpty()}"
+
+        /** (cluster index, that cluster's token or null) for a token issued by a walk over [clusters] clusters. */
+        fun parse(
+            token: String,
+            clusters: Int,
+        ): Pair<Int, String?> {
+            val head = token.substringBefore(':', "")
+            val count = head.substringBefore('/', "").toIntOrNull()
+            val index = head.substringAfter('/', "").toIntOrNull()
+            require(count == clusters && index != null && index in 0 until clusters) {
+                "visit continuation '${token.take(40)}' was not issued by a walk over these $clusters clusters"
+            }
+            return index to token.substringAfter(':').takeIf { it.isNotEmpty() }
         }
     }
 

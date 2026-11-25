@@ -59,7 +59,7 @@ expression to paste into a hand-written multi-host `services.xml`.
 | partial update, `create=true` | routed by the reputation selection on the id | nothing |
 | update without create, conditional put, remove by id | succeed; the remove takes the document out of the cluster that holds it | nothing |
 | get by id | finds the document in whichever cluster holds it | nothing |
-| **visit** | **400 "Please specify one of the content clusters"** | walks every cluster: the streamed and paged walks (`VespaVisits.pages`) all clusters at once, with the slice budget split between them; the resumable page walk one after another, its token `<cluster index>:<token>` (a token without the prefix is refused); the reputation walks one after another |
+| **visit** | **400 "Please specify one of the content clusters"** | walks every cluster: the streamed and paged walks (`VespaVisits.pages`) all clusters at once, with the slice budget split between them; the resumable page walk one after another, its token `<cluster count>/<cluster index>:<token>` (a token without the prefix, or from a walk under another shard count, is refused); the reputation walks one after another |
 | visit naming a cluster that does not exist | **400 "no content cluster 'X', only 'a', 'b'"**, every deployed cluster named | `AuthorClusters.verify`: the deployment's clusters checked against the client's, once, before any visit or scoped query |
 | search hits | fanned out to every cluster and merged: sorting, `offset`, `limit` and `totalCount` all correct | nothing |
 | `select … from sources content1 …` + `model.restrict=event` | searches that cluster only (without `model.restrict` it also reads `reputation`, which the cluster holds) | a query whose every match is by known authors goes to their clusters only (below) |
@@ -128,8 +128,16 @@ handles the rest:
   2–4% off at ~55 k pubkeys, and for a multi-value field it is wrong outright: `tag_index` read 1
   in a cluster holding 2 values, where the store reads the corpus's 3. It costs one group per
   distinct value, as the matching `each(output(count()))` statistic already does.
+- **It is capped at 100,000 distinct values** (`ShardedGrouping.DISTINCT_CAP`). Each cluster
+  returns at most one more than that, and a merged list past the cap is refused, not answered.
+  Without the cap, a count over a field with millions of values (`tag_index` on production)
+  would build every value in the container and the client, where one cluster pays almost
+  nothing for the same question.
 - **Every other group-level count over a non-author field is refused**, naming the field and the
   pipeline to count instead.
+- **So is an `order(…)` over groups from several clusters.** The merge lists groups cluster by
+  cluster as it meets them, so "the most common kind first" could name the wrong kind. Groups
+  inside an `each(…)` under a `group(pubkey)` all come from one cluster, and their order stands.
 
 One cluster is untouched: the pipeline goes to Vespa as it came.
 
@@ -256,13 +264,25 @@ collection.
    short or stale. The source is complete and receives every write, so it is the reference. Each
    candidate difference is read again from both clusters before it counts, because two
    snapshots taken seconds apart under live writes always disagree a little.
-4. **Switch every store to the final map.** The new cluster serves. Until step 6 the old owner
-   still holds copies, so a sharded client drops repeated hits by id. COUNTs over-report for
-   that window.
-5. **Deploy the final package.** It narrows the old owner. The store's guard refuses this;
-   the move passes `allowNarrowing` only after step 3 is clean.
-6. **`cleanup()`** removes the moved documents from the old owner, by a document-API `DELETE`
-   by selection in that cluster; `remaining()` confirms none are left.
+4. **Switch every store to the final map.** The new cluster serves. The old owner still holds
+   copies, so a read over every cluster can meet a document twice. A sharded client drops
+   repeated hits by id, and asks again for more when a page shrank below its limit, so a
+   reader never mistakes it for the end. COUNTs over-report for this window.
+5. **`finish { … }`**, in this order:
+   - the moved documents are removed from the old owner (a document-API `DELETE` by
+     selection), while the overlap package still sends it every write, so any copy a read
+     meets there is current;
+   - the caller deploys the final package inside the block. It narrows the old owner; the store's
+     guard refuses this, and the move passes `allowNarrowing` only after step 3 is clean;
+   - a second removal takes what was written to the old owner between the two.
+
+   `remaining()` then confirms none are left. The first cut removed AFTER the narrowing deploy.
+   For the whole cleanup, the old owner held copies that no write reached any more: a delete in
+   that window was served again from the old copy, and a moved author was gated on stale trust.
+   Now only the few documents written between the first removal and the deploy can go stale,
+   and only until the second removal. `finish` refuses to start without a clean diff, and a
+   `diff()` once it has begun is refused: with the source emptied, it would take every moved
+   document for an extra and delete it from its new owner.
 
 `AuthorShardsMoveIT` runs it end to end: 2 → 3 clusters on one host, 300 authors with hash keys,
 1,200 events, and a writer adding events, deleting some and changing reputation cells (in the
@@ -449,6 +469,12 @@ cluster, the buckets the active package keeps with those the new one keeps.
 | narrows any cluster (a new even K, a cut-over) | **refused** |
 | narrows, with `allowNarrowing = true` | goes through: the move tool, after its diff is clean |
 
-The guard also refuses when the active package cannot be read and the new one is sharded. An
-empty deployment changes freely. Moving to a new layout on real data is either the move above
+When nothing is deployed (the config server answers 404 `NOT_FOUND`), any package goes
+through: there is nothing to lose. When the active package cannot be read, the guard never
+takes it for a compatible one. The first cut did, for a one-cluster package, and would have let
+one replace a sharded deployment during a config-server hiccup. It asks the container instead,
+which names the content clusters it serves when asked to visit one that does not exist. One
+served cluster to a one-cluster package goes through: a single cluster keeps every bucket either
+way, so production's boot behaves as before. Anything else is decided by the document count, and
+goes through only over an empty deployment. Moving to a new layout on real data is either the move above
 or a fresh deployment fed from the old one, for example by NIP-77 sync.

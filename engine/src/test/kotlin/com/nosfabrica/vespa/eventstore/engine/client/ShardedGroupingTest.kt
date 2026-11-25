@@ -51,8 +51,8 @@ class ShardedGroupingTest {
 
     @Test
     fun `a distinct count over a non-author field is rewritten to count merged groups`() {
-        assertEquals(Plan.Distinct("all(group(kind) output(count()) each(output(count())))"), ShardedGrouping.plan("all(group(kind) output(count()))"))
-        assertEquals(Plan.Distinct("all(group(tag_index) output(count()) each(output(count())))"), ShardedGrouping.plan(" all( group(tag_index)  output( count() ) ) "))
+        assertEquals(Plan.Distinct("all(group(kind) max(100001) output(count()) each(output(count())))"), ShardedGrouping.plan("all(group(kind) output(count()))"))
+        assertEquals(Plan.Distinct("all(group(tag_index) max(100001) output(count()) each(output(count())))"), ShardedGrouping.plan(" all( group(tag_index)  output( count() ) ) "))
     }
 
     @Test
@@ -101,5 +101,42 @@ class ShardedGroupingTest {
         assertEquals(3L, groupRoot["fields"]!!.jsonObject["count()"]!!.jsonPrimitive.long)
         assertEquals(null, groupRoot["children"], "the groups were not asked for: Vespa answers the original with a bare root")
         assertEquals(9L, root["fields"]!!.jsonObject["totalCount"]!!.jsonPrimitive.long)
+    }
+
+    @Test
+    fun `an order over groups from several clusters is refused, inside one author it stands`() {
+        for ((p, field) in listOf(
+            "all(group(kind) order(-count()) each(output(count())))" to "kind",
+            "all(group(pubkey) order(-count()) each(output(count())))" to "pubkey",
+            "all(group(time.date(created_at)) each(group(kind) order(-count()) each(output(count()))))" to "kind",
+        )) {
+            val plan = assertIs<Plan.Refused>(ShardedGrouping.plan(p), p)
+            assertTrue("`$field`" in plan.reason && "order()" in plan.reason, "$p: ${plan.reason}")
+        }
+        assertEquals(Plan.AsIs, ShardedGrouping.plan("all(group(pubkey) each(group(kind) order(-count()) each(output(count()))))"))
+        assertEquals(Plan.AsIs, ShardedGrouping.plan("all(group(kind) each(output(count(), max(created_at))))"), "the max() aggregator is not an order")
+    }
+
+    /** A merged distinct list past the cap is refused: under it no cluster can have been cut at cap + 1. */
+    @Test
+    fun `a distinct count past the cap is refused rather than answered`() {
+        fun root(groups: Int) =
+            Json
+                .parseToJsonElement(
+                    """{"id":"toplevel","children":[{"id":"group:root:0","fields":{"count()":1},"children":[{"id":"grouplist:tag_index","label":"tag_index","children":[""" +
+                        (0 until groups).joinToString(",") { """{"id":"group:string:v$it","value":"v$it","fields":{"count()":1}}""" } + "]}]}]}",
+                ).jsonObject
+        val at = ShardedGrouping.exactDistinct(root(ShardedGrouping.DISTINCT_CAP))
+        assertEquals(
+            ShardedGrouping.DISTINCT_CAP.toLong(),
+            at["children"]!!
+                .jsonArray
+                .single()
+                .jsonObject["fields"]!!
+                .jsonObject["count()"]!!
+                .jsonPrimitive.long,
+        )
+        val e = kotlin.test.assertFailsWith<IllegalArgumentException> { ShardedGrouping.exactDistinct(root(ShardedGrouping.DISTINCT_CAP + 1)) }
+        assertTrue("too many" in e.message.orEmpty(), e.message)
     }
 }

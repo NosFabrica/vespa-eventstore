@@ -269,12 +269,17 @@ object GrowthSimulation {
             val refused = runCatching { deployer.deployIfChanged(url, VespaApp.zipBytes(null, to)) }.exceptionOrNull()
             check(refused is IllegalStateException) { "the store's guard let a narrowing deploy through" }
             val zip = VespaApp.zipBytes(null, to)
-            deployer.checkShardChange(url, zip, allowNarrowing = true)
-            deployer.awaitConverged(SchemaDeployer.generationOf(deployer.deploy(zip)))
-            steps["deployFinal"] = secs(t)
             t = System.nanoTime()
-            val cleaned = move.cleanup()
-            steps["cleanup"] = mapOf("seconds" to secs(t), "events" to cleaned.events, "reputations" to cleaned.reputations)
+            var deploySecs = 0.0
+            val cleaned =
+                move.finish {
+                    val d = System.nanoTime()
+                    deployer.checkShardChange(url, zip, allowNarrowing = true)
+                    deployer.awaitConverged(SchemaDeployer.generationOf(deployer.deploy(zip)))
+                    deploySecs = secs(d)
+                }
+            steps["deployFinal"] = deploySecs
+            steps["cleanup"] = mapOf("seconds" to secs(t) - deploySecs, "events" to cleaned.events, "reputations" to cleaned.reputations)
             steps["remaining"] = move.remaining().toString()
             move.close()
             steps["readsDuringSplit"] = latencies(phase.get())

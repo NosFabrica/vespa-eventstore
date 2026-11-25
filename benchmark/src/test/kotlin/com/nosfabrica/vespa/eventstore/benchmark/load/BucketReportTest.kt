@@ -61,4 +61,14 @@ class BucketReportTest {
             for (c in 0 until k) assertTrue(map.bucketsOf(c).isNotEmpty(), "cluster $c of $k")
         }
     }
+
+    /** Keys that are not hex sit in cluster 0 before any bucket does; enough of them must not leave it no bucket. */
+    @Test
+    fun `cluster 0 keeps a bucket however many non-hex keys it already holds`() {
+        val events = LongArray(257) { if (it < 256) 10 else 0 }.also { it[256] = 2_000 }
+        for (k in listOf(2, 5)) {
+            val map = BucketReport.suggest(events, k)
+            for (c in 0 until k) assertTrue(map.bucketsOf(c).isNotEmpty(), "cluster $c of $k")
+        }
+    }
 }

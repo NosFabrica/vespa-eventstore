@@ -193,17 +193,24 @@ class AuthorShardsMoveIT {
                         assertEquals(null, docIn(url, destination, "event", extraId), "the document the source lacks was removed")
                         assertTrue(BOGUS_SERVICE !in docIn(url, destination, "reputation", stale).toString(), "the stale reputation document was rewritten from the source")
 
-                        // ---- cut-over: stores first, then the narrowing deploy ----
+                        // ---- cut-over: stores first, then finish(): empty the sources, narrow, empty again ----
                         VespaEventIndex(url, tuning = ClientTuning(authorBuckets = to.spec())).use { after ->
                             assertExact(after, oracle, "stores on the final map before it deploys: duplicates dropped by id")
                             val refused = assertFailsWith<IllegalStateException> { deployer.deployIfChanged(url, VespaApp.zipBytes(null, to)) }
                             assertTrue("'content1' would drop 64 bucket(s)" in refused.message.orEmpty(), refused.message)
                             assertTrue(mv.diff(repair = true).let { it.clean || mv.diff(repair = true).clean }, "verified before narrowing")
                             val zip = VespaApp.zipBytes(null, to)
-                            deployer.checkShardChange(url, zip, allowNarrowing = true)
-                            deployer.awaitConverged(SchemaDeployer.generationOf(deployer.deploy(zip)))
-                            val removed = mv.cleanup()
-                            println("move: cleanup removed $removed from the old owner")
+                            val removed =
+                                mv.finish {
+                                    // The sources are emptied while the overlap package still sends
+                                    // them every write: whatever a read meets there is current, so
+                                    // reads stay exact (no deleted event served again) up to the deploy.
+                                    assertExact(after, oracle, "sources emptied, still receiving writes, before the narrowing deploy")
+                                    assertTrue(runCatching { mv.diff(repair = true) }.exceptionOrNull() is IllegalStateException, "a diff now would take the moved documents for extras")
+                                    deployer.checkShardChange(url, zip, allowNarrowing = true)
+                                    deployer.awaitConverged(SchemaDeployer.generationOf(deployer.deploy(zip)))
+                                }
+                            println("move: finish removed $removed from the old owner")
 
                             writing.set(false)
                             load.join()

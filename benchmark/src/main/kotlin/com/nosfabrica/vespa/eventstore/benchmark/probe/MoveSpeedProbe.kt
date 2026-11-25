@@ -119,11 +119,17 @@ object MoveSpeedProbe {
                 val diff = mv.diff(repair = true)
                 steps["diff"] = "{\"seconds\":${secs(t)},\"result\":\"$diff\"}"
                 val zip = VespaApp.zipBytes(null, to)
-                deployer.checkShardChange(url, zip, allowNarrowing = true)
-                deployer.awaitConverged(SchemaDeployer.generationOf(deployer.deploy(zip)))
                 t = System.nanoTime()
-                val cleaned = mv.cleanup()
-                val cleanSecs = secs(t)
+                var deployNanos = 0L
+                val cleaned =
+                    mv.finish {
+                        val d = System.nanoTime()
+                        deployer.checkShardChange(url, zip, allowNarrowing = true)
+                        deployer.awaitConverged(SchemaDeployer.generationOf(deployer.deploy(zip)))
+                        deployNanos = System.nanoTime() - d
+                    }
+                // finish() is two removals around the final deploy: the removals alone are timed.
+                val cleanSecs = Math.round((System.nanoTime() - t - deployNanos) / 1e8) / 10.0
                 steps["cleanup"] = "{\"seconds\":$cleanSecs,\"events\":${cleaned.events},\"reputations\":${cleaned.reputations},\"docsPerSecond\":${((scanned.events + scanned.reputations) / cleanSecs).toLong()}}"
                 steps["remaining"] = "\"${mv.remaining()}\""
             }

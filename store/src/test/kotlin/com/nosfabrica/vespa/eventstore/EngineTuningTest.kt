@@ -165,6 +165,12 @@ class EngineTuningTest {
         assertEquals("00-99=0,9a-ff=1", EngineTuning.fromEnv(mapOf("VESPA_AUTHOR_BUCKETS" to "00-99=0,9a-ff=1")).bucketMap().spec())
         assertFailsWith<IllegalArgumentException>("a gap") { EngineTuning.fromEnv(mapOf("VESPA_AUTHOR_BUCKETS" to "00-98=0,9a-ff=1")) }
         assertFailsWith<IllegalArgumentException>("disagreeing counts") { EngineTuning(authorShards = 3, authorBuckets = "00-99=0,9a-ff=1") }
+        // From the environment the disagreement is one problem among the rest, all in one boot.
+        val e =
+            assertFailsWith<IllegalArgumentException> {
+                EngineTuning.fromEnv(mapOf("VESPA_AUTHOR_SHARDS" to "3", "VESPA_AUTHOR_BUCKETS" to "00-99=0,9a-ff=1", "VESPA_FEED_BATCH" to "abc"))
+            }
+        assertTrue("disagrees" in e.message.orEmpty() && "VESPA_FEED_BATCH" in e.message.orEmpty(), e.message)
     }
 
     /** A per-store setting reaches the store it opens: feedBatch 0 leaves the batch path unbuilt. */
