@@ -3682,7 +3682,13 @@ Two changes were tried against it:
   batches had something survive the dedup (`EARLY_GUARDS_MIN_SURVIVING`, a moving average
   over about the last four), so a syncing relay's duplicate stream is back to one read per
   batch and a publish stream keeps the measured gain ("an all-duplicate narrow stream
-  settles to one engine read per batch"). Not re-measured on Vespa.
+  settles to one engine read per batch"). Re-measured through vespa-relay after the store
+  audit's fixes (2026-11-25), against this section's build (ABBA, four rounds): writes under read load 135 →
+  144 /s, the reads beside them 2,047 → 2,126 REQ/s, lone and 20-client publishing 129 → 138
+  and 1,115 → 1,145 /s, all within run-to-run spread, so the early read's gain stands. 20,000
+  notes sent a second time, every one a duplicate, took 4.2 s before and 4.5 s after (means of
+  four, spread 3.1–4.7 s): the reads it saves are the query container's, which on this box,
+  with nothing else reading, is not what a duplicate stream waits on.
 - **A gate on reads** (a semaphore over the store's query and count calls, so writes find
   the container less crowded). It trades one for the other: at 24 permits reads fell 33%
   (1,745 → 1,168 REQ/s) and writes rose 3.6× (74 → 268 /s); at 8, reads −57% and writes
