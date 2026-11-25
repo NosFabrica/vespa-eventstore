@@ -24,11 +24,14 @@ import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
+import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryReputationIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.mapping.toEventQuery
+import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
+import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlin.test.Test
@@ -114,7 +117,19 @@ class ReadShapeTest {
         assertEquals(ReadShape.of("observer:$hex sort:rank"), ReadShape.of(Filter(ids = emptyList(), search = "observer:$hex sort:rank")))
     }
 
-    /** What a NIP-77 snapshot of [search] sends the engine as [connection]: the parts that decide its set. */
+    private val alice = "a".repeat(64)
+    private val bob = "b".repeat(64)
+
+    /**
+     * What a NIP-77 snapshot of [search] sends the engine as [connection]: the parts that decide its
+     * set, and every lens lookup (a kind-10040 read) it made on the way.
+     *
+     * Through the TRUST PROJECTION, with [alice] and [bob] each naming a different rank service, so
+     * a lens read through either connection shows as the service it resolved to, and a lookup the
+     * anonymous read does not make shows as one more line. A store without the projection resolves
+     * no lens at all, and could not tell a read that depends on its caller's lens (or on that
+     * lookup succeeding) from one that does not.
+     */
     private fun snapshotQueries(
         search: String?,
         connection: String?,
@@ -135,20 +150,26 @@ class ReadShapeTest {
                         inner.visitIds(query, withDTag, onPage)
                     }
                 }
-            val store = NostrSemanticsStore(index)
+            val store = NostrSemanticsStore(TrustProjection(index, InMemoryReputationIndex()))
+            store.batchInsert(
+                listOf(alice to "5a", bob to "5b").mapIndexed { i, (who, service) ->
+                    TrustProviderListEvent("${i + 1}".padStart(64, '0'), who, 1_000L, arrayOf(arrayOf("30382:rank", service.repeat(32), "wss://scores.example.com/")), "", "")
+                },
+            )
+            seen.clear()
             val filters = listOf(Filter(kinds = listOf(1), search = search))
             if (connection == null) store.snapshotIdsForNegentropy(filters, null, null) else withContext(StoreQueryContext(setOf(connection))) { store.snapshotIdsForNegentropy(filters, null, null) }
-            // An observer on a query that neither ranks, searches nor gates changes nothing it answers.
             seen.map { q ->
-                val reads = q.ranking != null || q.search != null || q.phrases.isNotEmpty() || EventYql.gateFloor(q) != null
-                "observer=${q.observer.takeIf { reads }} ranking=${q.ranking} minRank=${q.minRank} gate=${EventYql.gateFloor(q)}"
+                if (TrustProviderListEvent.KIND in q.kinds) {
+                    "lens lookup"
+                } else {
+                    "rankKey=${q.rankKey} followersKey=${q.followersKey} ranking=${q.ranking} minRank=${q.minRank} gate=${EventYql.gateFloor(q)}"
+                }
             }
         }
 
     @Test
     fun `a read that answers every connection alike compiles the same for every connection`() {
-        val alice = "a".repeat(64)
-        val bob = "b".repeat(64)
         val extra = listOf("include:spam filter:rank:gte:50", "include:spam bitcoin", "include:spam -word", "include:spam sort:recent", "observer:$hex include:spam sort:rank")
         var alike = 0
         for (search in battery + extra) {

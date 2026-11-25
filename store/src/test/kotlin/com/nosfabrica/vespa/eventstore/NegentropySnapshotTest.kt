@@ -429,6 +429,56 @@ class NegentropySnapshotTest {
     }
 
     /**
+     * A READ THAT CANNOT USE A LENS NEVER WAITS ON ONE. `include:spam` with no text, `sort:` or
+     * floor reads nothing a lens could change, and [ReadShape] calls it alike for every caller;
+     * so whether the caller signed in must not decide whether it is served either. It did: the
+     * lens was resolved for any query carrying an observer, so with the provider map cold and the
+     * 10040 read failing, the signed-in NEG-OPEN, REQ, COUNT and live gate of this filter threw
+     * while the anonymous ones answered the whole set.
+     */
+    @Test
+    fun `a read that waives the floor needs no lens, so an unreadable provider map fails no caller`() {
+        seed()
+        val all = Filter(kinds = listOf(1), search = "include:spam")
+        val everything = notesBy(minRank = 0)
+        assertTrue(ReadShape.of(all).answersEveryConnectionAlike)
+        trust.recompute.invalidateProviders()
+        providerListsDown = true
+        assertEquals(everything, snapshotOf(null, all))
+        assertEquals(everything, snapshotOf(observer, all), "the signed-in NEG-OPEN")
+        assertEquals(everything, sealedOf(observer, listOf(all)), "the sealed storage it is served from")
+        assertEquals(everything, servedTo(observer, all), "the signed-in REQ")
+        assertEquals(everything.size, asCaller(observer) { store.count(all) }, "the signed-in COUNT")
+        assertNull(asCaller(observer) { store.liveGate(listOf(all)) }, "nothing to hold live events to")
+        // Where the lens IS read, it is still required: a gated walk does not answer ungated.
+        assertTrue(runCatching { snapshotOf(observer, Filter(kinds = listOf(1))) }.isFailure)
+    }
+
+    /**
+     * The same rule, priced: on a relay holding no 10040s `ProviderMap` never caches its empty
+     * pass, so every lens lookup there is a 10040 query. A read that reads no lens pays none; a
+     * gated one pays one per read, the price `ProviderMap` documents for refusing to cache
+     * emptiness (an engine not yet serving its lists reads empty too, and no write would ever
+     * invalidate that).
+     */
+    @Test
+    fun `a read that reads no lens never looks one up`() {
+        runBlocking { store.batchInsert(authors.flatMap { a -> (0 until 3).map { n -> TextNoteEvent(id(), a, 1_700_000_000L + seq, emptyArray(), "note $n", "") } }) }
+
+        fun lookups(block: () -> Unit): Int {
+            searched.clear()
+            block()
+            return searched.count { TrustProviderListEvent.KIND in it.kinds }
+        }
+        val spam = Filter(kinds = listOf(1), search = "include:spam")
+        assertEquals(0, lookups { repeat(5) { snapshotOf(observer, spam) } }, "NEG-OPEN")
+        assertEquals(0, lookups { repeat(5) { servedTo(observer, spam) } }, "REQ")
+        assertEquals(0, lookups { repeat(5) { asCaller(observer) { store.count(spam) } } }, "COUNT")
+        assertEquals(0, lookups { repeat(5) { asCaller(observer) { store.liveGate(listOf(spam)) } } }, "live gate")
+        assertEquals(5, lookups { repeat(5) { snapshotOf(observer, Filter(kinds = listOf(1))) } }, "a gated NEG-OPEN still resolves its lens, once per read")
+    }
+
+    /**
      * A reconcile is answered strictly: where a REQ under AcceptPartial would rank from what a
      * degraded cluster can still search, a signed-in NEG-OPEN whose lens cannot be resolved fails
      * (a NEG-ERR) rather than answer a partial or ungated set a peer would act on.

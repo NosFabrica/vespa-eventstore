@@ -326,13 +326,23 @@ class NostrSemanticsStore(
      * observer with no stored list resolves to no key and ranks as trusting
      * nobody, which is what an observer with no cells ranked as before. A
      * store assembled without the projection has no map and resolves nothing.
+     *
+     * ONLY FOR A QUERY THAT READS IT ([EventYql.readsLens]). `include:spam` with
+     * no text, `sort:` or floor carries the caller's observer and reads nothing
+     * through it, and [ReadShape] tells a consumer it answers every connection
+     * alike. Resolving its lens anyway made that false where it shows: with the
+     * map cold and the 10040 read failing, the signed-in read threw and the
+     * anonymous one answered — and on a relay with no 10040s, whose empty map
+     * is never cached, every signed-in mirror read paid a 10040 query for a
+     * lens it never used.
      */
     private suspend fun lensed(queries: List<EventQuery>): List<EventQuery> {
-        if (queries.none { it.observer != null }) return queries
+        if (queries.none { it.observer != null && EventYql.readsLens(it) }) return queries
         val providers = providers() ?: return queries
         if (providers.partial) ServedDegraded.markCurrent()
         return queries.map { q ->
-            val lens = providers.servedLensOf(q.observer ?: return@map q)
+            val observer = q.observer?.takeIf { EventYql.readsLens(q) } ?: return@map q
+            val lens = providers.servedLensOf(observer)
             q.copy(rankKey = lens.rank, followersKey = lens.followers)
         }
     }
