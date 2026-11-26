@@ -476,6 +476,37 @@ object EventYql {
     }
 
     /**
+     * The newest document at or before [now], as (id, created_at): where a store's DATA ends
+     * (VespaEventIndex's data-end hint). A `hitLimit` range on the fast-search `created_at`
+     * attribute, read from its sorted dictionary from [now] down — each node matches its one
+     * newest document in range and nothing else, so the sort and the sorting degrader see one
+     * hit. Not the `recency` match-phase: its cut keeps the newest `max-hits` documents by
+     * `created_at` before the range filters them, so on a node holding that many future-dated
+     * events every kept candidate is past [now] and the read comes back empty (the reason
+     * [RECENT_UNTIL_HORIZON] exists). The floor is 0: a hint, which events before 1970 need not move.
+     */
+    fun buildNewestAtOrBefore(now: Long): VespaQuery =
+        VespaQuery(
+            yql = "select id, created_at from event where {hitLimit:1,descending:true}range(created_at, 0, $now) order by created_at desc limit 1",
+            params = mapOf("presentation.summary" to SUMMARY_IDTIME, SORT_DEGRADING to SORT_DEGRADING_OFF, LANGUAGE to TEXT_FREE_LANGUAGE),
+            ranking = RANK_UNRANKED,
+            shape = "dataEnd",
+        )
+
+    /**
+     * The oldest document stored, as (id, created_at): where a store's DATA starts
+     * (VespaEventIndex's data-start hint). The same `hitLimit` range as
+     * [buildNewestAtOrBefore], read from the other end of the `created_at` dictionary.
+     */
+    fun buildOldest(): VespaQuery =
+        VespaQuery(
+            yql = "select id, created_at from event where {hitLimit:1,descending:false}range(created_at, 0, ${Long.MAX_VALUE}) order by created_at asc limit 1",
+            params = mapOf("presentation.summary" to SUMMARY_IDTIME, SORT_DEGRADING to SORT_DEGRADING_OFF, LANGUAGE to TEXT_FREE_LANGUAGE),
+            ranking = RANK_UNRANKED,
+            shape = "dataStart",
+        )
+
+    /**
      * Existence-only recall for the bulk-dedup preload: `select id` under
      * [SUMMARY_DEDUP], answered from the id ATTRIBUTE in memory — the disk
      * summary store never runs. No `order by` (membership is unordered), no

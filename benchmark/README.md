@@ -1424,6 +1424,34 @@ dense `until` reads of the shape sorted their whole match set (newest 1 at `unti
 planning* close it; on pass three every dense read is windowed, one query, 2.0–4.9ms, and the empty
 scroll is three queries (two attempts and the unwindowed read), 4.9ms.
 
+**After the audit (2026-11-26).** Six fixes to the rules above, each with a test that fails without
+it: the limit-sized match-phase depth goes only to a one-node cluster (on several, `recallRoot`
+cannot prove a cut page and would rerun most reads); the data-end hint is a `hitLimit` range on
+`created_at`, not the `recency` match-phase, which a crowd of future-dated events empties, and is
+refreshed in the background after its first read; an empty read at an `until` just behind the clock
+is remembered narrow again; only a read anchored at the clock switches the hint on; and a narrow or
+all-empty read keeps the count ladder where the `recency` profile cannot take it (an `until` past its
+30-day horizon), since unranked it sorts everything below the `until`. That last fix put the empty
+20-day scroll (62 days behind the clock here) back on the ladder: six queries, 13–17ms p50 over three
+passes. A second hint, where the data STARTS, takes it back: a read below the oldest stored event is
+its one unwindowed query. Three passes, 60 reps, the same corpus and cores:
+
+| read (pass 3) | queries | p50 ms | p95 ms | via `rawQuery` p50 |
+|---|---:|---:|---:|---:|
+| newest 1, kinds 1/7/30023 | 1 | 2.6 | 3.4 | 3.0 |
+| newest 100, kinds 1/7/30023 | 1 | 5.2 | 8.5 | 4.6 |
+| newest 100, kind 1 | 1 | 4.5 | 7.5 | 5.0 |
+| scroll back 1 day, 100 | 1 | 4.8 | 7.1 | 4.6 |
+| scroll back 20 days, 100 (empty) | 1 | 2.5 | 5.1 | 1.9 |
+| profile, kind 0, no limit (500) | 1 | 2.8 | 6.4 | 2.8 |
+| home feed, 300 follows, 50 | 1 | 4.6 | 9.6 | 6.4 |
+| home feed, 300 follows, 1 | 1 | 3.7 | 4.2 | 3.4 |
+| latest note, quiet author, 1 | 1 | 2.6 | 4.6 | 2.6 |
+| id miss | 0 | 1.8 | 3.7 | 1.6 |
+
+A scroll past one FILTER's oldest event, on a store with older data, still pays the attempts and the
+ladder: the store-wide bound cannot say where one author's notes start.
+
 **Through the relay** (vespa-relay main at 2ac8de97 built against this store, the same corpus, a
 Python `websockets` client one REQ at a time, warm): every shape above is 2.3–6.0ms p50 — when the
 client does not offer `permessage-deflate`. Offering it (the Python client's default) the relay
