@@ -1383,6 +1383,82 @@ query counts for the busy and narrow cases; a ranked count asks for one hit),
 `RecencyStrategyIT`, which checks every strategy against the page computed from
 the corpus itself on a real Vespa, gate and tie group included.
 
+### A simple read is one small query (2026-11-26)
+
+`./gradlew :benchmark:simpleReadsProbe`, against the nostr-relay-bench 300k public corpus (120,528
+live events over six days, its newest note 42 days behind the wall clock) on one Vespa container
+sharing two cores with an idle relay; 60–80 reps one at a time, the speculative client with its
+memory, the real clock; p50 ms and engine queries per read. Before is `main` at 6c9eef63; after is
+the five rules in AGENTS.md's *Recency planning*. Every page equals `FULL_SCAN`'s in both, and
+`recencyStrategyProbe` / `recencyEdgeProbe` still serve identical pages under every strategy.
+
+| read | before | after | after, via `VespaEventStore.query` |
+|---|---:|---:|---:|
+| newest 1, kinds 1/7/30023 | 7.1 [1] | 3.8 [1] | 2.2 |
+| newest 100, kinds 1/7/30023 | 9.0 [1] | 6.0 [1] | 4.9 |
+| newest 100, kind 1 | 11.2 [1] | 5.6 [1] | 3.9 |
+| scroll back 1 day, 100 | 12.1 [1] | 5.0 [1] | 4.2 |
+| scroll back 20 days, 100 (empty) | 9.9 [4] | 2.1 [1] | 1.7 |
+| profile, kind 0, no limit (500) | 5.5 [2] | 2.4 [1] | 2.0 |
+| home feed, 300 follows, 50 | 12.6 [1] | 4.9 [1] | 4.5 |
+| home feed, 300 follows, 1 | 11.4 [1] | 5.3 [1] | 4.6 |
+| latest note, one author, 1 | 3.0 [1] | 2.7 [1] | 2.1 |
+| id miss | 1.6 [0] | 1.4 [0] | 1.6 |
+
+What moved, read off the probe's recency outcomes and Vespa's own timing: with the clock 42 days
+past the data every no-`until` read was learned NARROW and matched its whole kind (~100k
+documents) to keep a page; the scroll-backs were windowed but at a recalled width of 100 hours,
+because the memory kept the hour a limit-1 read tried rather than the second it needed; the empty
+scroll paid the count-probe ladder (four queries); the profile was read id-first at the relay's
+default limit and hydrated. After, the windows hold 1–400 documents, and what is left of a read is
+the engine's floor (~0.7ms of search) plus summaries, transport and decoding: a 100-event page is
+~2.5ms of search, ~0.7ms of summary fill and ~2.5ms in the client.
+
+**One pass hides what shapes teach each other.** The memory keys a shape on its filter and its
+anchor's age bucket, so a span one read learns is recalled by reads at other anchors. Run three
+times in order (`BENCH_PASSES=3`), the first build of these rules regressed from pass two: an
+empty 20-day scroll learned kinds 1/7/30023 narrow, and a limit-1 read anchored 281s past that
+filter's newest note recalled a 60s window, found it empty and learned narrow too — after which the
+dense `until` reads of the shape sorted their whole match set (newest 1 at `until` = newest note,
+2.3ms to 12.6ms; a 1-day scroll-back, 4ms to 13ms). The last three rules in AGENTS.md's *Recency
+planning* close it; on pass three every dense read is windowed, one query, 2.0–4.9ms, and the empty
+scroll is three queries (two attempts and the unwindowed read), 4.9ms.
+
+**After the audit (2026-11-26).** Six fixes to the rules above, each with a test that fails without
+it: the limit-sized match-phase depth goes only to a one-node cluster (on several, `recallRoot`
+cannot prove a cut page and would rerun most reads); the data-end hint is a `hitLimit` range on
+`created_at`, not the `recency` match-phase, which a crowd of future-dated events empties, and is
+refreshed in the background after its first read; an empty read at an `until` just behind the clock
+is remembered narrow again; only a read anchored at the clock switches the hint on; and a narrow or
+all-empty read keeps the count ladder where the `recency` profile cannot take it (an `until` past its
+30-day horizon), since unranked it sorts everything below the `until`. That last fix put the empty
+20-day scroll (62 days behind the clock here) back on the ladder: six queries, 13–17ms p50 over three
+passes. A second hint, where the data STARTS, takes it back: a read below the oldest stored event is
+its one unwindowed query. Three passes, 60 reps, the same corpus and cores:
+
+| read (pass 3) | queries | p50 ms | p95 ms | via `rawQuery` p50 |
+|---|---:|---:|---:|---:|
+| newest 1, kinds 1/7/30023 | 1 | 2.6 | 3.4 | 3.0 |
+| newest 100, kinds 1/7/30023 | 1 | 5.2 | 8.5 | 4.6 |
+| newest 100, kind 1 | 1 | 4.5 | 7.5 | 5.0 |
+| scroll back 1 day, 100 | 1 | 4.8 | 7.1 | 4.6 |
+| scroll back 20 days, 100 (empty) | 1 | 2.5 | 5.1 | 1.9 |
+| profile, kind 0, no limit (500) | 1 | 2.8 | 6.4 | 2.8 |
+| home feed, 300 follows, 50 | 1 | 4.6 | 9.6 | 6.4 |
+| home feed, 300 follows, 1 | 1 | 3.7 | 4.2 | 3.4 |
+| latest note, quiet author, 1 | 1 | 2.6 | 4.6 | 2.6 |
+| id miss | 0 | 1.8 | 3.7 | 1.6 |
+
+A scroll past one FILTER's oldest event, on a store with older data, still pays the attempts and the
+ladder: the store-wide bound cannot say where one author's notes start.
+
+**Through the relay** (vespa-relay main at 2ac8de97 built against this store, the same corpus, a
+Python `websockets` client one REQ at a time, warm): every shape above is 2.3–6.0ms p50 — when the
+client does not offer `permessage-deflate`. Offering it (the Python client's default) the relay
+compresses every EVENT frame and the 50–100-event pages rise to 8.3–9.0ms: about 35µs an event in
+compression and inflation. strfry on the same corpus, cores and client, without compression:
+0.3–4.8ms.
+
 ### The tie slack is learned per shape (2026-11-22, revised 2026-11-23)
 
 A recency page overfetched a flat `TIE_SLACK` of 64, sized for wide pages: a
@@ -2513,6 +2589,7 @@ timing is also a proof:
 | `relayE2EProbe` | what a client sees: REQ → EOSE over a relay WebSocket beside the engine client on the same filters, and `NostrSemanticsStore.rawQuery` in-process against the engine under it | any loaded store and (for `wire`) a relay pointed at it; read-only | the relay's page and the store's page must equal the engine's |
 | `recencyLoadProbe` | the recency strategies under load: closed-loop throughput at rising concurrency on a relay-shaped mix, and the same reads while a writer lands events on a live clock (engine CPU from `docker stats`, Vespa's match/summary split per REQ) | any loaded store; its writes are TEMPORARY — every id logged before its put, all removed at the end, `BENCH_CLEANUP_ONLY=1` to finish an interrupted run | sampled pages identical across variants with the writes in place; zero probe events left by id |
 | `recencyEdgeProbe` | the speculative strategy's edges: distinct follow lists under concurrency, `until` pagination and random depths, the band edge to 5,000, a stale memory across a hashtag burst, a far-future `until` (`BENCH_SECTIONS`) | any loaded store, read-only | every check must serve the identical page across shipped / speculative / + memory |
+| `simpleReadsProbe` | the simple reads a client sends most (newest N, scroll-backs, a profile, an author's latest note, a home feed, misses), one at a time on the real clock: p50/p95, engine queries per read, Vespa's search and summary time, docs matched, the recency outcome taken; `BENCH_FACADE=1` repeats them through `VespaEventStore.query` | any loaded store, read-only | every page must equal `FULL_SCAN`'s |
 | `recencyStrategyProbe` | the four `RecencyStrategy` options on the dominant feed shapes, plain and gated (`BENCH_OBSERVER`), with engine queries per REQ | any loaded store, read-only (`BENCH_NOW` pins the clock to a frozen corpus) | all four strategies must serve the identical page, ids and order |
 | `transportProbe` | read-transport isolation: JDK h1 / OkHttp h1 / OkHttp h2c on identical queries across body sizes | any loaded store | — |
 | `pinReplayProbe` | a Quartz pin bump on real data: per-kind drift between what the engine holds and what the new pin derives, the scoped `reindexFullTextSearch(kinds)`, NIP-50 probes before and after (procedure: `pin_replay.py`) | a capture of the moved kinds plus a control set of the unmoved searchable kinds, loaded at the OLD pin | before the repair every stale kind must be on the list; after it `--require-clean` fails on any stale doc; `pin_replay.py grade` fails unless each added term hits only after, each dropped term only before, each control both times |

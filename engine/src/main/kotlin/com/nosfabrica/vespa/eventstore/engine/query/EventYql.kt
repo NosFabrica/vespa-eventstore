@@ -213,6 +213,27 @@ object EventYql {
      */
     val MATCH_PHASE_BAND: Int get() = MATCH_PHASE_MAX_HITS / MATCH_PHASE_HEADROOM
 
+    /** The query parameter that overrides the rank profile's match-phase `max-hits` for one request. */
+    const val P_MATCH_PHASE_MAX_HITS = "ranking.matchPhase.maxHits"
+
+    /** The fewest candidates a [RANK_RECENCY] query keeps per node, however small its limit. */
+    const val MATCH_PHASE_MIN_HITS = 100
+
+    /**
+     * The match-phase depth a [RANK_RECENCY] read of [limit] asks for: [MATCH_PHASE_HEADROOM]
+     * candidates per wanted hit, at least [MATCH_PHASE_MIN_HITS], at most the profile's
+     * [MATCH_PHASE_MAX_HITS].
+     *
+     * The profile's depth is a CEILING, not a cost a small read should pay: the engine matches
+     * and ranks every candidate it keeps, so a newest-1 read at the profile's 20,000 cost 5ms of
+     * search where it costs 2ms at 100 (kinds 1/7/30023 over the 300k bench corpus, 2026-11-26),
+     * and a limit-1 page needs one. The headroom is the same factor the band leaves under the
+     * profile depth, for the same reason: max-hits is a target the engine may undershoot, and a
+     * cut that comes back short costs an exact rerun. Exactness is unchanged — a degraded page is
+     * accepted only when [VespaEventIndex] can prove it (full, one node, no boundary tie).
+     */
+    fun matchPhaseMaxHitsFor(limit: Int): Int = (limit.toLong() * MATCH_PHASE_HEADROOM).coerceIn(MATCH_PHASE_MIN_HITS.toLong(), MATCH_PHASE_MAX_HITS.toLong()).toInt()
+
     /**
      * Vespa's per-query match-thread override. The cluster config
      * (`numthreadspersearch` in services.xml) is the CEILING; this parameter
@@ -455,6 +476,37 @@ object EventYql {
     }
 
     /**
+     * The newest document at or before [now], as (id, created_at): where a store's DATA ends
+     * (VespaEventIndex's data-end hint). A `hitLimit` range on the fast-search `created_at`
+     * attribute, read from its sorted dictionary from [now] down — each node matches its one
+     * newest document in range and nothing else, so the sort and the sorting degrader see one
+     * hit. Not the `recency` match-phase: its cut keeps the newest `max-hits` documents by
+     * `created_at` before the range filters them, so on a node holding that many future-dated
+     * events every kept candidate is past [now] and the read comes back empty (the reason
+     * [RECENT_UNTIL_HORIZON] exists). The floor is 0: a hint, which events before 1970 need not move.
+     */
+    fun buildNewestAtOrBefore(now: Long): VespaQuery =
+        VespaQuery(
+            yql = "select id, created_at from event where {hitLimit:1,descending:true}range(created_at, 0, $now) order by created_at desc limit 1",
+            params = mapOf("presentation.summary" to SUMMARY_IDTIME, SORT_DEGRADING to SORT_DEGRADING_OFF, LANGUAGE to TEXT_FREE_LANGUAGE),
+            ranking = RANK_UNRANKED,
+            shape = "dataEnd",
+        )
+
+    /**
+     * The oldest document stored, as (id, created_at): where a store's DATA starts
+     * (VespaEventIndex's data-start hint). The same `hitLimit` range as
+     * [buildNewestAtOrBefore], read from the other end of the `created_at` dictionary.
+     */
+    fun buildOldest(): VespaQuery =
+        VespaQuery(
+            yql = "select id, created_at from event where {hitLimit:1,descending:false}range(created_at, 0, ${Long.MAX_VALUE}) order by created_at asc limit 1",
+            params = mapOf("presentation.summary" to SUMMARY_IDTIME, SORT_DEGRADING to SORT_DEGRADING_OFF, LANGUAGE to TEXT_FREE_LANGUAGE),
+            ranking = RANK_UNRANKED,
+            shape = "dataStart",
+        )
+
+    /**
      * Existence-only recall for the bulk-dedup preload: `select id` under
      * [SUMMARY_DEDUP], answered from the id ATTRIBUTE in memory — the disk
      * summary store never runs. No `order by` (membership is unordered), no
@@ -689,6 +741,10 @@ object EventYql {
         if (ranking != RANK_UNRANKED && ranking != RANK_RECENCY) {
             params[F_NOW_SECS] = nowOf(q).toString()
         }
+        // A recency read's match-phase depth follows its limit (see [matchPhaseMaxHitsFor]).
+        // Only the ungated profile: the gated one drops untrusted candidates AFTER the cut, so a
+        // tighter cut there would come back short, and rerun exact, far more often.
+        if (ranking == RANK_RECENCY) q.limit?.let { params[P_MATCH_PHASE_MAX_HITS] = matchPhaseMaxHitsFor(it).toString() }
         // The gated profiles are STANDALONE (see event.sd): they declare the two
         // trust inputs, score by created_at, and read no text signal at all. The
         // term-weighting features [filterClauses] emits alongside a search term

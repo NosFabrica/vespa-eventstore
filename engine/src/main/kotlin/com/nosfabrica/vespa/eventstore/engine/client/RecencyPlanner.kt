@@ -296,6 +296,31 @@ internal class RecencyPlanner(
         const val MAX_WINDOW = 31_536_000L
 
         /**
+         * The narrowest window a REMEMBERED shape starts from. Below [FIRST_WINDOW]
+         * on purpose: the cold hour is a guess, a learned span is a measurement,
+         * and on a dense shape the hour itself is the cost (the engine matches and
+         * sorts every document in the window, whatever the limit).
+         */
+        const val MIN_LEARNED_WINDOW = 60L
+
+        /**
+         * Headroom on a learned span: the rate a page meets is not stationary, and
+         * a window that fits only last time's page exactly comes back short as
+         * often as not — and a short attempt costs a second query.
+         */
+        const val LEARNED_HEADROOM = 2L
+
+        /** What to remember for a page that needed [span] seconds: the span with [LEARNED_HEADROOM], in bounds. */
+        fun learnedWindow(span: Long): Long = (span.coerceIn(0L, MAX_WINDOW) * LEARNED_HEADROOM).coerceIn(MIN_LEARNED_WINDOW, MAX_WINDOW)
+
+        /** A remembered [window] that served [learnedLimit], scaled to a read of [limit]: the span grows with the page. */
+        fun recalledWindow(
+            window: Long,
+            learnedLimit: Int,
+            limit: Int,
+        ): Long = (window.toDouble() * limit / learnedLimit.coerceAtLeast(1)).toLong().coerceIn(MIN_LEARNED_WINDOW, MAX_WINDOW)
+
+        /**
          * THE NARROW-READ RULE: once an attempt's observed rate says a full
          * page needs a window wider than this, [RecencyStrategy.SPECULATIVE]
          * stops guessing and runs the unwindowed read.
