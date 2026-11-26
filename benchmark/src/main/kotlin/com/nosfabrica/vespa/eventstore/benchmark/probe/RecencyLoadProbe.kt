@@ -60,11 +60,16 @@ import kotlin.random.Random
  * count is back to where it started. A run that dies midway leaves the file;
  * `BENCH_CLEANUP_ONLY=1` removes whatever it lists.
  *
+ * The writer is its own [VespaEventIndex] by default, so its writes travel on
+ * connections of their own. `BENCH_WRITER=shared` lands each phase's writes
+ * through that phase's READ client instead, as a relay's one store does: the
+ * only way this probe sees what a client's writes cost the reads beside them.
+ *
  * Env: BENCH_VESPA_URL, BENCH_NOW, BENCH_OBSERVER, BENCH_LENS_KEY, BENCH_MIN_RANK;
  * BENCH_SECTIONS (throughput,writes); BENCH_PHASE_SECS (45); BENCH_CONCS
  * ("8,32,64"); BENCH_WRITE_RATES ("0,50,200" events/s); BENCH_READ_CONC (32);
- * BENCH_CONTAINER (vespa); BENCH_IDS_FILE (build/recency-load-ids.txt);
- * BENCH_SEED (42).
+ * BENCH_WRITER (own | shared); BENCH_CONTAINER (vespa); BENCH_IDS_FILE
+ * (build/recency-load-ids.txt); BENCH_SEED (42).
  */
 object RecencyLoadProbe {
     private const val DAY = 86_400L
@@ -113,6 +118,12 @@ object RecencyLoadProbe {
             val readConc = System.getenv("BENCH_READ_CONC")?.toIntOrNull() ?: 32
             val container = System.getenv("BENCH_CONTAINER") ?: "vespa"
             val seed = System.getenv("BENCH_SEED")?.toLongOrNull() ?: 42L
+            val sharedWriter =
+                when (val w = System.getenv("BENCH_WRITER") ?: "own") {
+                    "own" -> false
+                    "shared" -> true
+                    else -> error("BENCH_WRITER is own or shared, not $w")
+                }
 
             val wall = System.currentTimeMillis() / 1000
             val end =
@@ -149,7 +160,7 @@ object RecencyLoadProbe {
 
             if ("writes" in sections) {
                 val baseline = admin.count(EventQuery())
-                println("\n== writes: $readConc readers while events land at $rates ev/s; ${phaseSecs}s per phase; baseline $baseline documents")
+                println("\n== writes: $readConc readers while events land at $rates ev/s (writer ${if (sharedWriter) "shares each phase's read client" else "on its own client"}); ${phaseSecs}s per phase; baseline $baseline documents")
                 val t0 = System.nanoTime()
                 // The live clock: the corpus's newest second, advancing in real time.
                 val clock = { end + (System.nanoTime() - t0) / 1_000_000_000L }
@@ -167,7 +178,7 @@ object RecencyLoadProbe {
                             coroutineScopeWith { scope ->
                                 val writing =
                                     scope.launch(Dispatchers.Default) {
-                                        if (rate > 0) writeLoop(writer, rate, clock, pool, notified, idsFile, written, putNanos, Random(seed + rate))
+                                        if (rate > 0) writeLoop(if (sharedWriter) v.client else writer, rate, clock, pool, notified, idsFile, written, putNanos, Random(seed + rate))
                                     }
                                 phase(v, templates, readConc, phaseSecs, clock, container, seed + rate, writeRate = rate)
                                 writing.cancel()
@@ -252,7 +263,7 @@ object RecencyLoadProbe {
                 }
 
                 in 75 until 90 -> {
-                    labeled("notif", EventQuery(kinds = listOf(1, 6, 7, 9735), tags = mapOf("p" to listOf(byVolume[rnd.nextInt(2_000)])), limit = 100))
+                    labeled("notif", EventQuery(kinds = listOf(1, 6, 7, 9735), tags = mapOf("p" to listOf(byVolume[rnd.nextInt(minOf(2_000, byVolume.size))])), limit = 100))
                 }
 
                 else -> {
