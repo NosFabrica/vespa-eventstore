@@ -22,6 +22,10 @@ package com.nosfabrica.vespa.eventstore
 
 import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
+import com.nosfabrica.vespa.eventstore.engine.LinkScore
+import com.nosfabrica.vespa.eventstore.engine.LinkTarget
+import com.nosfabrica.vespa.eventstore.engine.LinkWeights
+import com.nosfabrica.vespa.eventstore.engine.Ranked
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryReputationIndex
@@ -29,8 +33,12 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.mapping.toEventQuery
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
+import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
+import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
+import com.vitorpamplona.quartz.nip10Notes.TextNoteEvent
+import com.vitorpamplona.quartz.nip25Reactions.ReactionEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -197,5 +205,126 @@ class ReadShapeTest {
         assertFalse(ReadShape.of("include:spam filter:rank:gte:50").answersEveryConnectionAlike, "an explicit floor gates through the connection's lens")
         assertFalse(ReadShape.of("include:spam bitcoin").answersEveryConnectionAlike, "a ranked search's top N is the caller's")
         assertFalse(ReadShape.of(null).answersEveryConnectionAlike)
+    }
+
+    /**
+     * Every engine request a REQ of [search] (as events, then as raw rows), then its COUNT, makes as
+     * [connection], in order: the compiled request
+     * ([EventYql.build], what the Vespa client sends) of each recall, and of the linkers a
+     * `sort:links` rerank scores by. The same fixture as [snapshotQueries], with a note corpus a
+     * search finds and a reaction a rerank would count; and the recall REPORTS A SCORE, as the real
+     * engine does, so the rerank is not skipped for want of one (the in-memory reference ranks
+     * nothing, and a page with no scores is never rescored).
+     */
+    private fun reqRequests(
+        search: String?,
+        connection: String?,
+    ): List<String> =
+        runBlocking {
+            val seen = mutableListOf<String>()
+            val inner = InMemoryEventIndex()
+            val index =
+                object : EventIndex by inner {
+                    override suspend fun search(query: EventQuery): List<EventDoc> = inner.search(query).also { seen += "search ${render(query)}" }
+
+                    override suspend fun searchRanked(query: EventQuery): List<Ranked<EventDoc>> = inner.search(query).map { Ranked(it, 1.0) }.also { seen += "searchRanked ${render(query)}" }
+
+                    override suspend fun rawSearch(query: EventQuery): List<RawEvent> = inner.rawSearch(query).also { seen += "rawSearch ${render(query)}" }
+
+                    override suspend fun rawSearchRanked(query: EventQuery): List<Ranked<RawEvent>> = inner.rawSearch(query).map { Ranked(it, 1.0) }.also { seen += "rawSearchRanked ${render(query)}" }
+
+                    override suspend fun scoreLinks(
+                        targets: List<LinkTarget>,
+                        linkers: EventQuery,
+                        weights: LinkWeights,
+                    ): Map<String, LinkScore> = inner.scoreLinks(targets, linkers, weights).also { seen += "scoreLinks ${render(linkers)}" }
+
+                    override suspend fun count(query: EventQuery): Int = inner.count(query).also { seen += "count ${render(query)}" }
+
+                    override suspend fun countByAuthor(query: EventQuery): Map<String, Int> = inner.countByAuthor(query).also { seen += "countByAuthor ${render(query)}" }
+                }
+            // A fixed clock: the expiry cutoff and the recency anchor are in every request.
+            val store = NostrSemanticsStore(TrustProjection(index, InMemoryReputationIndex()), nowSecs = { 2_000L })
+            val note = TextNoteEvent("e".repeat(64), "c".repeat(64), 1_000L, emptyArray(), "bitcoin note", "")
+            store.batchInsert(
+                listOf(alice to "5a", bob to "5b").mapIndexed { i, (who, service) ->
+                    TrustProviderListEvent("${i + 1}".padStart(64, '0'), who, 1_000L, arrayOf(arrayOf("30382:rank", service.repeat(32), "wss://scores.example.com/")), "", "")
+                } +
+                    listOf(
+                        note,
+                        TextNoteEvent("f".repeat(64), "d".repeat(64), 1_001L, emptyArray(), "another bitcoin note", ""),
+                        ReactionEvent("9".repeat(64), alice, 1_002L, arrayOf(arrayOf("e", note.id), arrayOf("p", note.pubKey)), "+", ""),
+                    ),
+            )
+            seen.clear()
+            val filters = listOf(Filter(kinds = listOf(1), search = search, limit = 10))
+            val read: suspend () -> Unit = {
+                store.query<Event>(filters)
+                seen += "-- raw"
+                store.rawQuery(filters) {}
+                seen += "-- count"
+                store.count(filters)
+            }
+            if (connection == null) read() else withContext(StoreQueryContext(setOf(connection))) { read() }
+            seen
+        }
+
+    /** The compiled request, less the identity hash a value without its own `toString` prints (`AuthorFilter@1a2b`). */
+    private fun render(q: EventQuery): String = if (TrustProviderListEvent.KIND in q.kinds) "lens lookup" else EventYql.build(q).toString().replace(Regex("@[0-9a-f]+\\b"), "")
+
+    /**
+     * THE CLAIM HOLDS FOR THE REQ AND ITS COUNT TOO, not only for the NEG-OPEN walk the relay shares a snapshot of:
+     * a REQ of a filter that answers every connection alike sends the engine the same requests for
+     * every connection. A REQ does more per caller than the walk does — the `sort:links` rerank reads
+     * the caller's trusted linkers, the reference expansion unpacks the declarations the caller
+     * enrolled, the topical-intent probe ranks the caller's notable names — and every one of those
+     * needs a read that is ranked or reads a lens, which [ReadShape.answersEveryConnectionAlike]
+     * already excludes: a termless `include:spam sort:links` is plain recall (the store does not
+     * know `links` as a profile, the rerank needs a relevance-ordered page and a resolved lens, and
+     * this read resolves none), while a named `observer:` supplies the lens every step reads. Each
+     * shape the relay could share is listed, and each one it must not, so a step that starts reading
+     * the caller under a shape still called alike fails here.
+     */
+    @Test
+    fun `a read that answers every connection alike serves the same REQ and COUNT for every connection`() {
+        val links =
+            listOf(
+                "include:spam sort:links",
+                "include:spam sort:links:2",
+                "sort:links",
+                "bitcoin sort:links",
+                "include:spam bitcoin sort:links",
+                "observer:$hex bitcoin sort:links",
+                // A named lens that resolves (alice's 10040 names a service), so the rerank runs through it.
+                "observer:$alice bitcoin sort:links",
+                "observer:$alice include:spam bitcoin sort:links",
+                "observer:$alice include:spam sort:links",
+                "observer:$hex sort:links",
+                "include:spam bitcoin",
+                "include:spam \"bitcoin note\"",
+                "include:spam -bitcoin",
+                "include:spam sort:recent",
+                "include:spam filter:rank:gte:50",
+            )
+        var alike = 0
+        for (search in battery + links) {
+            val asAlice = reqRequests(search, alice)
+            val asBob = reqRequests(search, bob)
+            val anonymous = reqRequests(search, null)
+            val same = asAlice == asBob && asAlice == anonymous
+            if (ReadShape.of(search).answersEveryConnectionAlike) {
+                alike++
+                assertTrue(same, "`$search` claims to answer alike, but its REQ asks per caller: as alice ${asAlice - anonymous.toSet()}, as bob ${asBob - anonymous.toSet()}, anonymously ${anonymous - asAlice.toSet()}")
+            } else {
+                assertFalse(same, "`$search` serves its REQ alike for every connection, so it should say so")
+            }
+        }
+        assertTrue(alike >= 6, "the battery exercises the claim")
+        // The rerank does run where a caller's lens is read, so the battery is not vacuous on it.
+        assertTrue(reqRequests("include:spam bitcoin sort:links", alice).any { it.startsWith("scoreLinks") }, "a ranked links read reranks through the caller's lens")
+        assertTrue(reqRequests("observer:$alice bitcoin sort:links", bob).any { it.startsWith("scoreLinks") }, "and through a named one")
+        for (termless in listOf("include:spam sort:links", "sort:links", "observer:$alice sort:links")) {
+            assertTrue(reqRequests(termless, alice).none { it.startsWith("scoreLinks") }, "`$termless` is a recency read, which is never reranked")
+        }
     }
 }

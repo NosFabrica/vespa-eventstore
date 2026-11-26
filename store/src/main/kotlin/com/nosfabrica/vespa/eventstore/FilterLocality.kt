@@ -111,9 +111,11 @@ object FilterLocality {
      *   probe (`search/QueryIntent`), which asks whether a trusted profile or app is NAMED the
      *   words and ranks the page differently when one is.
      * - `sort:links[:x]`: false. The rerank widens the recall and cuts it back by the links
-     *   (reactions, zaps, reports) other authors wrote — unguarded writes. The walk does not
-     *   apply it today; the REQ does, and the two must not be allowed to drift into different
-     *   answers by this predicate.
+     *   (reactions, zaps, reports) other authors wrote — unguarded writes. A guard more than a
+     *   need today: with text the filter is already false above, and a TERMLESS one is a recency
+     *   read neither the walk nor the REQ reranks (the rerank needs a relevance-ordered page;
+     *   `ReadShapeTest` pins that). Should the rerank ever reach a recency page, this keeps the
+     *   two from drifting into different answers by this predicate.
      * - A termless trust sort (`sort:rank`, `rank:asc`, `followers`, `text`) WITH a limit:
      *   false. Its first N are its most trusted, not its newest ([EventYql.walksInOrder]), so the
      *   walk serves a ranked search page whose cut falls inside ties (ranks are 0..100 integers;
