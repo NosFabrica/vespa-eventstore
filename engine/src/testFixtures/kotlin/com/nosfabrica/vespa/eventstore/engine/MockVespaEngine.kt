@@ -348,12 +348,6 @@ class MockVespaEngine(
     val protocols: MutableList<Pair<String, String>> = Collections.synchronizedList(ArrayList())
 
     /**
-     * The connection each request arrived on (Jetty's connection id), as path and id, in arrival
-     * order: which requests SHARED a connection, which no response can show either.
-     */
-    val connections: MutableList<Pair<String, String>> = Collections.synchronizedList(ArrayList())
-
-    /**
      * The `fieldSet` each document GET asked for (null for none: the whole document), in arrival
      * order. Honoured as Vespa does for a `<doctype>:<field>,…` set: only those fields come back.
      */
@@ -524,7 +518,6 @@ class MockVespaEngine(
                         callback: Callback,
                     ): Boolean {
                         protocols += request.httpURI.path to request.connectionMetaData.httpVersion.asString()
-                        connections += request.httpURI.path to request.connectionMetaData.id
                         val acceptEncoding = request.headers.get(HttpHeader.ACCEPT_ENCODING) ?: ""
                         acceptEncodings += request.httpURI.path to acceptEncoding
                         delayAnswersMs.takeIf { it > 0 }?.let { Thread.sleep(it) }

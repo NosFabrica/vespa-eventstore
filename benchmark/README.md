@@ -3689,6 +3689,51 @@ at this write volume. On this box the interference is largely CPU contention
 (three processes on four cores); separate client hardware would soften it,
 which is exactly what this bench exists to verify per deployment.
 
+### A second HTTP client for the writes: measured, reverted (2026-11-26)
+
+`VespaEventIndex` sends its queries, document GETs, the batch feed's uploads (8 concurrent
+~100-document bodies per `putAll`) and the lone direct put through one `VespaHttp`, which
+OkHttp multiplexes over one HTTP/2 connection per host. Giving the two write paths a client
+of their own (2d1321e2) was meant to keep reads from queueing behind write bodies on that
+connection. It was shipped unmeasured, then measured here and reverted.
+
+A scratch build chose the arm per run (writes on their own client, or on the read client,
+as before and now). Single-node Vespa 8.788.13 in Docker on the 4-core sandbox, client and
+engine sharing the cores, ~62k documents; the written bands were removed after every
+`BENCH_MIXED` run, so each saw the same corpus.
+
+**`BENCH_MIXED=1`** (16 readers, 2 writers, 8 s a mode), ten rounds, the arm order reversed
+for the last four. Median of ten [range]:
+
+| | own write client | writes on the read client |
+|---|---:|---:|
+| read-only, q/s | 658 [600–701] | 670 [622–684] |
+| **mixed, q/s** | **408 [368–431]** | **405 [367–454]** |
+| mixed ÷ read-only | 62.4% [53.4–65.8] | 61.5% [56.0–67.1] |
+| mixed, query p99 | 157 ms [148–176] | 158 ms [133–173] |
+| mixed, ingest ev/s | 1,524 [1,395–1,595] | 1,527 [1,337–1,708] |
+
+Paired by round the mixed q/s differed by a median **+0.3%**, from −9.9% to +7.5%, five
+rounds each way. What the rounds do show is an ORDER effect of the same size: the arm run
+first in a round won four of the six rounds that ran own-client first and three of the four
+that ran it second.
+
+**`recencyLoadProbe`**, writes section, `BENCH_WRITER=shared` (each phase's writes through
+that phase's read client, the only way this probe sees the coupling), 32 readers, 30 s
+phases, writes at 1,000 ev/s, three rounds, the shared arm first. REQ/s, median [range]:
+
+| variant | own write client | writes on the read client |
+|---|---:|---:|
+| `match_phase` | 323 [309–330] | 320 [294–328] |
+| `speculative` | 299 [289–301] | 306 [297–306] |
+| `speculative+memory` | 287 [278–302] | 279 [275–314] |
+
+The same phases with no writes (identical code in both arms) differed by 3–10%, the arm run
+first ahead, which is the noise floor here. No read gain shows past it on either bench, so
+the second client went: it cost a dispatcher and a connection per index for nothing
+measured. Not tested: a multi-node or remote engine, where one TCP connection's window is
+more likely to bind than on loopback.
+
 ### Through the relay: writes under read saturation (2026-11-25)
 
 The same question end to end, vespa-relay on the 4-core sandbox: nostr-bench `req` at 200

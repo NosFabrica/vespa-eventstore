@@ -21,7 +21,6 @@
 package com.nosfabrica.vespa.eventstore.engine.client
 
 import com.nosfabrica.vespa.eventstore.engine.MockVespaEngine
-import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import kotlinx.coroutines.runBlocking
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -59,13 +58,10 @@ class OkHttpThreadLeakTest {
         val before = okHttpThreads()
         val events = VespaEventIndex(mock.url, eagerFeed = false)
         val reputations = VespaReputationIndex(mock.url, eagerFeed = false)
-        // One read each (and the event index's write): a dispatcher thread and an HTTP/2 connection per client. The mock does
+        // One read each: a dispatcher thread and an HTTP/2 connection per client. The mock does
         // not model reputation documents, so that read is answered 400: a round trip all the same.
         runBlocking {
             assertNull(events.get("a".repeat(64)))
-            // And a batch write, which rides the writes' own client.
-            events.putAll(List(2) { EventDoc(id = "%064x".format(it + 1), pubkey = "c".repeat(64), createdAt = 1_000L, kind = 1, tags = emptyList(), content = "w$it", sig = "") })
-            assertTrue(events.feedBatchesSent > 0, "the write went through the batch path")
             assertTrue(
                 runCatching { reputations.get("b".repeat(64)) }
                     .exceptionOrNull()

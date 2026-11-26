@@ -287,21 +287,6 @@ class VespaEventIndex(
     private val http = VespaHttp()
 
     /**
-     * The WRITES' own client: the batch feed's uploads and the lone direct put. Built like [http]
-     * (same protocol, timeouts, liveness, retries, `Accept-Encoding: identity`), so every request
-     * is the one it was; only the connection differs. On [http] they shared the single HTTP/2
-     * connection OkHttp multiplexes per host with every query and document GET: one TCP send
-     * and receive path, one connection flow-control window and one reader thread for 8
-     * concurrent ~100-document batch bodies and multi-MB page answers alike, so a 3 ms existence
-     * check could queue behind either. That coupling is UNMEASURED (perf audit #4): the mixed
-     * read/write table in benchmark/README.md predates the batch path becoming the default, when
-     * writes still went through the feed client's own Jetty connections. `BENCH_MIXED=1` and
-     * `recencyLoadProbe` under a writer would show it. The reputation index has its own client
-     * already. The feed client ([feed]) is Jetty, apart from both.
-     */
-    private val writeHttp = VespaHttp()
-
-    /**
      * The headroom probe, on the endpoint this client already uses:
      * `/metrics/v2/values` reports EVERY content node, so one endpoint answers
      * for the cluster. Built here because this is where `http` and the
@@ -321,7 +306,7 @@ class VespaEventIndex(
 
     /** Null unless batching is on ([feedBatch]). */
     internal val batchFeed: VespaBatchFeed? =
-        feedBatch.takeIf { it > 1 }?.let { VespaBatchFeed(writeHttp, ::documentEndpoint, it, BATCH_CONCURRENCY) }
+        feedBatch.takeIf { it > 1 }?.let { VespaBatchFeed(http, ::documentEndpoint, it, BATCH_CONCURRENCY) }
 
     /** Batches the bundled batch handler has stored since this index opened; 0 while batching is off. */
     val feedBatchesSent: Long get() = batchFeed?.batchesSent ?: 0
@@ -568,7 +553,7 @@ class VespaEventIndex(
                     try {
                         // Null past the bound: the engine did not answer, so whether it applied the
                         // put is unknown, and the feed client puts it again, as on an IOException.
-                        withTimeoutOrNull(FEED_TIMEOUT.toMillis() + DIRECT_PUT_MARGIN.toMillis()) { writeHttp.postJsonOnce(url, body) }
+                        withTimeoutOrNull(FEED_TIMEOUT.toMillis() + DIRECT_PUT_MARGIN.toMillis()) { http.postJsonOnce(url, body) }
                     } catch (e: IOException) {
                         null
                     }
@@ -3578,19 +3563,15 @@ class VespaEventIndex(
     fun feedInflight(): Long = feed.inflight()
 
     /**
-     * Graceful: the feed first (it waits for its writes in flight), then the write and the read
-     * transports, whose OkHttp dispatchers and connection pools nothing else would ever release
+     * Graceful: the feed first (it waits for its writes in flight), then the read transport,
+     * whose OkHttp dispatcher and connection pool nothing else would ever release
      * ([VespaHttp.close]) — even when the feed's close throws.
      */
     override fun close() {
         try {
             feed.close()
         } finally {
-            try {
-                writeHttp.close()
-            } finally {
-                http.close()
-            }
+            http.close()
         }
     }
 
