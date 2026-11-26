@@ -313,6 +313,101 @@ class VespaEventIndexTest {
             )
         }
 
+    /**
+     * WRITES TRAVEL ON A CONNECTION OF THEIR OWN. Every query, document GET and batch upload used
+     * to share the one HTTP/2 connection OkHttp multiplexes per host: one TCP send and receive
+     * path, one connection flow-control window, one reader thread, so a burst of ~100-document
+     * batch bodies and a multi-MB page answer queued behind each other (perf audit #4; the
+     * coupling is unmeasured). The batch feed and the lone direct put now have their own client,
+     * configured like the read one, so the requests are byte for byte the same and only the
+     * connection differs.
+     */
+    @Test
+    fun `batch and direct writes do not share the read connection`() =
+        runBlocking {
+            VespaEventIndex(mock.url, feedBatch = 100).use { batched ->
+                val docs = List(150) { doc(content = "batched $it") }
+                mock.connections.clear()
+                batched.putAll(docs)
+                batched.put(doc(content = "a lone write"))
+                batched.search(EventQuery(kinds = listOf(1), limit = 10))
+                assertEquals(docs[0].id, batched.get(docs[0].id)?.id)
+
+                val byPath = mock.connections.groupBy({ it.first }, { it.second })
+                val writes = (byPath[VespaBatchFeed.PATH].orEmpty() + byPath.filterKeys { it.startsWith("/document/v1/event/event/docid/") && it != "/document/v1/event/event/docid/${docs[0].id}" }.values.flatten()).toSet()
+                val reads = (byPath["/search/"].orEmpty() + byPath["/document/v1/event/event/docid/${docs[0].id}"].orEmpty()).toSet()
+                assertTrue(byPath.getValue(VespaBatchFeed.PATH).size >= 2, "the batch path ran: ${mock.connections}")
+                assertEquals(1L, batched.directPuts, "the lone write went direct")
+                assertTrue(writes.isNotEmpty() && reads.isNotEmpty(), "${mock.connections}")
+                assertTrue(writes.intersect(reads).isEmpty(), "writes on $writes, reads on $reads")
+            }
+        }
+
+    /**
+     * ONE ID'S EXISTENCE IS A GET OF ITS ID FIELD ALONE. The per-event insert asks it of every
+     * event, under the writer lock, and read the whole stored document to learn it, search
+     * columns, stems and near arrays included, parsing its tags (a stored kind 3 is 50-500 KB of
+     * them). The document API's GET is the cheaper lookup by key (~35% faster than a search over
+     * the id attribute, see [search]), so it stays a GET, with `fieldSet=event:id`. It answers
+     * exactly what `get(id) != null` answers: absent on a real 404, present on a 200 whose id
+     * field is set, refused on anything else. A wider set is still one existence query.
+     */
+    @Test
+    fun `one id's existence reads only its id field`() =
+        runBlocking {
+            val stored = doc(content = "x".repeat(10_000))
+            seed(stored)
+            mock.documentGetFieldSets.clear()
+            mock.protocols.clear()
+            val absent = "f".repeat(64)
+
+            assertEquals(setOf(stored.id), index.existingIds(listOf(stored.id)))
+            assertEquals(emptySet(), index.existingIds(listOf(absent)))
+            assertEquals(emptySet(), index.existingIds(listOf("not hex")), "never a url, as get() never sends one")
+
+            assertEquals(listOf<String?>("event:id", "event:id"), mock.documentGetFieldSets.toList())
+            assertTrue(mock.protocols.none { it.first == "/search/" }, "a GET, not a search: ${mock.protocols}")
+            assertEquals(setOf(stored.id), index.existingIds(listOf(stored.id, absent)), "two ids are one existence query")
+            assertEquals(stored.id, index.get(stored.id)?.id, "get() still reads the whole document")
+            assertEquals(null, mock.documentGetFieldSets.last())
+        }
+
+    /**
+     * A RANKED COUNT'S ONE HIT COMES FROM MEMORY. A gated or searching count asks for one hit to
+     * force the ranking pass its gate lives in, and reads `totalCount`; the hit itself is thrown
+     * away. It was filled from the full `nip01` summary, one document-store read per count (and
+     * per member of a multi-filter count). It now asks for the attribute-only `idtime` summary,
+     * which fill alone reads: matching, the gate and `totalCount` are the same. On a schema
+     * without `idtime` the count is asked again whole, and from then on whole.
+     */
+    @Test
+    fun `a ranked count fills its one hit from the attribute summary`() =
+        runBlocking {
+            seed(doc(content = "pizza"), doc(content = "pizza two"))
+            val gated = EventQuery(kinds = listOf(1), observer = "c".repeat(64), rankKey = "5e".repeat(32), minRank = 2.0, ranking = EventYql.RANK_RECENCY_GATED)
+            val searching = EventQuery(kinds = listOf(1), search = "pizza")
+            for (q in listOf(gated, searching)) {
+                mock.searchRequests.clear()
+                index.count(q)
+                val sent = mock.searchRequests.single()
+                assertEquals("1", sent["hits"], "$q: $sent")
+                assertEquals(EventYql.SUMMARY_IDTIME, sent["presentation.summary"], "$q: $sent")
+            }
+            mock.rejectIdTimeSummary = true
+            try {
+                VespaEventIndex(mock.url).use { old ->
+                    mock.searchRequests.clear()
+                    val first = old.count(searching)
+                    assertEquals(2, mock.searchRequests.size, "refused once, then asked whole: ${mock.searchRequests}")
+                    mock.searchRequests.clear()
+                    assertEquals(first, old.count(searching))
+                    assertTrue(mock.searchRequests.single()["presentation.summary"] != EventYql.SUMMARY_IDTIME, "and whole from then on")
+                }
+            } finally {
+                mock.rejectIdTimeSummary = false
+            }
+        }
+
     private fun doc(
         kind: Int = 1,
         pubkey: String = "a1".repeat(32),

@@ -63,12 +63,12 @@ class EventAdmissionTest {
         private val got = CompletableDeferred<Unit>()
         private val read = CompletableDeferred<Unit>()
 
-        override suspend fun get(id: String): EventDoc? {
+        override suspend fun existingIds(ids: List<String>): Set<String> {
             if (armed.get()) {
                 got.complete(Unit)
                 read.await()
             }
-            return inner.get(id)
+            return inner.existingIds(ids)
         }
 
         override suspend fun visitIds(
@@ -114,6 +114,38 @@ class EventAdmissionTest {
             val stale = assertFailsWith<RejectedException> { store.insert(profile(50)) }
             assertTrue(stale.message!!.startsWith("replaced"), "${stale.message}")
             assertEquals(listOf(stored.id), index.search(EventQuery(kinds = listOf(0), authors = listOf(alice))).map { it.id })
+        }
+
+    /**
+     * The dup probe asks whether the id is stored, never for the stored document: [EventIndex.get]
+     * is a whole-document read, and the engine answers [EventIndex.existingIds] for one id with
+     * the id field alone. Every shape of the per-event path: a regular event, a replaceable whose
+     * dup read runs beside its supersession, and one whose owner has a guard to probe.
+     */
+    @Test
+    fun `the dup probe reads no document`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val gets = mutableListOf<String>()
+            val index =
+                object : EventIndex by inner {
+                    override suspend fun get(id: String): EventDoc? = inner.get(id).also { gets += id }
+
+                    override suspend fun putIfNewer(doc: EventDoc): Boolean = super<EventIndex>.putIfNewer(doc)
+                }
+            val store = NostrSemanticsStore(index, relay = relayUrl, writers = WriterTopology.SINGLE_WRITER)
+            val note = Event(id(), alice, 100, 1, emptyArray(), "a note", "")
+            val stored = profile(100)
+            store.insert(note)
+            store.insert(stored)
+            assertTrue(assertFailsWith<RejectedException> { store.insert(note) }.message!!.startsWith("duplicate"))
+            assertTrue(assertFailsWith<RejectedException> { store.insert(stored) }.message!!.startsWith("duplicate"))
+            // A tombstone of something else: alice now has a guard, so her events probe it beside the dup read.
+            store.insert(DeletionRequestEvent(id(), alice, 300, arrayOf(arrayOf("e", "e".repeat(64))), "", ""))
+            assertTrue(assertFailsWith<RejectedException> { store.insert(note) }.message!!.startsWith("duplicate"))
+            store.insert(Event(id(), alice, 400, 1, emptyArray(), "a fresh note", ""))
+            // The one GET left is the tombstone resolving its own target, which is not a dup probe.
+            assertEquals(listOf("e".repeat(64)), gets, "no document read to answer a dup probe")
         }
 
     /** Lands every write, then throws for one carrying a kind in [kinds]: a timeout after the feed accepted it. */

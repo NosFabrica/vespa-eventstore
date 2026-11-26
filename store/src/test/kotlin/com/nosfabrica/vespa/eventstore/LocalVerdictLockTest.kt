@@ -47,7 +47,7 @@ import kotlin.test.assertNull
  * when it writes nothing; these are plain kinds.
  *
  * Deterministic: the lock is held by a real insert parked inside its own dup
- * GET until the test releases it, so "did not wait" is "completed while the
+ * probe until the test releases it, so "did not wait" is "completed while the
  * holder was still parked", not a latency budget.
  */
 class LocalVerdictLockTest {
@@ -64,7 +64,7 @@ class LocalVerdictLockTest {
 
     private fun unstorable() = Event(id(), alice, 1_000_000_000L, 1, emptyArray(), "bad\u0016here", "")
 
-    /** Parks the dup GET for [parkedId] until [release] completes: the insert asking it holds the writer lock meanwhile. */
+    /** Parks the dup probe (an existence read) for [parkedId] until [release] completes: the insert asking it holds the writer lock meanwhile. */
     private class ParkingIndex(
         private val inner: InMemoryEventIndex,
         private val parkedId: String,
@@ -72,12 +72,12 @@ class LocalVerdictLockTest {
         val parked = CompletableDeferred<Unit>()
         val release = CompletableDeferred<Unit>()
 
-        override suspend fun get(id: String): EventDoc? {
-            if (id == parkedId) {
+        override suspend fun existingIds(ids: List<String>): Set<String> {
+            if (parkedId in ids) {
                 parked.complete(Unit)
                 release.await()
             }
-            return inner.get(id)
+            return inner.existingIds(ids)
         }
 
         override suspend fun putIfNewer(doc: EventDoc): Boolean = super<EventIndex>.putIfNewer(doc)

@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.versionStub
+import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
@@ -76,11 +77,25 @@ internal class VersionReads(
         author: String,
         /** The caller's engine-query bound: one permit for the walk, whose pages run one after another. */
         gate: Semaphore? = null,
+    ): List<EventDoc> = walked(q, kind, author, gate)
+
+    /**
+     * Every stored document [q] recalls, [q] naming exactly one [kind] and one [author], as
+     * stubs: the id walk (with each version's FIRST d tag when [kind] is addressable), so a plain
+     * replaceable's versions too. What an a-tag deletion's victims are read with ([Deletions]),
+     * whose query also carries the deletion's `until`, which the walk honours like any filter.
+     */
+    suspend fun walked(
+        q: EventQuery,
+        kind: Int,
+        author: String,
+        gate: Semaphore? = null,
     ): List<EventDoc> {
+        require(q.kinds == listOf(kind) && q.authors == listOf(author)) { "a stub takes its kind and author from the query, so the query must name exactly those" }
         val template = stub(kind, author)
         val out = ArrayList<EventDoc>()
         gated(gate) {
-            index.visitIds(q, withDTag = true) { page ->
+            index.visitIds(q, withDTag = kind.isAddressable()) { page ->
                 page.mapTo(out) { template.versionStub(it) }
                 true
             }

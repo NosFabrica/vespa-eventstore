@@ -67,12 +67,30 @@ class ReadShape private constructor(
     val declaresLens: Boolean get() = observer != null || includeSpam
 
     /**
-     * Whether the read answers the same set on every connection: it names its own lens, which
+     * Whether the read answers the same on every connection: it names its own lens, which
      * wins over a connection's, or it waives the floor and leaves a connection's lens nothing to
-     * act on (no text, no `sort:`, no explicit floor). A NEG-OPEN of such filters may share one
-     * snapshot across callers; any other read must be answered as the caller. Alike in failure
-     * too: the store looks a lens up only for a read that reads one, so a waived floor never
-     * waits on the provider lists, and a named lens is looked up for every caller the same way.
+     * act on (no text, no recognised `sort:`, no explicit floor). A NEG-OPEN of such filters may
+     * share one snapshot across callers; any other read must be answered as the caller. Alike in
+     * failure too: the store looks a lens up only for a read that reads one, so a waived floor
+     * never waits on the provider lists, and a named lens is looked up for every caller the same
+     * way.
+     *
+     * It covers every stored-read path, not only the NEG-OPEN walk: the REQ page (`query`,
+     * `rawQuery`), its COUNT, and the walk send the engine the same requests whoever the caller is
+     * (`ReadShapeTest` holds both the walk and the REQ and COUNT to it). A REQ does more per caller
+     * than the walk does, and each of those steps needs a read this property already excludes:
+     *
+     * - The `sort:links` rerank scores a page by the links the LENS's trusted persons wrote, so it
+     *   reads the caller's lens. But it runs only on a relevance-ordered page with a resolved lens.
+     *   `links` is not a profile the store knows ([ranked] is false for it), so a termless
+     *   `include:spam sort:links` is plain recall: it resolves no lens and nothing is reranked. With
+     *   text it is [ranked], so not alike. Under a named `observer:` the rerank reads that lens.
+     * - The reference expansion and the topical-intent probe run only on a read carrying terms, and
+     *   read the query's own observer, which is the named one when there is one.
+     * - The per-author cap applies only to a ranked page, and reads the page, not the caller.
+     *
+     * It says nothing about live events: a subscription's [LiveGate] is built per connection, by
+     * its own rule.
      */
     val answersEveryConnectionAlike: Boolean get() = observer != null || (includeSpam && !ranked && !floored)
 

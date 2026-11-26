@@ -302,6 +302,21 @@ class VespaEventIndex(
     private val http = VespaHttp()
 
     /**
+     * The WRITES' own client: the batch feed's uploads and the lone direct put. Built like [http]
+     * (same protocol, timeouts, liveness, retries, `Accept-Encoding: identity`), so every request
+     * is the one it was; only the connection differs. On [http] they shared the single HTTP/2
+     * connection OkHttp multiplexes per host with every query and document GET: one TCP send
+     * and receive path, one connection flow-control window and one reader thread for 8
+     * concurrent ~100-document batch bodies and multi-MB page answers alike, so a 3 ms existence
+     * check could queue behind either. That coupling is UNMEASURED (perf audit #4): the mixed
+     * read/write table in benchmark/README.md predates the batch path becoming the default, when
+     * writes still went through the feed client's own Jetty connections. `BENCH_MIXED=1` and
+     * `recencyLoadProbe` under a writer would show it. The reputation index has its own client
+     * already. The feed client ([feed]) is Jetty, apart from both.
+     */
+    private val writeHttp = VespaHttp()
+
+    /**
      * The headroom probe, on the endpoint this client already uses:
      * `/metrics/v2/values` reports EVERY content node, so one endpoint answers
      * for the cluster. Built here because this is where `http` and the
@@ -321,7 +336,7 @@ class VespaEventIndex(
 
     /** Null unless batching is on ([feedBatch]). */
     internal val batchFeed: VespaBatchFeed? =
-        feedBatch.takeIf { it > 1 }?.let { VespaBatchFeed(http, ::documentEndpoint, it, BATCH_CONCURRENCY) }
+        feedBatch.takeIf { it > 1 }?.let { VespaBatchFeed(writeHttp, ::documentEndpoint, it, BATCH_CONCURRENCY) }
 
     /** Batches the bundled batch handler has stored since this index opened; 0 while batching is off. */
     val feedBatchesSent: Long get() = batchFeed?.batchesSent ?: 0
@@ -435,6 +450,28 @@ class VespaEventIndex(
         if (resp.statusCode() == 404 && isAbsentDocument(resp.body())) return null
         require(resp.statusCode() < 400) { "vespa get ${resp.statusCode()}: ${resp.body().take(300)}" }
         return resp.decode(VESPA_JSON, DocEnvelope.serializer()).fields?.toDoc(withNearState = true)
+    }
+
+    /**
+     * Whether [get] would answer a document for [id], asked of the document API with
+     * `fieldSet=event:id`: the same GET, the same answers (a real 404 is absent, a 200 whose id
+     * field is set is stored, anything else is refused), but only the id comes back. A whole
+     * document is its search columns, stems and near arrays as well, and its tags parsed into a
+     * tree (a stored kind 3 is 50-500 KB of them), all to answer one bit. Whether proton then
+     * skips the document-store read is NOT known here; the bytes and the decode are what it saves
+     * for certain. Not for an address-keyed index, whose replaceables are not at the id docid.
+     */
+    private suspend fun stored(id: String): Boolean {
+        if (!Hex.isHexKey(id)) return false
+        val resp = http.get("${documentEndpoint()}/document/v1/$EVENT_NAMESPACE/$EVENT_DOCTYPE/docid/${docIdSegment(id)}?fieldSet=$EVENT_DOCTYPE:id")
+        if (resp.statusCode() == 404 && isAbsentDocument(resp.body())) return false
+        require(resp.statusCode() < 400) { "vespa get ${resp.statusCode()}: ${resp.body().take(300)}" }
+        // [get]'s null for a 200: no fields, or an empty id field ([VespaSummary.toDoc]).
+        return !resp
+            .decode(VESPA_JSON, DocEnvelope.serializer())
+            .fields
+            ?.id
+            .isNullOrEmpty()
     }
 
     /** One doc by its `id` attribute via the search stack — the id-lookup path under address-keying. */
@@ -560,7 +597,7 @@ class VespaEventIndex(
                     try {
                         // Null past the bound: the engine did not answer, so whether it applied the
                         // put is unknown, and the feed client puts it again, as on an IOException.
-                        withTimeoutOrNull(FEED_TIMEOUT.toMillis() + DIRECT_PUT_MARGIN.toMillis()) { http.postJsonOnce(url, body) }
+                        withTimeoutOrNull(FEED_TIMEOUT.toMillis() + DIRECT_PUT_MARGIN.toMillis()) { writeHttp.postJsonOnce(url, body) }
                     } catch (e: IOException) {
                         null
                     }
@@ -813,8 +850,15 @@ class VespaEventIndex(
      * the full-summary path end to end (see benchmark/README.md). Works
      * identically under address-keying: the `id` ATTRIBUTE carries the event id
      * whatever the docid is — the reason this stays on the search stack.
+     *
+     * Except ONE id on an id-keyed index, the per-event insert's dup probe under the writer
+     * lock, which was a whole-document [get]: it stays that GET, routed to the one node holding
+     * the docid, asking for the id field alone ([stored]). Whether that or a one-id search on
+     * `dedup` is faster is not measured; the GET is what the probe paid before, minus the bytes.
      */
     override suspend fun existingIds(ids: List<String>): Set<String> {
+        // ONE id is a key lookup: the per-event insert's dup probe, under the writer lock.
+        if (ids.size == 1 && !addressKeyed) return if (stored(ids[0])) setOf(ids[0]) else emptySet()
         // Demotion first: a demoted client must not build (and discard) the
         // ~35KB YQL per chunk — super rides search(), which handles the
         // no-valid-ids case itself.
@@ -2962,11 +3006,28 @@ class VespaEventIndex(
                     // 107,878 at hits=0 and 54,077 at hits=1, the latter equal to
                     // the page the same query serves; the same with a search term
                     // (3,714 vs 2,676). One hit forces the ranking pass the gate
-                    // lives in, for the price of one document summary.
-                    searchRoot(vq, hits = 1).fields.totalCount
+                    // lives in. That one hit is filled from the attribute-only `idtime`
+                    // summary, never the document store: fill is the only phase a summary
+                    // class reaches, so matching, the gate and `totalCount` are the same,
+                    // and a gated count no longer pays a cold document read for a hit it
+                    // throws away (perf audit #14).
+                    rankedCount(vq)
                 }
             }
         }
+    }
+
+    /** A ranked count's `totalCount` at one hit, the hit from `idtime`; asked whole on a schema without it, and from then on. */
+    private suspend fun rankedCount(vq: VespaQuery): Int {
+        if (fallbacks.idTimeSummaryAvailable) {
+            try {
+                return searchRoot(EventYql.idTimeOnly(vq), hits = 1).fields.totalCount
+            } catch (e: IllegalArgumentException) {
+                if (!fallbacks.isMissingIdTimeSummary(e)) throw e
+                fallbacks.markIdTimeSummaryMissing()
+            }
+        }
+        return searchRoot(vq, hits = 1).fields.totalCount
     }
 
     /**
@@ -3655,8 +3716,8 @@ class VespaEventIndex(
     fun feedInflight(): Long = feed.inflight()
 
     /**
-     * Graceful: the feed first (it waits for its writes in flight), then the read transport,
-     * whose OkHttp dispatcher and connection pool nothing else would ever release
+     * Graceful: the feed first (it waits for its writes in flight), then the write and the read
+     * transports, whose OkHttp dispatchers and connection pools nothing else would ever release
      * ([VespaHttp.close]) — even when the feed's close throws.
      */
     override fun close() {
@@ -3664,7 +3725,11 @@ class VespaEventIndex(
         try {
             feed.close()
         } finally {
-            http.close()
+            try {
+                writeHttp.close()
+            } finally {
+                http.close()
+            }
         }
     }
 
