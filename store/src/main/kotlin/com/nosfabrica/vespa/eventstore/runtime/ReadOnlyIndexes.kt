@@ -65,6 +65,8 @@ internal class ReadOnlyEventIndex(
 
     override suspend fun existingIds(ids: List<String>): Set<String> = inner.existingIds(ids)
 
+    override suspend fun stubs(ids: List<String>): List<EventDoc> = inner.stubs(ids)
+
     override suspend fun rawSearch(query: EventQuery): List<RawEvent> = inner.rawSearch(query)
 
     override suspend fun searchRanked(query: EventQuery): List<Ranked<EventDoc>> = inner.searchRanked(query)

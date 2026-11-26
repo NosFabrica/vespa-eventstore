@@ -96,6 +96,10 @@ class TrustProjection(
 
     override suspend fun existingIds(ids: List<String>): Set<String> = inner.existingIds(ids)
 
+    // A plain read: a stub removed reacts to nothing here unless it is a trust kind, whose
+    // removal reads the document (removed()), so a caller reads those whole (Deletions).
+    override suspend fun stubs(ids: List<String>): List<EventDoc> = inner.stubs(ids)
+
     // MUST delegate, not ride the interface default, which would route through
     // this decorator's search() and lose the raw passthrough (see EventIndex.rawSearch).
     override suspend fun rawSearch(query: EventQuery): List<RawEvent> = inner.rawSearch(query)

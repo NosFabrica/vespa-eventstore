@@ -22,3 +22,11 @@ So, on a dashboard, `Insert × get` falls to about the kind-5 deletions' own tar
 and `Insert × exists` rises by about one call per `insert()`. Their sum is what to compare across
 the upgrade. The read is also cheaper: on a 3,000-tag kind 3 the writer lock's hold per
 duplicate went from 16.5 to 2.1 ms (`benchmark/README.md` §2bc).
+
+## A kind 5's e-tag targets are read as stubs (2026-11)
+
+`insert()` of a NIP-09 deletion reads each e-tagged target before removing it (a
+`batchInsert()` carrying one reads them in its own preload, unchanged). Each target is still one document GET booked as `get`, but it now asks for the
+target's attribute fields alone (`EventIndex.stubs`), so a 3,000-tag kind 3 comes back as
+five fields. Only a trust-kind target (a 30382 card, a 10040) is then read again whole, one
+more `get` each, since the trust projection reads the removed document.

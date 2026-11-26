@@ -402,6 +402,31 @@ class VespaEventIndexTest {
             }
         }
 
+    /**
+     * STUBS ARE THE ATTRIBUTE FIELDS, READ BY KEY. A kind 5's e-tag targets are matched on kind
+     * and owner and removed by id, and were read whole (a stored kind 3 is 50-500 KB of tags)
+     * under the writer lock. One GET per id asks for the stub's fields alone, every one an
+     * attribute, which proton answers from memory; the stub holds them and nothing else. Absent
+     * and non-hex ids are left out, as [EventIndex.get] leaves them.
+     */
+    @Test
+    fun `stubs read only the attribute fields`() =
+        runBlocking {
+            val follows = doc(kind = 3, tags = List(2_000) { listOf("p", "%064x".format(it)) }, content = "x".repeat(1_000))
+            val wrap = doc(kind = 1059, pubkey = "b2".repeat(32), owner = "c3".repeat(32), tags = listOf(listOf("p", "c3".repeat(32))))
+            seed(follows, wrap)
+            mock.documentGetFieldSets.clear()
+
+            val stubs = index.stubs(listOf(follows.id, wrap.id, follows.id, "f".repeat(64), "not hex")).associateBy { it.id }
+
+            assertEquals(setOf(follows.id, wrap.id), stubs.keys)
+            assertEquals(List(3) { VespaEventIndex.STUB_FIELDS }, mock.documentGetFieldSets.toList(), "one GET per distinct hex id, of the stub's fields")
+            val k3 = stubs.getValue(follows.id)
+            assertEquals(listOf(3, follows.pubkey, follows.pubkey, follows.createdAt), listOf(k3.kind, k3.pubkey, k3.owner, k3.createdAt))
+            assertEquals(listOf(emptyList<List<String>>(), ""), listOf(k3.tags, k3.content), "and nothing else")
+            assertEquals("c3".repeat(32), stubs.getValue(wrap.id).owner, "the owner as stored, not the author")
+        }
+
     private fun doc(
         kind: Int = 1,
         pubkey: String = "a1".repeat(32),

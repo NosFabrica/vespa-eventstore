@@ -126,18 +126,28 @@ internal class Deletions(
      * itself afterwards, as the tombstone.
      */
     suspend fun applyDeletion(ev: DeletionRequestEvent) {
-        // Deletions routinely carry dozens of e-tags: resolve them with
-        // bounded-concurrent gets and remove the victims in ONE pipelined
+        // Deletions routinely carry dozens of e-tags: resolve them in one
+        // bounded-concurrent read and remove the victims in ONE pipelined
         // removeDocs — which also hands the trust projection its batch react.
+        //
+        // STUBS, not documents (EventIndex.stubs: id, kind, author, owner,
+        // created_at, and the d an address-keyed docid needs): all the match
+        // below and removeDocs read of a victim, as the a-tag victims below are
+        // read. A deleted kind 3 is 50-500 KB of tags, read here under the
+        // writer lock to be thrown away. A victim whose removal a decorator
+        // reacts to by reading the document (a 30382 card, a 10040: the trust
+        // projection's) is read again whole, one get each.
         val byId =
-            ev
-                .deleteEventIds()
-                .distinct()
-                .mapBounded(TARGET_GET_FANOUT) { index.get(it) }
-                .filterNotNull()
+            index
+                .stubs(ev.deleteEventIds())
                 // Kind 5 against a kind 5 or a kind 62 has no effect.
                 .filter { it.kind != DeletionRequestEvent.KIND && it.kind != RequestToVanishEvent.KIND }
                 .filter { it.owner == ev.pubKey }
+                .let { stubs ->
+                    val (whole, stubbed) = stubs.partition { it.kind in BulkRecordInsert.WHOLE_DOC_KINDS }
+                    // A card removed between the two reads is simply not removed here.
+                    stubbed + whole.mapBounded(TARGET_GET_FANOUT) { index.get(it.id) }.filterNotNull()
+                }
         if (byId.isNotEmpty()) index.removeDocs(byId)
         // A-tag targets: the queries are independent, so they run
         // bounded-concurrent and their victims are removed in ONE pipelined
@@ -368,8 +378,9 @@ internal class Deletions(
         // earlier, after ONE repeated page.
         const val MAX_SWEEP_ROUNDS = 10_000
 
-        // Concurrent doc-API gets when resolving a kind 5's e-tag targets.
-        // Gets are light, so this floats above QUERY_FANOUT.
+        // Concurrent reads when resolving a kind 5's targets: its a-tag
+        // queries, and the whole-document gets of its trust-kind e-tag
+        // victims. Light reads, so this floats above QUERY_FANOUT.
         const val TARGET_GET_FANOUT = 16
     }
 }

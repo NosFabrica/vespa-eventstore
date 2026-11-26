@@ -47,6 +47,7 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventSelection
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.engine.query.SelectForm
 import com.nosfabrica.vespa.eventstore.engine.query.VespaQuery
+import com.nosfabrica.vespa.eventstore.engine.removalStub
 import com.nosfabrica.vespa.eventstore.engine.requirePlainReplaceable
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.utils.Hex
@@ -413,6 +414,35 @@ class VespaEventIndex(
             .fields
             ?.id
             .isNullOrEmpty()
+    }
+
+    /**
+     * Each stored id as a [removalStub], read with a document GET of exactly the fields it holds
+     * ([STUB_FIELDS]), bounded-concurrent. Every one of them is an attribute, and proton answers
+     * a field set it holds all of in attributes from memory without reading the document store
+     * (`DocumentRetriever::need_fetch_from_doc_store`, Vespa 8.788), so a stored kind 3's
+     * thousands of tags are neither read, sent nor parsed. The answers are [get]'s: a real 404 is
+     * absent, a 200 is stored, anything else is refused.
+     *
+     * Address-keyed, an id is not a docid, so each is resolved by the id attribute as [get]
+     * resolves it, whole, and stripped: no attribute-only summary carries kind and author.
+     */
+    override suspend fun stubs(ids: List<String>): List<EventDoc> {
+        val hexes = ids.distinct().filter(Hex::isHexKey)
+        if (addressKeyed) return hexes.mapBounded(STUB_GET_FANOUT) { searchById(it)?.removalStub(withDTag = true) }.filterNotNull()
+        return hexes.mapBounded(STUB_GET_FANOUT) { stub(it) }.filterNotNull()
+    }
+
+    /** One id's [removalStub] off the document API, or null when it is not stored. */
+    private suspend fun stub(id: String): EventDoc? {
+        val resp = http.get("${documentEndpoint()}/document/v1/$EVENT_NAMESPACE/$EVENT_DOCTYPE/docid/${docIdSegment(id)}?fieldSet=$STUB_FIELDS")
+        if (resp.statusCode() == 404 && isAbsentDocument(resp.body())) return null
+        require(resp.statusCode() < 400) { "vespa get ${resp.statusCode()}: ${resp.body().take(300)}" }
+        return resp
+            .decode(VESPA_JSON, DocEnvelope.serializer())
+            .fields
+            ?.toDoc()
+            ?.removalStub(withDTag = false)
     }
 
     /** One doc by its `id` attribute via the search stack — the id-lookup path under address-keying. */
@@ -3635,6 +3665,12 @@ class VespaEventIndex(
 
         /** Concurrent document-API gets for a pure-id lookup. Gets are light (no summary stage to overrun), so this floats above QUERY_FANOUT. */
         const val ID_GET_FANOUT = 32
+
+        /** Concurrent GETs for [stubs]: the fan-out a kind 5's targets were resolved at when they were whole-document gets. */
+        const val STUB_GET_FANOUT = 16
+
+        /** The fields a [stubs] GET asks for: what a [removalStub] holds, every one an attribute (`event.sd`). */
+        const val STUB_FIELDS = "$EVENT_DOCTYPE:id,pubkey,kind,created_at,owner"
 
         /**
          * Authors per [newestVersions] grouping. The width the store's own

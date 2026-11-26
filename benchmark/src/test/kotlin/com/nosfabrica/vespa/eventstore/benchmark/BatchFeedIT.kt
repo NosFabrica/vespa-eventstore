@@ -80,6 +80,16 @@ class BatchFeedIT {
                         // (`fieldSet=event:id`): the same answers `get` gives, from a real engine.
                         assertEquals(setOf(notes[0].id), index.existingIds(listOf(notes[0].id)), "a stored id, by its id field")
                         assertEquals(emptySet(), index.existingIds(listOf(expired.id)), "an absent one")
+                        // A kind 5's targets are read as stubs: a GET of the attribute fields
+                        // alone (`VespaEventIndex.STUB_FIELDS`), which a real engine must answer
+                        // with exactly those fields.
+                        val stub = index.stubs(listOf(notes[1].id, expired.id)).single()
+                        assertEquals(
+                            listOf(notes[1].id, notes[1].pubkey, notes[1].owner, notes[1].kind, notes[1].createdAt),
+                            listOf(stub.id, stub.pubkey, stub.owner, stub.kind, stub.createdAt),
+                            "a stored id's stub, and nothing for the absent one",
+                        )
+                        assertEquals(listOf(emptyList<List<String>>(), ""), listOf(stub.tags, stub.content), "and no more than its attributes")
                         assertEquals(
                             notes.map { it.id }.toSet(),
                             index.search(EventQuery(kinds = listOf(1), search = "tarantellas", limit = 400)).map { it.id }.toSet(),

@@ -125,6 +125,12 @@ class CountingEventIndex(
         return inner.get(id)
     }
 
+    /** One get per id, as the engine sends them (bounded-concurrent document GETs). */
+    override suspend fun stubs(ids: List<String>): List<EventDoc> {
+        gets.addAndGet(ids.distinct().size.toLong())
+        return inner.stubs(ids)
+    }
+
     override suspend fun put(doc: EventDoc) {
         putCalls.incrementAndGet()
         puts.incrementAndGet()
