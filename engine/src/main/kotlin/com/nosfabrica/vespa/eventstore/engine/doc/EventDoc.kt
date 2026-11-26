@@ -22,17 +22,16 @@ package com.nosfabrica.vespa.eventstore.engine.doc
 import com.vitorpamplona.quartz.nip01Core.core.Address
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.HexKey
+import com.vitorpamplona.quartz.nip01Core.core.OptimizedJsonMapper
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.nip01Core.tags.isIndexableTagName
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
-import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
@@ -269,6 +268,15 @@ data class EventDoc(
          */
         val NEWEST_FIRST: Comparator<EventDoc> = compareByDescending<EventDoc> { it.createdAt }.thenBy { it.id }
 
+        /**
+         * The stored `tags` string ([tagsJson]) as the doc's tags, read by Quartz's Nostr reader
+         * (Kite, [OptimizedJsonMapper.fromJsonToTagArray]) straight into the arrays an [Event] holds:
+         * the one field a hit's summary still parses. kotlinx built a JSON tree per hit and copied
+         * it out; Kite reads 2-6x faster (a note's four tags 2.12 -> 0.34 us, a kind 3's 300 46 -> 15 us).
+         * Throws on a malformed string, as kotlinx did.
+         */
+        fun tagsFromJson(json: String): List<List<String>> = OptimizedJsonMapper.fromJsonToTagArray(json).map { it.asList() }
+
         /** Parse a raw NIP-01 event JSON into a doc (Quartz's parser). Throws on a malformed event. */
         fun fromEventJson(raw: String): EventDoc =
             Event.fromJson(raw).let { e ->
@@ -291,11 +299,7 @@ data class EventDoc(
                 pubkey = pubkey,
                 createdAt = fields.getValue("created_at").jsonPrimitive.long,
                 kind = fields.getValue("kind").jsonPrimitive.int,
-                tags =
-                    Json
-                        .parseToJsonElement(fields.getValue("tags").jsonPrimitive.content)
-                        .jsonArray
-                        .map { tag -> tag.jsonArray.map { it.jsonPrimitive.content } },
+                tags = tagsFromJson(fields.getValue("tags").jsonPrimitive.content),
                 content = fields["content"]?.jsonPrimitive?.content ?: "",
                 // Vespa OMITS empty-string fields from summaries: an unsigned
                 // rumor (sig == "") arrives with no `sig` key — default to ""

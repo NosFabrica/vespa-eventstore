@@ -21,11 +21,6 @@
 package com.nosfabrica.vespa.eventstore.engine.client
 
 import kotlinx.serialization.json.JsonObject
-import java.io.ByteArrayOutputStream
-import java.io.InputStream
-import java.nio.ByteBuffer
-import java.nio.charset.CharacterCodingException
-import java.nio.charset.CodingErrorAction
 
 /**
  * A SEARCH RESPONSE DECODED BY HAND, for the shapes the store's reads get back: the root's count
@@ -39,11 +34,12 @@ import java.nio.charset.CodingErrorAction
  * same text with kotlinx, so a response this has not seen is decoded exactly as before: a
  * degradation report, errors, any summary field past those, an escape or number form it does not
  * take, a null where one is not allowed. [decode] reads the same text kotlinx reads (the payload
- * decoded to UTF-16 once by okio), so a malformed byte is replaced the same way; [decodeStream],
- * for a payload too large for one String, decodes UTF-8 strictly and hands over anything
- * malformed. `matchfeatures` is the one value kotlinx still reads, as the JSON slice it is, so it
- * comes out the [JsonObject] kotlinx would build. `FastSearchDecoderTest` holds both entries to
- * kotlinx's answer on generated responses and on responses captured from Vespa.
+ * decoded to UTF-16 once by okio), so a malformed byte is replaced the same way. A payload too
+ * large for one String is not read here: kotlinx's stream decoder reads it faster than this read
+ * it a hit at a time (`VespaHttp.decodeSearch`). `matchfeatures` is the one value kotlinx still
+ * reads, as the JSON slice it is, so it comes out the [JsonObject] kotlinx would build.
+ * `FastSearchDecoderTest` holds it to kotlinx's answer on generated responses and on responses
+ * captured from Vespa.
  */
 internal object FastSearchDecoder {
     /** [text] as kotlinx would decode it into a [SearchEnvelope], or null when it is not a shape this reads. */
@@ -54,21 +50,7 @@ internal object FastSearchDecoder {
             null
         }
 
-    /**
-     * A payload too large to decode as one String (a G1 humongous allocation, `VespaHttp`'s
-     * `STRING_DECODE_MAX_BYTES`), read a hit at a time: the bytes are split at the root's
-     * `children` array, each hit decoded on its own, and everything around the array decoded as
-     * the small envelope it is. No String larger than one hit is built. Null when the payload is
-     * not a shape this reads, or not valid UTF-8; the caller then decodes it with kotlinx.
-     */
-    fun decodeStream(payload: InputStream): SearchEnvelope? =
-        try {
-            Splitter().split(payload)
-        } catch (_: NotThisShape) {
-            null
-        }
-
-    /** The one way out of [Reader] and [Splitter]: kotlinx decodes the payload instead. Stackless, so a fallback costs no trace. */
+    /** The one way out of [Reader]: kotlinx decodes the payload instead. Stackless, so a fallback costs no trace. */
     private object NotThisShape : RuntimeException(null, null, false, false) {
         private fun readResolve(): Any = NotThisShape
     }
@@ -95,9 +77,6 @@ internal object FastSearchDecoder {
             end()
             return SearchEnvelope(root, timing)
         }
-
-        /** One hit and nothing after it: [Splitter]'s unit. */
-        fun hitOnly(): SearchHit = hit().also { end() }
 
         private fun end() {
             ws()
@@ -563,161 +542,6 @@ internal object FastSearchDecoder {
             if (i >= s.length || s[i] != c) throw NotThisShape
             i++
         }
-    }
-
-    /**
-     * [decodeStream]'s byte-level pass. It tracks only what splitting needs: the nesting depth, whether
-     * it is inside a string (a UTF-8 multibyte sequence never holds a `"`, `\`, bracket or brace byte,
-     * so bytes can be read as structure without decoding), and the key last read at the two outer
-     * levels, which is how the root's `children` array is told from a `children` key anywhere else.
-     * Everything outside that array is copied to a small skeleton with the array emptied; each element
-     * of it is decoded by [Reader.hitOnly] as soon as it closes.
-     */
-    private class Splitter {
-        private val skeleton = ByteArrayOutputStream(1024)
-        private val hit = ByteArrayOutputStream(16 * 1024)
-        private val hits = ArrayList<SearchHit>()
-
-        /** Strict UTF-8: a malformed byte is kotlinx's to replace, not this pass's to guess. */
-        private val utf8 =
-            Charsets.UTF_8
-                .newDecoder()
-                .onMalformedInput(CodingErrorAction.REPORT)
-                .onUnmappableCharacter(CodingErrorAction.REPORT)
-
-        private var depth = 0
-        private var inString = false
-        private var escaped = false
-
-        /** The bytes of the string being read, kept only at the two outer levels, where a key can be `root` or `children`. */
-        private val token = ByteArrayOutputStream(32)
-
-        /** The key last completed at depth 1 (the envelope's) and depth 2 (the root's). */
-        private var outerKey: String? = null
-        private var rootKey: String? = null
-        private var lastString: String? = null
-
-        /** 0 outside the root's children; else the depth of the array, whose elements are hits. */
-        private var childrenDepth = 0
-
-        /** Set once the root's children have been read: a second array under that key replaces them, as kotlinx keeps the last. */
-        private var sawChildren = false
-
-        fun split(payload: InputStream): SearchEnvelope {
-            val buf = ByteArray(64 * 1024)
-            while (true) {
-                val n = payload.read(buf)
-                if (n < 0) break
-                for (k in 0 until n) step(buf[k])
-            }
-            if (depth != 0 || inString) throw NotThisShape
-            val envelope = Reader(text(skeleton)).envelope()
-            val root = envelope.root
-            return SearchEnvelope(SearchRoot(hits, root.coverage, root.fields, root.errors), envelope.timing)
-        }
-
-        private fun step(b: Byte) {
-            val c = b.toInt()
-            if (childrenDepth != 0 && depth > childrenDepth) {
-                hit.write(c)
-                track(c)
-                if (depth == childrenDepth) {
-                    // A hit just closed: decode it on its own and start the next.
-                    hits += Reader(text(hit)).hitOnly()
-                    hit.reset()
-                }
-                return
-            }
-            if (childrenDepth != 0 && depth == childrenDepth) {
-                // Between hits: commas and whitespace are not the skeleton's; a bracket ends the array.
-                when (c) {
-                    '{'.code -> {
-                        hit.write(c)
-                        track(c)
-                    }
-
-                    ']'.code -> {
-                        skeleton.write(c)
-                        track(c)
-                        childrenDepth = 0
-                    }
-
-                    ','.code, ' '.code, '\n'.code, '\r'.code, '\t'.code -> {}
-
-                    // Only objects are hits; anything else is a shape kotlinx reads.
-                    else -> {
-                        throw NotThisShape
-                    }
-                }
-                return
-            }
-            skeleton.write(c)
-            val before = depth
-            track(c)
-            if (c == '['.code && before == 2 && outerKey == "root" && rootKey == "children") {
-                if (sawChildren) hits.clear()
-                sawChildren = true
-                childrenDepth = depth
-            }
-        }
-
-        /** Depth, string and key bookkeeping for one structural byte. */
-        private fun track(c: Int) {
-            if (inString) {
-                when {
-                    escaped -> {
-                        escaped = false
-                        if (depth <= 2) token.write(c)
-                    }
-
-                    c == '\\'.code -> {
-                        escaped = true
-                        // An escaped key at the outer levels is never `root` or `children` as written: kotlinx's call.
-                        if (depth <= 2) token.write(c)
-                    }
-
-                    c == '"'.code -> {
-                        inString = false
-                        if (depth <= 2) lastString = token.toString(Charsets.UTF_8)
-                    }
-
-                    else -> {
-                        if (depth <= 2) token.write(c)
-                    }
-                }
-                return
-            }
-            when (c) {
-                '"'.code -> {
-                    inString = true
-                    token.reset()
-                }
-
-                ':'.code -> {
-                    when (depth) {
-                        1 -> outerKey = lastString
-                        2 -> rootKey = lastString
-                    }
-                }
-
-                '{'.code, '['.code -> {
-                    depth++
-                }
-
-                '}'.code, ']'.code -> {
-                    depth--
-                    if (depth < 0) throw NotThisShape
-                }
-            }
-        }
-
-        private fun text(bytes: ByteArrayOutputStream): String =
-            try {
-                utf8.reset()
-                utf8.decode(ByteBuffer.wrap(bytes.toByteArray(), 0, bytes.size())).toString()
-            } catch (_: CharacterCodingException) {
-                throw NotThisShape
-            }
     }
 
     /** Where a number or literal ends. */
