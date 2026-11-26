@@ -70,9 +70,9 @@ internal class VespaFeed(
             ?: (32 / urls.size).coerceAtLeast(1)
 
     /**
-     * `VESPA_FEED_COMPRESSION`: `auto` (the client's own default, gzip for any body over 512
-     * bytes), `gzip` or `none`. Read strictly: a misspelling fails at startup rather than
-     * silently keeping the default.
+     * `VESPA_FEED_COMPRESSION`: `none` (the default, [ClientTuning.DEFAULT_FEED_COMPRESSION]),
+     * `auto` (the client's own default, gzip for any body over 512 bytes) or `gzip`. Read
+     * strictly: a misspelling fails at startup rather than silently keeping the default.
      */
     private val compression: FeedClientBuilder.Compression = tuning.feedCompressionOrEnv()
 

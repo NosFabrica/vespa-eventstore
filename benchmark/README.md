@@ -3665,6 +3665,21 @@ Same harness and slice as above (vespa-relay's ingest benchmark, the first 100k 
 for a Vespa on the same host or LAN; across a WAN the bytes are the cost, and gzip keeps them to
 about 40% for tag-heavy events (`auto` or `gzip` there).
 
+**The default is `none` now (2026-11-26).** Only the feed client compresses: a batch through the
+bundled handler (`VESPA_FEED_BATCH`, on by default since) and a lone put with nothing in flight
+(`putDirect`) never did, so `auto` had come to gzip only the writes left to the client, the
+admissions that find it busy. Re-measured through vespa-relay on a same-host Vespa, four rounds
+each, alternated, a fresh 20,000-note slice of 2.3 KB notes per round:
+
+| | `auto` | `none` |
+|---|---|---|
+| bulk publish, s per 20,000 | 16.5 / 17.4 / 18.1 / 18.1 | 16.8 / 16.6 / 17.1 / 16.8 |
+| 20 clients publishing, ev/s | 932 / 943 / 1,049 / 1,106 | 1,082 / 957 / 1,037 / 1,045 |
+
+~4% on bulk (won 3/4), level on small notes (under 512 bytes, which `auto` never gzipped). So
+`none` is the default, and a deployment across a WAN sets `gzip`, knowing it reaches only the feed
+client's share of the writes: batches and direct puts go uncompressed whatever it says.
+
 ## Mixed read/write load (`BENCH_MIXED=1`)
 
 A relay never serves REQs from a quiet store — queries arrive while syncs

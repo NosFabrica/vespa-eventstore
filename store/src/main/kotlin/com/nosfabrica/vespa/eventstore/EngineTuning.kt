@@ -74,7 +74,7 @@ class EngineTuning(
     val feedBatch: Int? = null,
     /** `VESPA_FEED_CONNECTIONS` — feed connections PER ENDPOINT, at least 1. Default: 32 split across the feed endpoints (`VespaFeed`). */
     val feedConnections: Int? = null,
-    /** `VESPA_FEED_COMPRESSION` — `auto`, `gzip` or `none`. Default `auto` (`VespaFeed`). */
+    /** `VESPA_FEED_COMPRESSION` — `none`, `auto` or `gzip`. Default `none` (`ClientTuning.DEFAULT_FEED_COMPRESSION`). */
     val feedCompression: FeedCompression? = null,
     /** `VESPA_FEED_STREAMS` — HTTP/2 streams per feed connection, at least 1. Default 128 (`VespaFeed`). */
     val feedStreams: Int? = null,
