@@ -366,6 +366,42 @@ class VespaEventIndexTest {
             assertEquals(null, mock.documentGetFieldSets.last())
         }
 
+    /**
+     * A RANKED COUNT'S ONE HIT COMES FROM MEMORY. A gated or searching count asks for one hit to
+     * force the ranking pass its gate lives in, and reads `totalCount`; the hit itself is thrown
+     * away. It was filled from the full `nip01` summary, one document-store read per count (and
+     * per member of a multi-filter count). It now asks for the attribute-only `idtime` summary,
+     * which fill alone reads: matching, the gate and `totalCount` are the same. On a schema
+     * without `idtime` the count is asked again whole, and from then on whole.
+     */
+    @Test
+    fun `a ranked count fills its one hit from the attribute summary`() =
+        runBlocking {
+            seed(doc(content = "pizza"), doc(content = "pizza two"))
+            val gated = EventQuery(kinds = listOf(1), observer = "c".repeat(64), rankKey = "5e".repeat(32), minRank = 2.0, ranking = EventYql.RANK_RECENCY_GATED)
+            val searching = EventQuery(kinds = listOf(1), search = "pizza")
+            for (q in listOf(gated, searching)) {
+                mock.searchRequests.clear()
+                index.count(q)
+                val sent = mock.searchRequests.single()
+                assertEquals("1", sent["hits"], "$q: $sent")
+                assertEquals(EventYql.SUMMARY_IDTIME, sent["presentation.summary"], "$q: $sent")
+            }
+            mock.rejectIdTimeSummary = true
+            try {
+                VespaEventIndex(mock.url).use { old ->
+                    mock.searchRequests.clear()
+                    val first = old.count(searching)
+                    assertEquals(2, mock.searchRequests.size, "refused once, then asked whole: ${mock.searchRequests}")
+                    mock.searchRequests.clear()
+                    assertEquals(first, old.count(searching))
+                    assertTrue(mock.searchRequests.single()["presentation.summary"] != EventYql.SUMMARY_IDTIME, "and whole from then on")
+                }
+            } finally {
+                mock.rejectIdTimeSummary = false
+            }
+        }
+
     private fun doc(
         kind: Int = 1,
         pubkey: String = "a1".repeat(32),

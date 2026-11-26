@@ -2831,11 +2831,28 @@ class VespaEventIndex(
                     // 107,878 at hits=0 and 54,077 at hits=1, the latter equal to
                     // the page the same query serves; the same with a search term
                     // (3,714 vs 2,676). One hit forces the ranking pass the gate
-                    // lives in, for the price of one document summary.
-                    searchRoot(vq, hits = 1).fields.totalCount
+                    // lives in. That one hit is filled from the attribute-only `idtime`
+                    // summary, never the document store: fill is the only phase a summary
+                    // class reaches, so matching, the gate and `totalCount` are the same,
+                    // and a gated count no longer pays a cold document read for a hit it
+                    // throws away (perf audit #14).
+                    rankedCount(vq)
                 }
             }
         }
+    }
+
+    /** A ranked count's `totalCount` at one hit, the hit from `idtime`; asked whole on a schema without it, and from then on. */
+    private suspend fun rankedCount(vq: VespaQuery): Int {
+        if (fallbacks.idTimeSummaryAvailable) {
+            try {
+                return searchRoot(EventYql.idTimeOnly(vq), hits = 1).fields.totalCount
+            } catch (e: IllegalArgumentException) {
+                if (!fallbacks.isMissingIdTimeSummary(e)) throw e
+                fallbacks.markIdTimeSummaryMissing()
+            }
+        }
+        return searchRoot(vq, hits = 1).fields.totalCount
     }
 
     /**
