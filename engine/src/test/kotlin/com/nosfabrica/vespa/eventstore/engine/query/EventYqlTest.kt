@@ -2038,6 +2038,24 @@ class EventYqlTest {
         assertNull(EventYql.buildTrustCells(listOf("ab".repeat(32)), "5e".repeat(32) + ":v2"))
     }
 
+    /**
+     * The profile's match-phase depth is a ceiling a small read should not pay: the engine
+     * ranks every candidate it keeps, so a newest-1 read kept 20,000. A recency read now asks
+     * for [EventYql.MATCH_PHASE_HEADROOM] candidates per wanted hit, floored and capped; the
+     * gated profile (which drops candidates after the cut) and a relevance read do not.
+     */
+    @Test
+    fun `a recency read asks for a match-phase depth that follows its limit`() {
+        fun depth(q: EventQuery) = EventYql.build(q)!!.params[EventYql.P_MATCH_PHASE_MAX_HITS]
+        assertEquals(EventYql.RANK_RECENCY, EventYql.build(EventQuery(kinds = listOf(1), limit = 1))!!.ranking)
+        assertEquals("100", depth(EventQuery(kinds = listOf(1), limit = 1)), "floored at MATCH_PHASE_MIN_HITS")
+        assertEquals("500", depth(EventQuery(kinds = listOf(1), limit = 50)), "ten candidates per wanted hit")
+        assertEquals(EventYql.MATCH_PHASE_MAX_HITS.toString(), depth(EventQuery(kinds = listOf(1), limit = EventYql.MATCH_PHASE_BAND)), "never past the profile's own depth")
+        assertNull(depth(EventQuery(kinds = listOf(1), limit = 50, search = "bitcoin")), "a relevance read has no recency match phase")
+        val gated = EventQuery(kinds = listOf(1), limit = 50, ranking = EventYql.RANK_RECENCY_GATED, observer = "a1".repeat(32), rankKey = "a1".repeat(32), minRank = 2.0)
+        assertNull(depth(gated), "the gated profile keeps its depth: its gate drops candidates after the cut")
+    }
+
     private val linkId = "ab".repeat(32)
     private val linkAddress = "30023:${"cd".repeat(32)}:a.b(c)"
     private val lensedLinkers =

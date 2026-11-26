@@ -57,6 +57,21 @@ class RecencyPlannerTest {
     }
 
     @Test
+    fun `a remembered window is the span a page needed, scaled with the page`() {
+        // A newest-1 page one second back: remembered at the floor, not as the cold hour.
+        assertEquals(RecencyPlanner.MIN_LEARNED_WINDOW, RecencyPlanner.learnedWindow(1))
+        // A page that needed 20 minutes: remembered with its headroom.
+        assertEquals(2_400L, RecencyPlanner.learnedWindow(1_200))
+        // Scaled to the read that recalls it: the floor for limit 1 grows a hundredfold for 100.
+        assertEquals(6_000L, RecencyPlanner.recalledWindow(RecencyPlanner.learnedWindow(1), learnedLimit = 1, limit = 100))
+        // Bounded both ways, and safe at the edges of Long.
+        assertEquals(RecencyPlanner.MIN_LEARNED_WINDOW, RecencyPlanner.recalledWindow(6_000, learnedLimit = 1_000, limit = 1))
+        assertEquals(RecencyPlanner.MAX_WINDOW, RecencyPlanner.learnedWindow(Long.MAX_VALUE))
+        assertEquals(RecencyPlanner.MIN_LEARNED_WINDOW, RecencyPlanner.learnedWindow(-5))
+        assertEquals(RecencyPlanner.MAX_WINDOW, RecencyPlanner.recalledWindow(RecencyPlanner.MAX_WINDOW, learnedLimit = 1, limit = Int.MAX_VALUE))
+    }
+
+    @Test
     fun `widening never creeps`() {
         assertEquals(8 * 3_600L, RecencyPlanner.widen(3_600, got = 49, limit = 50), "a nearly-full window still jumps 8x")
         assertEquals(800 * 3_600L, RecencyPlanner.widen(3_600, got = 1, limit = 200), "a thin one jumps by four times its rate")

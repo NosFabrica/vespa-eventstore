@@ -1383,6 +1383,37 @@ query counts for the busy and narrow cases; a ranked count asks for one hit),
 `RecencyStrategyIT`, which checks every strategy against the page computed from
 the corpus itself on a real Vespa, gate and tie group included.
 
+### A simple read is one small query (2026-11-26)
+
+`./gradlew :benchmark:simpleReadsProbe`, against the nostr-relay-bench 300k public corpus (120,528
+live events over six days, its newest note 42 days behind the wall clock) on one Vespa container
+sharing two cores with an idle relay; 60–80 reps one at a time, the speculative client with its
+memory, the real clock; p50 ms and engine queries per read. Before is `main` at 6c9eef63; after is
+the five rules in AGENTS.md's *Recency planning*. Every page equals `FULL_SCAN`'s in both, and
+`recencyStrategyProbe` / `recencyEdgeProbe` still serve identical pages under every strategy.
+
+| read | before | after | after, via `VespaEventStore.query` |
+|---|---:|---:|---:|
+| newest 1, kinds 1/7/30023 | 7.1 [1] | 3.8 [1] | 2.2 |
+| newest 100, kinds 1/7/30023 | 9.0 [1] | 6.0 [1] | 4.9 |
+| newest 100, kind 1 | 11.2 [1] | 5.6 [1] | 3.9 |
+| scroll back 1 day, 100 | 12.1 [1] | 5.0 [1] | 4.2 |
+| scroll back 20 days, 100 (empty) | 9.9 [4] | 2.1 [1] | 1.7 |
+| profile, kind 0, no limit (500) | 5.5 [2] | 2.4 [1] | 2.0 |
+| home feed, 300 follows, 50 | 12.6 [1] | 4.9 [1] | 4.5 |
+| home feed, 300 follows, 1 | 11.4 [1] | 5.3 [1] | 4.6 |
+| latest note, one author, 1 | 3.0 [1] | 2.7 [1] | 2.1 |
+| id miss | 1.6 [0] | 1.4 [0] | 1.6 |
+
+What moved, read off the probe's recency outcomes and Vespa's own timing: with the clock 42 days
+past the data every no-`until` read was learned NARROW and matched its whole kind (~100k
+documents) to keep a page; the scroll-backs were windowed but at a recalled width of 100 hours,
+because the memory kept the hour a limit-1 read tried rather than the second it needed; the empty
+scroll paid the count-probe ladder (four queries); the profile was read id-first at the relay's
+default limit and hydrated. After, the windows hold 1–400 documents, and what is left of a read is
+the engine's floor (~0.7ms of search) plus summaries, transport and decoding: a 100-event page is
+~2.5ms of search, ~0.7ms of summary fill and ~2.5ms in the client.
+
 ### The tie slack is learned per shape (2026-11-22, revised 2026-11-23)
 
 A recency page overfetched a flat `TIE_SLACK` of 64, sized for wide pages: a
@@ -2459,6 +2490,7 @@ timing is also a proof:
 | `relayE2EProbe` | what a client sees: REQ → EOSE over a relay WebSocket beside the engine client on the same filters, and `NostrSemanticsStore.rawQuery` in-process against the engine under it | any loaded store and (for `wire`) a relay pointed at it; read-only | the relay's page and the store's page must equal the engine's |
 | `recencyLoadProbe` | the recency strategies under load: closed-loop throughput at rising concurrency on a relay-shaped mix, and the same reads while a writer lands events on a live clock (engine CPU from `docker stats`, Vespa's match/summary split per REQ) | any loaded store; its writes are TEMPORARY — every id logged before its put, all removed at the end, `BENCH_CLEANUP_ONLY=1` to finish an interrupted run | sampled pages identical across variants with the writes in place; zero probe events left by id |
 | `recencyEdgeProbe` | the speculative strategy's edges: distinct follow lists under concurrency, `until` pagination and random depths, the band edge to 5,000, a stale memory across a hashtag burst, a far-future `until` (`BENCH_SECTIONS`) | any loaded store, read-only | every check must serve the identical page across shipped / speculative / + memory |
+| `simpleReadsProbe` | the simple reads a client sends most (newest N, scroll-backs, a profile, an author's latest note, a home feed, misses), one at a time on the real clock: p50/p95, engine queries per read, Vespa's search and summary time, docs matched, the recency outcome taken; `BENCH_FACADE=1` repeats them through `VespaEventStore.query` | any loaded store, read-only | every page must equal `FULL_SCAN`'s |
 | `recencyStrategyProbe` | the four `RecencyStrategy` options on the dominant feed shapes, plain and gated (`BENCH_OBSERVER`), with engine queries per REQ | any loaded store, read-only (`BENCH_NOW` pins the clock to a frozen corpus) | all four strategies must serve the identical page, ids and order |
 | `transportProbe` | read-transport isolation: JDK h1 / OkHttp h1 / OkHttp h2c on identical queries across body sizes | any loaded store | — |
 | `pinReplayProbe` | a Quartz pin bump on real data: per-kind drift between what the engine holds and what the new pin derives, the scoped `reindexFullTextSearch(kinds)`, NIP-50 probes before and after (procedure: `pin_replay.py`) | a capture of the moved kinds plus a control set of the unmoved searchable kinds, loaded at the OLD pin | before the repair every stale kind must be on the list; after it `--require-clean` fails on any stale doc; `pin_replay.py grade` fails unless each added term hits only after, each dropped term only before, each control both times |

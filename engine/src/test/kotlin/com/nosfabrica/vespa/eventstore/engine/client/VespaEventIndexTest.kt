@@ -53,7 +53,11 @@ import kotlin.test.assertTrue
  */
 class VespaEventIndexTest {
     private val mock = MockVespaEngine()
-    private val index = VespaEventIndex(mock.url)
+
+    // Pinned to the request clock: these tests drive the window mechanics around a clock anchor,
+    // with documents dated near 1970, which with the data-end anchor on would move every anchor
+    // (and every shape's memory key) to where the seeded data ends. That anchor has tests of its own.
+    private val index = VespaEventIndex(mock.url, dataEndAnchor = false)
     private val reference = InMemoryEventIndex()
 
     @AfterTest
@@ -951,7 +955,7 @@ class VespaEventIndexTest {
             seedStrategyCorpus(now)
             val quietMention = doc(kind = 1, pubkey = QUIET, at = 1_500L, tags = listOf(listOf("p", "c0".repeat(32))))
             seed(quietMention)
-            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE).use { speculative ->
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE, dataEndAnchor = false).use { speculative ->
                 VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.FULL_SCAN).use { reference ->
                     fun mentions(key: String) = EventQuery(kinds = listOf(1), tags = mapOf("p" to listOf(key)), limit = 10, nowSecs = now)
 
@@ -1028,7 +1032,7 @@ class VespaEventIndexTest {
         runBlocking {
             val now = System.currentTimeMillis() / 1000
             seedStrategyCorpus(now)
-            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE).use { speculative ->
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE, dataEndAnchor = false).use { speculative ->
                 suspend fun read(q: EventQuery): Pair<List<Long>, Int> {
                     val before = mock.searchRequests.size
                     val page = speculative.search(q).map { it.createdAt }
@@ -1074,7 +1078,7 @@ class VespaEventIndexTest {
         runBlocking {
             val now = System.currentTimeMillis() / 1000
             seedStrategyCorpus(now)
-            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE).use { speculative ->
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE, dataEndAnchor = false).use { speculative ->
                 suspend fun sent(q: EventQuery): Int {
                     val before = mock.searchRequests.size
                     speculative.search(q)
@@ -1163,7 +1167,7 @@ class VespaEventIndexTest {
         runBlocking {
             val now = System.currentTimeMillis() / 1000
             seedStrategyCorpus(now)
-            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE, recencyMemory = false).use { speculative ->
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE, dataEndAnchor = false, recencyMemory = false).use { speculative ->
                 val narrow = EventQuery(authors = listOf(QUIET), limit = 3, nowSecs = now)
                 repeat(2) {
                     val before = mock.searchRequests.size
@@ -4076,6 +4080,136 @@ class VespaEventIndexTest {
                     assertEquals(same.map { it.id }, page.map { it.id }, "the id-first build serves the same page")
                     assertEquals(same.map { it.content }, page.map { it.content }, "and the same documents, whole")
                 }
+            }
+        }
+
+    /** The `created_at >= …` floor of a page query, or null when it has none (an unwindowed read). */
+    private fun Map<String, String>.sinceFloor(): Long? =
+        Regex("created_at >= (-?\\d+)")
+            .find(getValue("yql"))
+            ?.groupValues
+            ?.get(1)
+            ?.toLong()
+
+    /** The data-end hint's own read: the newest id and time at or before the clock, nothing else. */
+    private fun Map<String, String>.isDataEndRead() = isIdTime() && getValue("yql").contains("where created_at <=") && getValue("hits") == "1"
+
+    /**
+     * A shape's window memory keeps the span its page NEEDED. It kept the window it happened to
+     * try: a cold hour that held the one note a limit-1 read wanted was recalled, scaled to a
+     * limit of 100, as a hundred hours — every document in them matched and sorted for a page
+     * that lay in its last hundred seconds.
+     */
+    @Test
+    fun `a remembered window is the span the page needed, not the window tried`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            val author = "e1".repeat(32)
+            seed(*(1..300).map { doc(kind = 1, pubkey = author, at = now - it) }.toTypedArray())
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE, dataEndAnchor = false).use { speculative ->
+                val one = EventQuery(kinds = listOf(1), authors = listOf(author), limit = 1, nowSecs = now)
+                assertEquals(reference.search(one).map { it.id }, speculative.search(one).map { it.id })
+                val hundred = one.copy(limit = 100)
+                val before = mock.searchRequests.size
+                assertEquals(reference.search(hundred).map { it.id }, speculative.search(hundred).map { it.id })
+                val sent = mock.searchRequests.drop(before)
+                assertEquals(1, sent.size, "the recalled window proves the page: $sent")
+                val floor = assertNotNull(sent.single().sinceFloor(), "a windowed read: $sent")
+                // One second needed -> the 60s floor, times 100: 6,000s. The hour tried, times 100, was 360,000s.
+                assertEquals(now - RecencyPlanner.recalledWindow(RecencyPlanner.MIN_LEARNED_WINDOW, 1, 100), floor, "the window the page needed, scaled: $sent")
+            }
+        }
+
+    /**
+     * A store whose data ends long before the clock — quiet, archived, restored — found every
+     * window back from the clock empty, learned each shape NARROW, and served every later read
+     * unwindowed, the whole match set sorted to keep a page. Now the first all-empty read is the
+     * cue: from then on reads anchor where the data ends, are windowed there, and resolve in one
+     * query again. The pages are the reference's throughout.
+     */
+    @Test
+    fun `a store whose data ends before the clock is read from where its data ends`() =
+        runBlocking {
+            val end = 5_000_000L
+            seed(*(1..200).map { doc(kind = 1, at = end - it) }.toTypedArray())
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE).use { speculative ->
+                val q = EventQuery(kinds = listOf(1), limit = 10)
+                // Every window back from the clock is empty: an exact page all the same, and the cue.
+                assertEquals(reference.search(q).map { it.id }, speculative.search(q).map { it.id })
+                val before = mock.searchRequests.size
+                assertEquals(reference.search(q).map { it.id }, speculative.search(q).map { it.id })
+                val sent = mock.searchRequests.drop(before)
+                assertTrue(sent.first().isDataEndRead(), "asks where the data ends first: $sent")
+                val page = sent.drop(1)
+                assertEquals(1, page.size, "then one windowed read proves the page: $sent")
+                val floor = assertNotNull(page.single().sinceFloor(), "windowed, not the whole match set sorted: $sent")
+                assertTrue(floor >= end - 1 - RecencyPlanner.FIRST_WINDOW, "the window sits where the data ends: $floor")
+                // Remembered there: the next read is one query, and the hint is not asked again.
+                val at = mock.searchRequests.size
+                assertEquals(reference.search(q).map { it.id }, speculative.search(q).map { it.id })
+                val next = mock.searchRequests.drop(at)
+                assertEquals(1, next.size, "one query from then on: $next")
+                assertNotNull(next.single().sinceFloor(), "$next")
+            }
+        }
+
+    /**
+     * A shape remembered NARROW was served through the count-probe ladder whenever its `until`
+     * sat past the recency profile's horizon: a count for the hour, the day and the month before
+     * the read — round trips spent looking for the window the shape had just been measured not
+     * to have. On a scroll past the oldest note that was four queries for an empty page the
+     * unwindowed read proves in one.
+     */
+    @Test
+    fun `a shape remembered narrow is one query, with no count ladder before it`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            seed(*(1..3).map { doc(kind = 1, at = now - 400 * 86_400L - it) }.toTypedArray())
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE, dataEndAnchor = false).use { speculative ->
+                val q = EventQuery(kinds = listOf(1), until = now - 40 * 86_400L, limit = 50, nowSecs = now)
+                assertEquals(reference.search(q).map { it.id }, speculative.search(q).map { it.id })
+                val before = mock.searchRequests.size
+                assertEquals(reference.search(q).map { it.id }, speculative.search(q).map { it.id })
+                val sent = mock.searchRequests.drop(before)
+                assertEquals(1, sent.size, "the unwindowed read alone: $sent")
+                assertNull(sent.single().sinceFloor(), "$sent")
+            }
+        }
+
+    /**
+     * A replaceable kind holds one live version per author, so a profile or a contact list asked
+     * with the relay's default limit of 500 can match at most one document per author. It was
+     * fetched id-first all the same — 500 ids asked for, then the one document hydrated: two
+     * queries for one event. A read whose answer is bounded that small is direct.
+     */
+    @Test
+    fun `a read whose answer its authors bound is one full-summary query whatever its limit`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            val author = "e4".repeat(32)
+            seed(doc(kind = 0, pubkey = author, at = now - 50), doc(kind = 1, pubkey = author, at = now - 40), doc(kind = 30023, pubkey = author, at = now - 30, tags = listOf(listOf("d", "post"))))
+            VespaEventIndex(mock.url, dataEndAnchor = false).use { direct ->
+                for (q in listOf(
+                    EventQuery(kinds = listOf(0), authors = listOf(author), limit = 500, nowSecs = now),
+                    EventQuery(kinds = listOf(30023), authors = listOf(author), tags = mapOf("d" to listOf("post")), limit = 500, nowSecs = now),
+                )) {
+                    val before = mock.searchRequests.size
+                    assertEquals(reference.search(q).map { it.id }, direct.search(q).map { it.id })
+                    val sent = mock.searchRequests.drop(before)
+                    assertEquals(1, sent.size, "one query for kinds ${q.kinds}: $sent")
+                    assertFalse(sent.single().isIdTime() || sent.single().isHydrate(), "documents, no hydrate: $sent")
+                }
+                // A regular kind has no such bound: at 500 it still reads ids first.
+                val notes = EventQuery(kinds = listOf(1), authors = listOf(author), limit = 500, nowSecs = now)
+                val at = mock.searchRequests.size
+                assertEquals(reference.search(notes).map { it.id }, direct.search(notes).map { it.id })
+                assertTrue(
+                    mock.searchRequests
+                        .drop(at)
+                        .first()
+                        .isIdTime(),
+                    "${mock.searchRequests.drop(at)}",
+                )
             }
         }
 

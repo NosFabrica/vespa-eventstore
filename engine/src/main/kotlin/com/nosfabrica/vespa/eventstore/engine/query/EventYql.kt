@@ -213,6 +213,27 @@ object EventYql {
      */
     val MATCH_PHASE_BAND: Int get() = MATCH_PHASE_MAX_HITS / MATCH_PHASE_HEADROOM
 
+    /** The query parameter that overrides the rank profile's match-phase `max-hits` for one request. */
+    const val P_MATCH_PHASE_MAX_HITS = "ranking.matchPhase.maxHits"
+
+    /** The fewest candidates a [RANK_RECENCY] query keeps per node, however small its limit. */
+    const val MATCH_PHASE_MIN_HITS = 100
+
+    /**
+     * The match-phase depth a [RANK_RECENCY] read of [limit] asks for: [MATCH_PHASE_HEADROOM]
+     * candidates per wanted hit, at least [MATCH_PHASE_MIN_HITS], at most the profile's
+     * [MATCH_PHASE_MAX_HITS].
+     *
+     * The profile's depth is a CEILING, not a cost a small read should pay: the engine matches
+     * and ranks every candidate it keeps, so a newest-1 read at the profile's 20,000 cost 5ms of
+     * search where it costs 2ms at 100 (kinds 1/7/30023 over the 300k bench corpus, 2026-11-26),
+     * and a limit-1 page needs one. The headroom is the same factor the band leaves under the
+     * profile depth, for the same reason: max-hits is a target the engine may undershoot, and a
+     * cut that comes back short costs an exact rerun. Exactness is unchanged — a degraded page is
+     * accepted only when [VespaEventIndex] can prove it (full, one node, no boundary tie).
+     */
+    fun matchPhaseMaxHitsFor(limit: Int): Int = (limit.toLong() * MATCH_PHASE_HEADROOM).coerceIn(MATCH_PHASE_MIN_HITS.toLong(), MATCH_PHASE_MAX_HITS.toLong()).toInt()
+
     /**
      * Vespa's per-query match-thread override. The cluster config
      * (`numthreadspersearch` in services.xml) is the CEILING; this parameter
@@ -689,6 +710,10 @@ object EventYql {
         if (ranking != RANK_UNRANKED && ranking != RANK_RECENCY) {
             params[F_NOW_SECS] = nowOf(q).toString()
         }
+        // A recency read's match-phase depth follows its limit (see [matchPhaseMaxHitsFor]).
+        // Only the ungated profile: the gated one drops untrusted candidates AFTER the cut, so a
+        // tighter cut there would come back short, and rerun exact, far more often.
+        if (ranking == RANK_RECENCY) q.limit?.let { params[P_MATCH_PHASE_MAX_HITS] = matchPhaseMaxHitsFor(it).toString() }
         // The gated profiles are STANDALONE (see event.sd): they declare the two
         // trust inputs, score by created_at, and read no text signal at all. The
         // term-weighting features [filterClauses] emits alongside a search term
