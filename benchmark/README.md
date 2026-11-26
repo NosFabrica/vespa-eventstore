@@ -1778,6 +1778,45 @@ renders every shape's where-node back to the YQL clause `build` writes;
 and requires the same ids in the same order. The unit tests' mock engine answers
 `select` as a refusing engine would, so they run on YQL as before.
 
+### The relay's own CPU per REQ (2026-11-26)
+
+The query container is the largest consumer; the relay is next. Profiled the same
+way (JFR on vespa-relay, 25 s under nostr-bench `req` at 200 clients over a 101k-note
+corpus, one Vespa query per REQ), the relay spent its ~450 us per REQ on:
+
+| where the relay's CPU went | share |
+|---|---|
+| decoding Vespa's search answers (kotlinx: a String per key, a map lookup, an unescape per value) | 30% |
+| OkHttp's HTTP/2 client (a call thread per query, the connection's reader thread, stream bookkeeping) | ~30% |
+| writing each websocket frame's UTF-8 into its direct buffer, two thirds of it `java.nio.Buffer.session` | 11% |
+| quartz's relay session, the observer gate, coroutines | the rest |
+
+Two of those moved. Search answers are now read by `FastSearchDecoder`: a hand decoder
+for the answer a recency read nearly always gets (count, coverage, hits holding an
+event's fields), matching keys where they lie and finding a string's ends with the
+JDK's vectorized `String.indexOf`; anything else returns null and kotlinx decodes the
+same text (`FastSearchDecoderTest` holds it to kotlinx's answer on 12,000 generated
+answers). And vespa-relay encodes a frame with `String.toByteArray` and one bulk copy:
+on JDK 25 Netty has no `Unsafe` memory access, so its `writeUtf8` put byte by byte.
+Three rounds each, alternated, CPU per REQ from `/proc`:
+
+| | relay us/REQ | REQ/s |
+|---|---|---|
+| before | 464 / 453 / 456 | 2,498 / 2,545 / 2,451 |
+| frame encoding | 431 / 421 / 436 | 2,516 / 2,547 / 2,614 |
+| frame encoding, then the decoder (its own A/B) | 429 / 430 / 426 -> 411 / 404 / 400 | ~2,590 -> ~2,640 |
+
+The decoder's share fell from 30% to 17%; the frame write's to 0.5%. What was tried and
+lost: queries over HTTP/1.1 with a pool of 1,024 kept-alive connections, to shed
+OkHttp's HTTP/2 bookkeeping. Relay CPU per REQ rose 394-410 -> 503-508 us, the query
+container's 553-559 -> 668-679 us, REQ/s fell 2,670-2,761 -> 2,165-2,235 (-19%):
+HTTP/2 stays. What is left is OkHttp's per-call thread hand-off and reader thread, the
+decoder's remaining unescape of `tags` and `content` (which the relay then escapes
+again), and the per-frame atomics of a reply's eleven offers. Each needs a structural
+change: a non-blocking HTTP/2 client, an event that carries its JSON escaped, a batched
+reply. A REQ already costs one Vespa query here (1.01 per REQ measured), so fewer
+queries per REQ only pays for REQs with several filters.
+
 ### Small batches take the bulk path (2026-11-23)
 
 `NostrSemanticsStore.batchInsert` sent batches under `BULK_MIN` (16) through the
