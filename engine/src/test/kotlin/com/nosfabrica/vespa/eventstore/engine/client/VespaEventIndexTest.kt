@@ -307,6 +307,36 @@ class VespaEventIndexTest {
             )
         }
 
+    /**
+     * WRITES TRAVEL ON A CONNECTION OF THEIR OWN. Every query, document GET and batch upload used
+     * to share the one HTTP/2 connection OkHttp multiplexes per host: one TCP send and receive
+     * path, one connection flow-control window, one reader thread, so a burst of ~100-document
+     * batch bodies and a multi-MB page answer queued behind each other (perf audit #4; the
+     * coupling is unmeasured). The batch feed and the lone direct put now have their own client,
+     * configured like the read one, so the requests are byte for byte the same and only the
+     * connection differs.
+     */
+    @Test
+    fun `batch and direct writes do not share the read connection`() =
+        runBlocking {
+            VespaEventIndex(mock.url, feedBatch = 100).use { batched ->
+                val docs = List(150) { doc(content = "batched $it") }
+                mock.connections.clear()
+                batched.putAll(docs)
+                batched.put(doc(content = "a lone write"))
+                batched.search(EventQuery(kinds = listOf(1), limit = 10))
+                assertEquals(docs[0].id, batched.get(docs[0].id)?.id)
+
+                val byPath = mock.connections.groupBy({ it.first }, { it.second })
+                val writes = (byPath[VespaBatchFeed.PATH].orEmpty() + byPath.filterKeys { it.startsWith("/document/v1/event/event/docid/") && it != "/document/v1/event/event/docid/${docs[0].id}" }.values.flatten()).toSet()
+                val reads = (byPath["/search/"].orEmpty() + byPath["/document/v1/event/event/docid/${docs[0].id}"].orEmpty()).toSet()
+                assertTrue(byPath.getValue(VespaBatchFeed.PATH).size >= 2, "the batch path ran: ${mock.connections}")
+                assertEquals(1L, batched.directPuts, "the lone write went direct")
+                assertTrue(writes.isNotEmpty() && reads.isNotEmpty(), "${mock.connections}")
+                assertTrue(writes.intersect(reads).isEmpty(), "writes on $writes, reads on $reads")
+            }
+        }
+
     private fun doc(
         kind: Int = 1,
         pubkey: String = "a1".repeat(32),
