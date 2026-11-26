@@ -1383,6 +1383,82 @@ query counts for the busy and narrow cases; a ranked count asks for one hit),
 `RecencyStrategyIT`, which checks every strategy against the page computed from
 the corpus itself on a real Vespa, gate and tie group included.
 
+### A simple read is one small query (2026-11-26)
+
+`./gradlew :benchmark:simpleReadsProbe`, against the nostr-relay-bench 300k public corpus (120,528
+live events over six days, its newest note 42 days behind the wall clock) on one Vespa container
+sharing two cores with an idle relay; 60–80 reps one at a time, the speculative client with its
+memory, the real clock; p50 ms and engine queries per read. Before is `main` at 6c9eef63; after is
+the five rules in AGENTS.md's *Recency planning*. Every page equals `FULL_SCAN`'s in both, and
+`recencyStrategyProbe` / `recencyEdgeProbe` still serve identical pages under every strategy.
+
+| read | before | after | after, via `VespaEventStore.query` |
+|---|---:|---:|---:|
+| newest 1, kinds 1/7/30023 | 7.1 [1] | 3.8 [1] | 2.2 |
+| newest 100, kinds 1/7/30023 | 9.0 [1] | 6.0 [1] | 4.9 |
+| newest 100, kind 1 | 11.2 [1] | 5.6 [1] | 3.9 |
+| scroll back 1 day, 100 | 12.1 [1] | 5.0 [1] | 4.2 |
+| scroll back 20 days, 100 (empty) | 9.9 [4] | 2.1 [1] | 1.7 |
+| profile, kind 0, no limit (500) | 5.5 [2] | 2.4 [1] | 2.0 |
+| home feed, 300 follows, 50 | 12.6 [1] | 4.9 [1] | 4.5 |
+| home feed, 300 follows, 1 | 11.4 [1] | 5.3 [1] | 4.6 |
+| latest note, one author, 1 | 3.0 [1] | 2.7 [1] | 2.1 |
+| id miss | 1.6 [0] | 1.4 [0] | 1.6 |
+
+What moved, read off the probe's recency outcomes and Vespa's own timing: with the clock 42 days
+past the data every no-`until` read was learned NARROW and matched its whole kind (~100k
+documents) to keep a page; the scroll-backs were windowed but at a recalled width of 100 hours,
+because the memory kept the hour a limit-1 read tried rather than the second it needed; the empty
+scroll paid the count-probe ladder (four queries); the profile was read id-first at the relay's
+default limit and hydrated. After, the windows hold 1–400 documents, and what is left of a read is
+the engine's floor (~0.7ms of search) plus summaries, transport and decoding: a 100-event page is
+~2.5ms of search, ~0.7ms of summary fill and ~2.5ms in the client.
+
+**One pass hides what shapes teach each other.** The memory keys a shape on its filter and its
+anchor's age bucket, so a span one read learns is recalled by reads at other anchors. Run three
+times in order (`BENCH_PASSES=3`), the first build of these rules regressed from pass two: an
+empty 20-day scroll learned kinds 1/7/30023 narrow, and a limit-1 read anchored 281s past that
+filter's newest note recalled a 60s window, found it empty and learned narrow too — after which the
+dense `until` reads of the shape sorted their whole match set (newest 1 at `until` = newest note,
+2.3ms to 12.6ms; a 1-day scroll-back, 4ms to 13ms). The last three rules in AGENTS.md's *Recency
+planning* close it; on pass three every dense read is windowed, one query, 2.0–4.9ms, and the empty
+scroll is three queries (two attempts and the unwindowed read), 4.9ms.
+
+**After the audit (2026-11-26).** Six fixes to the rules above, each with a test that fails without
+it: the limit-sized match-phase depth goes only to a one-node cluster (on several, `recallRoot`
+cannot prove a cut page and would rerun most reads); the data-end hint is a `hitLimit` range on
+`created_at`, not the `recency` match-phase, which a crowd of future-dated events empties, and is
+refreshed in the background after its first read; an empty read at an `until` just behind the clock
+is remembered narrow again; only a read anchored at the clock switches the hint on; and a narrow or
+all-empty read keeps the count ladder where the `recency` profile cannot take it (an `until` past its
+30-day horizon), since unranked it sorts everything below the `until`. That last fix put the empty
+20-day scroll (62 days behind the clock here) back on the ladder: six queries, 13–17ms p50 over three
+passes. A second hint, where the data STARTS, takes it back: a read below the oldest stored event is
+its one unwindowed query. Three passes, 60 reps, the same corpus and cores:
+
+| read (pass 3) | queries | p50 ms | p95 ms | via `rawQuery` p50 |
+|---|---:|---:|---:|---:|
+| newest 1, kinds 1/7/30023 | 1 | 2.6 | 3.4 | 3.0 |
+| newest 100, kinds 1/7/30023 | 1 | 5.2 | 8.5 | 4.6 |
+| newest 100, kind 1 | 1 | 4.5 | 7.5 | 5.0 |
+| scroll back 1 day, 100 | 1 | 4.8 | 7.1 | 4.6 |
+| scroll back 20 days, 100 (empty) | 1 | 2.5 | 5.1 | 1.9 |
+| profile, kind 0, no limit (500) | 1 | 2.8 | 6.4 | 2.8 |
+| home feed, 300 follows, 50 | 1 | 4.6 | 9.6 | 6.4 |
+| home feed, 300 follows, 1 | 1 | 3.7 | 4.2 | 3.4 |
+| latest note, quiet author, 1 | 1 | 2.6 | 4.6 | 2.6 |
+| id miss | 0 | 1.8 | 3.7 | 1.6 |
+
+A scroll past one FILTER's oldest event, on a store with older data, still pays the attempts and the
+ladder: the store-wide bound cannot say where one author's notes start.
+
+**Through the relay** (vespa-relay main at 2ac8de97 built against this store, the same corpus, a
+Python `websockets` client one REQ at a time, warm): every shape above is 2.3–6.0ms p50 — when the
+client does not offer `permessage-deflate`. Offering it (the Python client's default) the relay
+compresses every EVENT frame and the 50–100-event pages rise to 8.3–9.0ms: about 35µs an event in
+compression and inflation. strfry on the same corpus, cores and client, without compression:
+0.3–4.8ms.
+
 ### The tie slack is learned per shape (2026-11-22, revised 2026-11-23)
 
 A recency page overfetched a flat `TIE_SLACK` of 64, sized for wide pages: a
@@ -1777,6 +1853,60 @@ renders every shape's where-node back to the YQL clause `build` writes;
 `SelectQueryIT` reads 33 shapes both ways against a real Vespa under two strategies
 and requires the same ids in the same order. The unit tests' mock engine answers
 `select` as a refusing engine would, so they run on YQL as before.
+
+### The relay's own CPU per REQ (2026-11-26)
+
+The query container is the largest consumer; the relay is next. Profiled the same
+way (JFR on vespa-relay, 25 s under nostr-bench `req` at 200 clients over a 101k-note
+corpus, one Vespa query per REQ), the relay spent its ~450 us per REQ on:
+
+| where the relay's CPU went | share |
+|---|---|
+| decoding Vespa's search answers (kotlinx: a String per key, a map lookup, an unescape per value) | 30% |
+| OkHttp's HTTP/2 client (a call thread per query, the connection's reader thread, stream bookkeeping) | ~30% |
+| writing each websocket frame's UTF-8 into its direct buffer, two thirds of it `java.nio.Buffer.session` | 11% |
+| quartz's relay session, the observer gate, coroutines | the rest |
+
+Two of those moved. Search answers are now read by `FastSearchDecoder`: a hand decoder
+for the answer a recency read nearly always gets (count, coverage, hits holding an
+event's fields), matching keys where they lie and finding a string's ends with the
+JDK's vectorized `String.indexOf`; anything else returns null and kotlinx decodes the
+same text (`FastSearchDecoderTest` holds it to kotlinx's answer on 12,000 generated
+answers). And vespa-relay encodes a frame with `String.toByteArray` and one bulk copy:
+on JDK 25 Netty has no `Unsafe` memory access, so its `writeUtf8` put byte by byte.
+Three rounds each, alternated, CPU per REQ from `/proc`:
+
+| | relay us/REQ | REQ/s |
+|---|---|---|
+| before | 464 / 453 / 456 | 2,498 / 2,545 / 2,451 |
+| frame encoding | 431 / 421 / 436 | 2,516 / 2,547 / 2,614 |
+| frame encoding, then the decoder (its own A/B) | 429 / 430 / 426 -> 411 / 404 / 400 | ~2,590 -> ~2,640 |
+
+The decoder's share fell from 30% to 17%; the frame write's to 0.5%. What was tried and
+lost: queries over HTTP/1.1 with a pool of 1,024 kept-alive connections, to shed
+OkHttp's HTTP/2 bookkeeping. Relay CPU per REQ rose 394-410 -> 503-508 us, the query
+container's 553-559 -> 668-679 us, REQ/s fell 2,670-2,761 -> 2,165-2,235 (-19%):
+HTTP/2 stays. What is left is OkHttp's per-call thread hand-off and reader thread, the
+decoder's remaining unescape of `tags` and `content` (which the relay then escapes
+again), and the per-frame atomics of a reply's eleven offers. Each needs a structural
+change: a non-blocking HTTP/2 client, an event that carries its JSON escaped, a batched
+reply. A REQ already costs one Vespa query here (1.01 per REQ measured), so fewer
+queries per REQ only pays for REQs with several filters.
+
+A review of the decoder then widened it and tightened it (2026-11-26). It now reads the
+`idtimetag` summary's `tag_index` and a ranked search's `matchfeatures` (as the JSON slice it
+is, through kotlinx, so the object is kotlinx's), so the id walk's d-tag pages and NIP-50
+searches no longer fall back; a page past `STRING_DECODE_MAX_BYTES` is split into hits at the
+byte level and each decoded on its own (`FastSearchDecoder.decodeStream`), so no String larger
+than one hit is built and the largest pages are covered too. Keys are matched on their length
+first, the escaped-string buffer is sized to the string, and an unranked `0.0` relevance is
+taken without a parse. Measured against the first version, seven alternated rounds: 2,570 vs
+2,545 REQ/s and 411 vs 417 us of relay CPU per REQ in the last four, within the rounds' own
+spread (2,450-2,784): no measurable change on this `nip01` workload, which none of the widened
+shapes is part of. `FastSearchDecoderTest` now runs both entries on every case, against
+kotlinx's string and stream decoders, and includes answers captured from Vespa: it writes an
+emoji as an escaped surrogate pair (`\uD83D\uDE00`) and CJK raw, which the generated cases had
+not.
 
 ### Small batches take the bulk path (2026-11-23)
 
@@ -2459,6 +2589,7 @@ timing is also a proof:
 | `relayE2EProbe` | what a client sees: REQ → EOSE over a relay WebSocket beside the engine client on the same filters, and `NostrSemanticsStore.rawQuery` in-process against the engine under it | any loaded store and (for `wire`) a relay pointed at it; read-only | the relay's page and the store's page must equal the engine's |
 | `recencyLoadProbe` | the recency strategies under load: closed-loop throughput at rising concurrency on a relay-shaped mix, and the same reads while a writer lands events on a live clock (engine CPU from `docker stats`, Vespa's match/summary split per REQ) | any loaded store; its writes are TEMPORARY — every id logged before its put, all removed at the end, `BENCH_CLEANUP_ONLY=1` to finish an interrupted run | sampled pages identical across variants with the writes in place; zero probe events left by id |
 | `recencyEdgeProbe` | the speculative strategy's edges: distinct follow lists under concurrency, `until` pagination and random depths, the band edge to 5,000, a stale memory across a hashtag burst, a far-future `until` (`BENCH_SECTIONS`) | any loaded store, read-only | every check must serve the identical page across shipped / speculative / + memory |
+| `simpleReadsProbe` | the simple reads a client sends most (newest N, scroll-backs, a profile, an author's latest note, a home feed, misses), one at a time on the real clock: p50/p95, engine queries per read, Vespa's search and summary time, docs matched, the recency outcome taken; `BENCH_FACADE=1` repeats them through `VespaEventStore.query` | any loaded store, read-only | every page must equal `FULL_SCAN`'s |
 | `recencyStrategyProbe` | the four `RecencyStrategy` options on the dominant feed shapes, plain and gated (`BENCH_OBSERVER`), with engine queries per REQ | any loaded store, read-only (`BENCH_NOW` pins the clock to a frozen corpus) | all four strategies must serve the identical page, ids and order |
 | `transportProbe` | read-transport isolation: JDK h1 / OkHttp h1 / OkHttp h2c on identical queries across body sizes | any loaded store | — |
 | `pinReplayProbe` | a Quartz pin bump on real data: per-kind drift between what the engine holds and what the new pin derives, the scoped `reindexFullTextSearch(kinds)`, NIP-50 probes before and after (procedure: `pin_replay.py`) | a capture of the moved kinds plus a control set of the unmoved searchable kinds, loaded at the OLD pin | before the repair every stale kind must be on the list; after it `--require-clean` fails on any stale doc; `pin_replay.py grade` fails unless each added term hits only after, each dropped term only before, each control both times |
@@ -3665,6 +3796,21 @@ Same harness and slice as above (vespa-relay's ingest benchmark, the first 100k 
 14-15% more publishes per second, a fifth of the relay's CPU per event and 7% of Vespa's. That is
 for a Vespa on the same host or LAN; across a WAN the bytes are the cost, and gzip keeps them to
 about 40% for tag-heavy events (`auto` or `gzip` there).
+
+**The default is `none` now (2026-11-26).** Only the feed client compresses: a batch through the
+bundled handler (`VESPA_FEED_BATCH`, on by default since) and a lone put with nothing in flight
+(`putDirect`) never did, so `auto` had come to gzip only the writes left to the client, the
+admissions that find it busy. Re-measured through vespa-relay on a same-host Vespa, four rounds
+each, alternated, a fresh 20,000-note slice of 2.3 KB notes per round:
+
+| | `auto` | `none` |
+|---|---|---|
+| bulk publish, s per 20,000 | 16.5 / 17.4 / 18.1 / 18.1 | 16.8 / 16.6 / 17.1 / 16.8 |
+| 20 clients publishing, ev/s | 932 / 943 / 1,049 / 1,106 | 1,082 / 957 / 1,037 / 1,045 |
+
+~4% on bulk (won 3/4), level on small notes (under 512 bytes, which `auto` never gzipped). So
+`none` is the default, and a deployment across a WAN sets `gzip`, knowing it reaches only the feed
+client's share of the writes: batches and direct puts go uncompressed whatever it says.
 
 ## Mixed read/write load (`BENCH_MIXED=1`)
 

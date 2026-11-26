@@ -54,6 +54,7 @@ import java.net.URLDecoder
 import java.nio.ByteBuffer
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.GZIPInputStream
 import java.util.zip.GZIPOutputStream
@@ -425,6 +426,25 @@ class MockVespaEngine(
     @Volatile var matchPhaseNodes: Int = 1
 
     /**
+     * Content nodes reported in an UNDEGRADED answer's coverage block (`coverage.nodes`): how a
+     * client learns the cluster's width from the answers it already gets.
+     */
+    @Volatile var contentNodes: Int = 1
+
+    /** Whether the last [matchPhaseCutAboveUntil] match dropped a candidate; read and cleared by the same search. */
+    private var cutAboveUntilFired = false
+
+    /**
+     * Real Vespa's `recency` match-phase cut keeps a node's newest `max-hits` documents by
+     * `created_at` BEFORE a `created_at <= until` bound filters them (why
+     * [EventYql.RECENT_UNTIL_HORIZON] exists): with this on, a `recency` read with an `until`
+     * matches only those of its newest `ranking.matchPhase.maxHits` (else the profile's
+     * [EventYql.MATCH_PHASE_MAX_HITS]) candidates, `until` ignored, that lie at or before it —
+     * marked match-phase degraded when the cut dropped anything. Off by default.
+     */
+    @Volatile var matchPhaseCutAboveUntil: Boolean = false
+
+    /**
      * Vespa's SORTING DEGRADER: a query that orders by `created_at` is cut —
      * one hit, match-phase degraded — unless it carries
      * `sorting.degrading=false`, on any profile, because the sort key is a
@@ -446,6 +466,14 @@ class MockVespaEngine(
      * (the default) places none.
      */
     @Volatile var cutWhere: ((yql: String) -> Boolean)? = null
+
+    /**
+     * A search whose yql [holdSearchWhere] picks waits on [holdSearches] (at most 10s) before it is
+     * answered: how a test shows a read does not wait on a query it has no need of.
+     */
+    @Volatile var holdSearchWhere: ((yql: String) -> Boolean)? = null
+
+    @Volatile var holdSearches: CountDownLatch? = null
 
     /**
      * The relevance a hit is served with, and the order hits come back in
@@ -803,6 +831,7 @@ class MockVespaEngine(
         }
         params["ranking"]?.let { searchRankings += it }
         searchRequests += params
+        if (holdSearchWhere?.invoke(yql) == true) holdSearches?.await(10, TimeUnit.SECONDS)
         // The existence check rides a dedicated attribute-only summary class; a
         // schema deployed before it 400s naming the class (verified against
         // real Vespa: `Summary 'dedup' does not exist`).
@@ -859,7 +888,15 @@ class MockVespaEngine(
         // below-floor author's documents and drops them in the rank phase, so
         // they cost the engine the same — [matchCounts] books this, not what
         // the gate let through.
-        val matched = runBlocking { inner.search(query.copy(limit = null)) }
+        val cutAboveUntil = matchPhaseCutAboveUntil && !grouped && params["ranking"] == "recency" && query.until != null
+        val matched =
+            if (cutAboveUntil) {
+                val depth = params[EventYql.P_MATCH_PHASE_MAX_HITS]?.toIntOrNull() ?: EventYql.MATCH_PHASE_MAX_HITS
+                val candidates = runBlocking { inner.search(query.copy(until = null, limit = null)) }
+                candidates.take(depth).filter { it.createdAt <= query.until!! }.also { if (candidates.size > depth) cutAboveUntilFired = true }
+            } else {
+                runBlocking { inner.search(query.copy(limit = null)) }
+            }
         val admitted =
             matched
                 .let { docs ->
@@ -881,7 +918,9 @@ class MockVespaEngine(
         // Repeats BEFORE the yql limit: real Vespa merges every cluster's hits, repeats and all, and
         // then cuts the page at the query's `limit`, which wins over the `hits` parameter.
         val repeated = if (repeatFirstHits > 0 && !grouped) admitted.flatMapIndexed { i, d -> if (i < repeatFirstHits) listOf(d, d) else listOf(d) } else admitted
-        val matches = query.limit?.let { repeated.take(it) } ?: repeated
+        // `order by created_at asc` (EventYql.buildOldest): oldest first, before the limit.
+        val ordered = if (" order by created_at asc" in yql) repeated.reversed() else repeated
+        val matches = query.limit?.let { ordered.take(it) } ?: ordered
         // Simulated match-phase under-delivery: fewer hits than the limit, with
         // ONLY the match-phase degradation flag set (see [matchPhaseUnderdeliver]).
         val underdeliver = matchPhaseUnderdeliver > 0 && !grouped && (params["ranking"] == "recency" || params["ranking"] == "recency_gated")
@@ -894,7 +933,7 @@ class MockVespaEngine(
                 params["ranking"] == EventYql.RANK_UNRANKED &&
                 params[EventYql.SORT_DEGRADING] != EventYql.SORT_DEGRADING_OFF
         val placedCut = !grouped && cutWhere?.invoke(yql) == true
-        val cut = underdeliver || autoCut || placedCut
+        val cut = underdeliver || autoCut || placedCut || (cutAboveUntil && cutAboveUntilFired.also { cutAboveUntilFired = false })
         val served =
             when {
                 underdeliver -> minOf(matchPhaseUnderdeliver, hits)
@@ -1007,7 +1046,7 @@ class MockVespaEngine(
             )
             put("documents", JsonPrimitive(documents))
             put("full", JsonPrimitive(full))
-            put("nodes", JsonPrimitive(1))
+            put("nodes", JsonPrimitive(contentNodes))
             put("results", JsonPrimitive(1))
             put("resultsFull", JsonPrimitive(if (full) 1 else 0))
             reason?.let { put("degraded", buildJsonObject { put(it, JsonPrimitive(true)) }) }
@@ -1502,7 +1541,7 @@ object MockYql {
             limit = it.groupValues[1].toInt()
             rest = rest.removeRange(it.range)
         }
-        rest = rest.removeSuffix(" order by created_at desc")
+        rest = rest.removeSuffix(" order by created_at desc").removeSuffix(" order by created_at asc")
 
         var q = EventQuery(limit = limit)
         if (rest == "true") return q
@@ -1555,6 +1594,15 @@ object MockYql {
 
                     clause.startsWith("kind in (") -> {
                         q.copy(kinds = ints(clause))
+                    }
+
+                    // `{hitLimit:1,descending:…}range(created_at, lo, hi)`: the newest (or oldest)
+                    // document with `created_at` in [lo, hi] (EventYql.buildNewestAtOrBefore,
+                    // buildOldest). Modelled as the range itself, which is exact for both callers,
+                    // whose `order by created_at … limit 1` keeps only that one document anyway.
+                    HIT_LIMIT_RANGE.matches(clause) -> {
+                        val (lo, hi) = HIT_LIMIT_RANGE.find(clause)!!.destructured
+                        q.copy(since = lo.toLong(), until = hi.toLong())
                     }
 
                     clause.startsWith("created_at >= ") -> {
@@ -1645,6 +1693,8 @@ object MockYql {
     }
 
     /** `id contains ({prefix:true}"<hex>")` — exactly [EventYql]'s id-prefix clause. */
+    private val HIT_LIMIT_RANGE = Regex("""^\{hitLimit:1,descending:(?:true|false)\}range\(created_at, (-?\d+), (-?\d+)\)$""")
+
     private val ID_PREFIX_CLAUSE = Regex("""^id contains \(\{prefix:true\}"([0-9a-f]{1,64})"\)$""")
 
     /** Exactly 3 parens (one word), 4 (AND'd words), or 5 (AND'd words with pair coverage) — anything else is drift. */

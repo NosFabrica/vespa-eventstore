@@ -38,12 +38,23 @@ import javax.xml.transform.stream.StreamResult
  * schema and code can never drift.
  *
  * The package is deployed VERBATIM apart from one deployment-shaped choice:
- * whether the container writes an access log. That cannot be a compile-time
- * constant because it depends on who is talking to the engine. A store fed by
- * its own mirroring router logs mostly itself — the write path is read-heavy,
- * so ~500 req/s of dedup existence checks become ~3.2 GB/hour of JSON nobody
- * reads — while a store answering real client queries wants exactly that
- * record. Hence [ACCESS_LOG_ENV] rather than a fork of services.xml.
+ * whether the container writes an access log, which is OFF unless asked for.
+ * A store fed by its own mirroring router logs mostly itself — the write path
+ * is read-heavy, so ~500 req/s of dedup existence checks become ~3.2 GB/hour
+ * of JSON nobody reads — and the log cost 12% of publish throughput on an
+ * ingesting relay; under REQ load it costs ~1% of the container's CPU. A
+ * deployment that wants the per-request record (a store answering real
+ * clients it wants to trace) sets [ACCESS_LOG_ENV] to `default`, Vespa's own
+ * log. Hence [ACCESS_LOG_ENV] rather than a fork of services.xml.
+ *
+ * SWITCHING IT IS A LIVE RECONFIGURATION, and it is a deploy. Measured on Vespa 8.763,
+ * deploying `disabled` over `default` and back: `configChangeActions` empty both ways (no
+ * restart, refeed or reindex), and not one of 3,050 and 3,578 queries sent across the two
+ * deploys failed. But the package differs, so a store
+ * that deploys if changed redeploys once on its first boot after the default moved, wherever
+ * [ACCESS_LOG_ENV] was unset. And every process deploying to one Vespa must agree on the
+ * setting: two that differ (a relay and its sync process upgraded one at a time, or with the
+ * variable set on one only) each redeploy the other's package on every boot.
  *
  * And one PROTOTYPE topology choice: the author-shard count ([zipBytes]'s `authorShards`) splits the content cluster into several,
  * by author, each holding its authors' events and reputation documents ([shardContent]).
@@ -52,7 +63,7 @@ object VespaApp {
     /** Classpath location of the bundled package (see vespa/build.gradle.kts). */
     const val RESOURCE = "/vespa-app.zip"
 
-    /** Env var controlling the container's access log. Unset keeps Vespa's default. */
+    /** Env var controlling the container's access log: `default` keeps Vespa's; unset, blank or `disabled` turns it off. */
     const val ACCESS_LOG_ENV = "VESPA_ACCESS_LOG"
 
     /**
@@ -76,7 +87,7 @@ object VespaApp {
 
     /**
      * The zipped application package bytes, ready to POST to a Vespa config
-     * server. Honors [ACCESS_LOG_ENV]; unset ships the package as built.
+     * server. Honors [ACCESS_LOG_ENV]; unset ships it with the access log off.
      */
     fun zipBytes(): ByteArray = zipBytes(System.getenv(ACCESS_LOG_ENV))
 
@@ -98,7 +109,8 @@ object VespaApp {
      * environment — the programmatic form of [ACCESS_LOG_ENV], for an embedder
      * that configures the store in code and for the integration test that has
      * to DEPLOY the rewritten package (an env var cannot be set from inside the
-     * JVM that reads it). `null` or blank means "as built".
+     * JVM that reads it). `null` or blank means disabled, the default; `default`
+     * means the package as built, with Vespa's own access log.
      */
     fun zipBytes(
         accessLog: String?,
@@ -123,7 +135,8 @@ object VespaApp {
                 "$ACCESS_LOG_ENV='$accessLog' is not one of ${ACCESS_LOG_VALUES.sorted().joinToString(", ")}"
             }
         }
-        val disable = value == "disabled"
+        // Off unless asked for: unset or blank is `disabled`.
+        val disable = value == null || value == "disabled"
         if (!disable && buckets.clusters == 1) return raw
 
         return rewrite(raw, SERVICES) { xml ->

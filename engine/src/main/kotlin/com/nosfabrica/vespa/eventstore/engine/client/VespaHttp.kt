@@ -337,6 +337,20 @@ internal class VespaHttp(
             } else {
                 json.decodeFromStream(deserializer, payload.clone().inputStream())
             }
+
+        /**
+         * The payload as a search answer: [FastSearchDecoder] where it reads the shape, else
+         * kotlinx on the same payload, exactly as [decode] reads it. A payload past
+         * [STRING_DECODE_MAX_BYTES] is never one String: the hand decoder reads it a hit at a time
+         * ([FastSearchDecoder.decodeStream]), and kotlinx's fallback streams it as [decode] does.
+         */
+        fun decodeSearch(): SearchEnvelope {
+            if (payload.size > STRING_DECODE_MAX_BYTES) {
+                return FastSearchDecoder.decodeStream(payload.clone().inputStream()) ?: decode(VESPA_JSON, SearchEnvelope.serializer())
+            }
+            val text = payload.clone().readUtf8()
+            return FastSearchDecoder.decode(text) ?: VESPA_JSON.decodeFromString(SearchEnvelope.serializer(), text)
+        }
     }
 
     /**

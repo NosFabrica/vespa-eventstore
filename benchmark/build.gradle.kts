@@ -266,6 +266,16 @@ tasks.register<JavaExec>("recencyStrategyProbe") {
     maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
 }
 
+// The simple reads a client sends most, one at a time on the real clock, with engine
+// queries per read and a same-page check against FULL_SCAN. See SimpleReadsProbe.kt.
+tasks.register<JavaExec>("simpleReadsProbe") {
+    group = "verification"
+    description = "Time the common simple REQ shapes one at a time, count engine queries per read, and check each page against FULL_SCAN"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.nosfabrica.vespa.eventstore.benchmark.probe.SimpleReadsProbe")
+    maxHeapSize = System.getenv("BENCH_HEAP") ?: "2g"
+}
+
 // The speculative strategy's EDGES — distinct follow lists under concurrency,
 // until-pagination, the band edge, a trending hashtag against a stale memory,
 // a far-future until — with a same-page check. See RecencyEdgeProbe.kt.

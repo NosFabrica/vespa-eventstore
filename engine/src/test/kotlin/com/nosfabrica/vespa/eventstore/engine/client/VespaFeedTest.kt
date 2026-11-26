@@ -20,10 +20,21 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.client
 
+import ai.vespa.feed.client.FeedClientBuilder
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 class VespaFeedTest {
+    /** Nothing gzipped unless asked: only the feed client compresses at all, and on a same-host Vespa `none` is the faster. */
+    @Test
+    fun aFeedCompressesNothingUnlessToldTo() {
+        assumeTrue(System.getenv(ClientTuning.FEED_COMPRESSION) == null, "VESPA_FEED_COMPRESSION is set in this shell")
+        assertEquals(FeedClientBuilder.Compression.none, ClientTuning().feedCompressionOrEnv())
+        assertEquals(FeedClientBuilder.Compression.auto, ClientTuning(feedCompression = FeedCompression.AUTO).feedCompressionOrEnv())
+        assertEquals(FeedClientBuilder.Compression.gzip, ClientTuning(feedCompression = FeedCompression.GZIP).feedCompressionOrEnv())
+    }
+
     @Test
     fun aFeedThatWillNotWriteBuildsNoClient() {
         // Nothing listens on port 1: building the client would fail its handshake, so this proves none was built.

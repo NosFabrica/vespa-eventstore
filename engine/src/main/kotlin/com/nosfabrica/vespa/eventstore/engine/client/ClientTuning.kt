@@ -92,8 +92,11 @@ class ClientTuning(
 
     internal fun feedConnectionsOrEnv(): Int? = feedConnections ?: env(FEED_CONNECTIONS)?.toIntOrNull()
 
-    /** Strict even from the environment, as it always was: a misspelt compression fails the client. */
-    internal fun feedCompressionOrEnv(): FeedClientBuilder.Compression = (feedCompression ?: env(FEED_COMPRESSION)?.trim()?.let(::compressionOf) ?: FeedCompression.AUTO).client
+    /**
+     * Strict even from the environment, as it always was: a misspelt compression fails the client.
+     * [FeedCompression.NONE] when nothing names one ([DEFAULT_FEED_COMPRESSION]).
+     */
+    internal fun feedCompressionOrEnv(): FeedClientBuilder.Compression = (feedCompression ?: env(FEED_COMPRESSION)?.trim()?.let(::compressionOf) ?: DEFAULT_FEED_COMPRESSION).client
 
     internal fun feedStreamsOrEnv(): Int = feedStreams ?: env(FEED_STREAMS)?.toIntOrNull() ?: DEFAULT_FEED_STREAMS
 
@@ -146,6 +149,15 @@ class ClientTuning(
         const val FEED_BATCH = "VESPA_FEED_BATCH"
         const val FEED_CONNECTIONS = "VESPA_FEED_CONNECTIONS"
         const val FEED_COMPRESSION = "VESPA_FEED_COMPRESSION"
+
+        /**
+         * `VESPA_FEED_COMPRESSION`'s default: nothing gzipped. Only the feed client compresses at all: a
+         * batch (the default write path, `VESPA_FEED_BATCH`) and a lone put with nothing in flight never
+         * did, so `auto` gzipped only the writes left to the client. Measured 2026-11-26 through
+         * vespa-relay on a same-host Vespa, four rounds each, 20,000 2.3 KB notes in bulk: 17.5 s under
+         * `auto`, 16.8 s under `none` (~4%, won 3/4); 20 publishing clients level. Across a WAN set `gzip`.
+         */
+        val DEFAULT_FEED_COMPRESSION = FeedCompression.NONE
         const val FEED_STREAMS = "VESPA_FEED_STREAMS"
         const val FEED_INFLIGHT_FACTOR = "VESPA_FEED_INFLIGHT_FACTOR"
         const val VISIT_SLICES = "VESPA_VISIT_SLICES"
@@ -205,12 +217,12 @@ class ClientTuning(
 enum class FeedCompression(
     internal val client: FeedClientBuilder.Compression,
 ) {
-    /** The client's default: gzip any body over 512 bytes. */
+    /** The feed client's own default: gzip any body over 512 bytes. */
     AUTO(FeedClientBuilder.Compression.auto),
 
     /** Every body gzipped — tag-heavy documents across a WAN. */
     GZIP(FeedClientBuilder.Compression.gzip),
 
-    /** Nothing gzipped — a Vespa on the same host, where inflating costs more than the bytes. */
+    /** Nothing gzipped, the default ([ClientTuning.DEFAULT_FEED_COMPRESSION]) — a Vespa on the same host or LAN, where inflating costs more than the bytes. */
     NONE(FeedClientBuilder.Compression.none),
 }
