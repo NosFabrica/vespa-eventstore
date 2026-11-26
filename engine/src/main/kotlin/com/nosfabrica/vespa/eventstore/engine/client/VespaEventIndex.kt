@@ -390,9 +390,17 @@ class VespaEventIndex(
      * `fieldSet=event:id`: the same GET, the same answers (a real 404 is absent, a 200 whose id
      * field is set is stored, anything else is refused), but only the id comes back. A whole
      * document is its search columns, stems and near arrays as well, and its tags parsed into a
-     * tree (a stored kind 3 is 50-500 KB of them), all to answer one bit. Whether proton then
-     * skips the document-store read is NOT known here; the bytes and the decode are what it saves
-     * for certain. Not for an address-keyed index, whose replaceables are not at the id docid.
+     * tree (a stored kind 3 is 50-500 KB of them), all to answer one bit. Not for an
+     * address-keyed index, whose replaceables are not at the id docid.
+     *
+     * Proton skips the document-store read for it: `id` is an attribute, and a field set held
+     * wholly in attributes is filled from them (`DocumentRetriever::need_fetch_from_doc_store`,
+     * Vespa 8.788.13). So does the built-in `[id]` set (a 200 with no fields), and the two measured
+     * alike: `BENCH_INSERT_PROBE`, five interleaved rounds per arm on a 62k-document single node,
+     * the writer lock's hold per duplicate re-insert of a 3000-tag kind 3 was a median 2.08 ms
+     * here, 2.07 ms on `[id]`, 2.40 ms on a one-id `dedup` search and 16.5 ms on the whole-document
+     * GET; per small duplicate 2.29, 2.27, 2.46 and 2.27 ms (benchmark/README.md §2bc). `[none]`
+     * is no alternative: Vespa answers it 404 for a stored document.
      */
     private suspend fun stored(id: String): Boolean {
         if (!Hex.isHexKey(id)) return false
@@ -784,13 +792,16 @@ class VespaEventIndex(
      * identically under address-keying: the `id` ATTRIBUTE carries the event id
      * whatever the docid is — the reason this stays on the search stack.
      *
-     * Except ONE id on an id-keyed index, the per-event insert's dup probe under the writer
-     * lock, which was a whole-document [get]: it stays that GET, routed to the one node holding
-     * the docid, asking for the id field alone ([stored]). Whether that or a one-id search on
-     * `dedup` is faster is not measured; the GET is what the probe paid before, minus the bytes.
+     * Except ONE id on an id-keyed index — the per-event insert's dup probe under the writer
+     * lock, and every other one-id call alike (a bulk chunk of one, a sweep's survivor check) —
+     * which is a document GET routed to the one node holding the docid, asking for the id field
+     * alone ([stored]): measured 0.17-0.32 ms less writer-lock hold per duplicate than a one-id
+     * search on `dedup` (2.29 vs 2.46 ms on a small document, 2.08 vs 2.40 on a large one, see
+     * [stored]).
      */
     override suspend fun existingIds(ids: List<String>): Set<String> {
-        // ONE id is a key lookup: the per-event insert's dup probe, under the writer lock.
+        // ONE id is a key lookup, whoever asks: the per-event insert's dup probe under the
+        // writer lock, a bulk chunk of one, Deletions.sweepWalk's survivor check of one id.
         if (ids.size == 1 && !addressKeyed) return if (stored(ids[0])) setOf(ids[0]) else emptySet()
         // Demotion first: a demoted client must not build (and discard) the
         // ~35KB YQL per chunk — super rides search(), which handles the

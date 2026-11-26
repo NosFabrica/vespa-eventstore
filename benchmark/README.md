@@ -2667,6 +2667,42 @@ saves anything.
 > trips to 3-of-4, but on a real single node that did not surface as an ev/s
 > difference. Do not quote it as an ingest cost.
 
+### 2bc. The dup probe's read (`BENCH_INSERT_PROBE=1`, 2026-11-26)
+
+The per-event `insert()` asks "is this id stored?" under the writer lock. It used
+to ask with `get(id)`, a document-API GET of the whole stored document, decoded
+with its tags parsed; it now asks `existingIds(listOf(id))`, which an id-keyed
+index answers with the same GET restricted to `fieldSet=event:id`. Four arms,
+selected per run in a scratch build (not shipped), interleaved for five rounds,
+each run on its own fresh id band: 2,000 generated events, then 40 kind 3s of
+3,000 `p` tags (`BENCH_PROBE_BIG`), each inserted fresh and then re-inserted as
+duplicates. Single-node Vespa 8.788.13 in Docker on the 4-core sandbox, 62k
+documents stored. The column is the writer lock's hold per insert
+(`lock.ingest.hold`), median of five with the range:
+
+| dup probe | dup re-insert, small | dup re-insert, kind 3 × 3000 tags | dup ev/s, kind 3 |
+|---|---:|---:|---:|
+| whole-document GET (before) | 2.27 ms (2.26–3.06) | **16.5 ms (16.2–18.4)** | 60 |
+| GET `fieldSet=event:id` (shipped) | 2.29 ms (2.17–2.43) | **2.08 ms (1.96–2.17)** | 434 |
+| GET `fieldSet=[id]` | 2.27 ms (2.05–2.35) | 2.07 ms (1.58–2.51) | 434 |
+| one-id search on the `dedup` summary | 2.46 ms (2.37–2.59) | 2.40 ms (2.31–2.45) | 388 |
+
+- **The large duplicate is where it pays: 16.5 → 2.1 ms of lock hold, ~7× the
+  duplicate rate.** A small one costs the same either way; the bytes were never
+  its cost.
+- **`event:id` and `[id]` are the same read.** Proton fills a field set held
+  wholly in attributes from the attributes and never touches the document
+  store (`DocumentRetriever::need_fetch_from_doc_store` in 8.788.13), and `id`
+  is an attribute, so the only difference left is the 64-character field in the
+  answer. Their ranges overlap entirely; `event:id` stays, since it also
+  carries the id `get` would have checked. `[none]` is not an option: Vespa
+  answers it 404 for a stored document.
+- **A one-id `dedup` search is slower than either GET by 0.17–0.32 ms** (medians),
+  its range clear of `event:id`'s on the large documents and overlapping it on the
+  small ones: one search through the query container against one keyed GET. An
+  address-keyed index still asks it, its replaceables not being at the id docid. Fresh inserts do not separate (5.7–6.0 ms
+  medians, overlapping ranges), as their probe answers 404 in every arm.
+
 ### 2c. Draft-churn supersession — server-side conditional put (`BENCH_CONDPUT=1`)
 
 Clients re-save replaceable drafts constantly (every ~2 s per open editor), so a
