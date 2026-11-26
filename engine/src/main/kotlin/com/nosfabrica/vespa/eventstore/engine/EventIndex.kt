@@ -96,6 +96,21 @@ interface EventIndex : AutoCloseable {
     }
 
     /**
+     * The stored events of [ids] as STUBS ([removalStub]): id, pubkey, kind, created_at and
+     * owner, plus an addressable kind's `d` tag where the docid is its address
+     * ([supersedesViaPut]); no other tag, no content, no signature. For a caller that matches on
+     * those fields and hands what it matched to [removeDocs], never to a reader or a reaction:
+     * a kind 5's e-tag targets, which a whole-document read brought back with every tag parsed
+     * (a stored kind 3 is 50-500 KB of them) under the writer lock, to be thrown away. Absent
+     * and non-hex ids are left out; the order is unspecified.
+     *
+     * The default reads each document whole and strips it, so every engine answers the same
+     * shape and a caller that reads a field a stub lacks is wrong against the reference too. A
+     * decorator MUST delegate, or the engine's attribute-only read is never reached.
+     */
+    suspend fun stubs(ids: List<String>): List<EventDoc> = ids.distinct().mapNotNull { get(it)?.removalStub(supersedesViaPut) }
+
+    /**
      * [search] with each match projected to a Quartz [RawEvent] (`tags` kept as
      * its canonical JSON string) — the read path a relay serves straight to a
      * client. The real client builds each [RawEvent] from the decoded summary,
@@ -523,6 +538,24 @@ data class DocRef(
             }
     }
 }
+
+/**
+ * [this] as [EventIndex.stubs] answers it: what a deletion matches on and a removal reads
+ * (id, pubkey, kind, created_at, owner) and, when [withDTag] (an index whose docid is the
+ * address) and the kind is addressable, the `d` tag the docid is built from. Nothing else, so it
+ * is never stored, served or reacted to as an event.
+ */
+fun EventDoc.removalStub(withDTag: Boolean): EventDoc =
+    EventDoc(
+        id = id,
+        pubkey = pubkey,
+        createdAt = createdAt,
+        kind = kind,
+        tags = if (withDTag && kind.isAddressable()) listOf(listOf("d", dTagOrEmpty())) else emptyList(),
+        content = "",
+        sig = "",
+        owner = owner,
+    )
 
 /**
  * Another stored version of [this]'s address, as a STUB built from its

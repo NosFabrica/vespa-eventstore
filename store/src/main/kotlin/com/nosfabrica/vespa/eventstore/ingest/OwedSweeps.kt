@@ -37,7 +37,7 @@ import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
  *
  * Why remember them: the caller re-offers what failed, and by then the winner
  * is stored, so the re-offer comes back a DUPLICATE (the bulk plan's dedup,
- * [EventAdmission]'s dup GET, the mixed replay) and never reaches supersession
+ * [EventAdmission]'s dup probe, the mixed replay) and never reaches supersession
  * again. The stale version then stays stored indefinitely: two versions served,
  * and a later kind 5 of the winner, or its expiry, RESURRECTS the stale one —
  * for a kind 10040, `newestPerObserver` would then promote a stale provider

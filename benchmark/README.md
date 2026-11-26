@@ -2681,7 +2681,8 @@ supersede, deletions, and addressable long-form).
 | `batchInsert()` | 0.05 | **0.05** |
 
 **The bulk path issues ≈47× fewer engine round-trips per event.** The per-event
-path pays, per event, up to four reads before the write — a dup probe (`get`), a
+path pays, per event, up to four reads before the write — a dup probe (then a
+`get`; now `existingIds`, a GET of the id field, §2bc), a
 NIP-09 deletion probe (`search`), a NIP-62 vanish probe (`search`), and a
 replaceable/addressable supersession probe (`search`) — averaging ~1.3 reads
 across this corpus (most kind-1 notes skip the supersession/guard probes).
@@ -2797,6 +2798,45 @@ saves anything.
 > It correctly describes the locked share of a commit rising from 2-of-3 round
 > trips to 3-of-4, but on a real single node that did not surface as an ev/s
 > difference. Do not quote it as an ingest cost.
+
+### 2bc. The dup probe's read (`BENCH_INSERT_PROBE=1`, 2026-11-26)
+
+The per-event `insert()` asks "is this id stored?" under the writer lock. It used
+to ask with `get(id)`, a document-API GET of the whole stored document, decoded
+with its tags parsed; it now asks `existingIds(listOf(id))`, which an id-keyed
+index answers with the same GET restricted to `fieldSet=event:id`. Four arms,
+selected per run in a scratch build (not shipped), interleaved for five rounds,
+each run on its own fresh id band: 2,000 generated events, then 40 kind 3s of
+3,000 `p` tags (`BENCH_PROBE_BIG`), each inserted fresh and then re-inserted as
+duplicates. Single-node Vespa 8.788.13 in Docker on the 4-core sandbox, 62k
+documents stored. The column is the writer lock's hold per insert
+(`lock.ingest.hold`), median of five with the range:
+
+| dup probe | dup re-insert, small | dup re-insert, kind 3 × 3000 tags | dup ev/s, kind 3 |
+|---|---:|---:|---:|
+| whole-document GET (before) | 2.27 ms (2.26–3.06) | **16.5 ms (16.2–18.4)** | 60 |
+| GET `fieldSet=event:id` (shipped) | 2.29 ms (2.17–2.43) | **2.08 ms (1.96–2.17)** | 434 |
+| GET `fieldSet=[id]` | 2.27 ms (2.05–2.35) | 2.07 ms (1.58–2.51) | 434 |
+| one-id search on the `dedup` summary | 2.46 ms (2.37–2.59) | 2.40 ms (2.31–2.45) | 388 |
+
+- **The large duplicate is where it pays: 16.5 → 2.1 ms of lock hold, ~7× the
+  duplicate rate.** A small one costs the same either way; the bytes were never
+  its cost.
+- **`event:id` and `[id]` are the same read.** Proton fills a field set held
+  wholly in attributes from the attributes and never touches the document
+  store (`DocumentRetriever::need_fetch_from_doc_store` in 8.788.13), and `id`
+  is an attribute, so the only difference left is the 64-character field in the
+  answer. Their ranges overlap entirely; `event:id` stays, since it also
+  carries the id `get` would have checked. `[none]` is not an option: Vespa
+  answers it 404 for a stored document.
+- **A one-id `dedup` search is slower than either GET by 0.17–0.32 ms** (medians),
+  its range clear of `event:id`'s on the large documents and overlapping it on the
+  small ones: one search through the query container against one keyed GET. An
+  address-keyed index still asks it, its replaceables not being at the id docid. Fresh inserts do not separate (5.7–6.0 ms
+  medians, overlapping ranges), as their probe answers 404 in every arm.
+
+The dup probe is metered as `exists` (`PortCall.Exists`), not `get`, since it
+moved (docs/upgrading.md).
 
 ### 2c. Draft-churn supersession — server-side conditional put (`BENCH_CONDPUT=1`)
 
@@ -3524,7 +3564,7 @@ query container; the feed client cannot handshake through it, so the put went di
 
 | step | ms |
 |---|---|
-| the admission checks (dedup GET; the NIP-09/NIP-62 guard queries, in parallel) | ~1.1 |
+| the admission checks (dedup GET, then of the whole document, now of its id field, §2bc; the NIP-09/NIP-62 guard queries, in parallel) | ~1.1 |
 | waiting to leave the relay (the feed client's dispatcher drains its queue, then sleeps 1 ms) | ~2.2 |
 | the put itself in Vespa (`/document/v1` POST) | ~2.5 |
 | everything else (websocket, verify, hand-offs between threads) | ~1.2 |
@@ -3795,6 +3835,51 @@ at this write volume. On this box the interference is largely CPU contention
 (three processes on four cores); separate client hardware would soften it,
 which is exactly what this bench exists to verify per deployment.
 
+### A second HTTP client for the writes: measured, reverted (2026-11-26)
+
+`VespaEventIndex` sends its queries, document GETs, the batch feed's uploads (8 concurrent
+~100-document bodies per `putAll`) and the lone direct put through one `VespaHttp`, which
+OkHttp multiplexes over one HTTP/2 connection per host. Giving the two write paths a client
+of their own (2d1321e2) was meant to keep reads from queueing behind write bodies on that
+connection. It was shipped unmeasured, then measured here and reverted.
+
+A scratch build chose the arm per run (writes on their own client, or on the read client,
+as before and now). Single-node Vespa 8.788.13 in Docker on the 4-core sandbox, client and
+engine sharing the cores, ~62k documents; the written bands were removed after every
+`BENCH_MIXED` run, so each saw the same corpus.
+
+**`BENCH_MIXED=1`** (16 readers, 2 writers, 8 s a mode), ten rounds, the arm order reversed
+for the last four. Median of ten [range]:
+
+| | own write client | writes on the read client |
+|---|---:|---:|
+| read-only, q/s | 658 [600–701] | 670 [622–684] |
+| **mixed, q/s** | **408 [368–431]** | **405 [367–454]** |
+| mixed ÷ read-only | 62.4% [53.4–65.8] | 61.5% [56.0–67.1] |
+| mixed, query p99 | 157 ms [148–176] | 158 ms [133–173] |
+| mixed, ingest ev/s | 1,524 [1,395–1,595] | 1,527 [1,337–1,708] |
+
+Paired by round the mixed q/s differed by a median **+0.3%**, from −9.9% to +7.5%, five
+rounds each way. What the rounds do show is an ORDER effect of the same size: the arm run
+first in a round won four of the six rounds that ran own-client first and three of the four
+that ran it second.
+
+**`recencyLoadProbe`**, writes section, `BENCH_WRITER=shared` (each phase's writes through
+that phase's read client, the only way this probe sees the coupling), 32 readers, 30 s
+phases, writes at 1,000 ev/s, three rounds, the shared arm first. REQ/s, median [range]:
+
+| variant | own write client | writes on the read client |
+|---|---:|---:|
+| `match_phase` | 323 [309–330] | 320 [294–328] |
+| `speculative` | 299 [289–301] | 306 [297–306] |
+| `speculative+memory` | 287 [278–302] | 279 [275–314] |
+
+The same phases with no writes (identical code in both arms) differed by 3–10%, the arm run
+first ahead, which is the noise floor here. No read gain shows past it on either bench, so
+the second client went: it cost a dispatcher and a connection per index for nothing
+measured. Not tested: a multi-node or remote engine, where one TCP connection's window is
+more likely to bind than on loopback.
+
 ### Through the relay: writes under read saturation (2026-11-25)
 
 The same question end to end, vespa-relay on the 4-core sandbox: nostr-bench `req` at 200
@@ -3807,7 +3892,7 @@ clients against nostr-bench `event` at 20, alone and together, two runs each.
 | write latency | 20–22 ms | 229–291 ms |
 
 Reads did not notice the writes; writes fell to a tenth. Every write's admission checks
-(the dedup GET, the NIP-09/NIP-62 guard queries, the batch's dedup and guard reads) are
+(the dedup GET, of the whole document then, §2bc; the NIP-09/NIP-62 guard queries; the batch's dedup and guard reads) are
 queries, and they wait in the same query-container queue as 200 clients' REQs, ~120 ms
 each at saturation. 500 live subscribers on the side received every event either way.
 

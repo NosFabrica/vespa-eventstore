@@ -37,8 +37,9 @@ import kotlinx.coroutines.sync.withPermit
  * to hand to `removeDocs` — for kinds whose removal no decorator reacts to by
  * reading the document (`BulkRecordInsert.WHOLE_DOC_KINDS` keep full reads).
  *
- * Shared by [BulkRecordInsert]'s stage D and [BulkMixedInsert]'s preload, so
- * the two bulk paths read a version the same way.
+ * Shared by [BulkRecordInsert]'s stage D, [BulkMixedInsert]'s preload and
+ * [Deletions]' a-tag victims ([walked]), so every path that reads the versions
+ * of an address reads them the same way.
  */
 internal class VersionReads(
     private val index: EventIndex,

@@ -47,6 +47,7 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventSelection
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.engine.query.SelectForm
 import com.nosfabrica.vespa.eventstore.engine.query.VespaQuery
+import com.nosfabrica.vespa.eventstore.engine.removalStub
 import com.nosfabrica.vespa.eventstore.engine.requirePlainReplaceable
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
@@ -302,21 +303,6 @@ class VespaEventIndex(
     private val http = VespaHttp()
 
     /**
-     * The WRITES' own client: the batch feed's uploads and the lone direct put. Built like [http]
-     * (same protocol, timeouts, liveness, retries, `Accept-Encoding: identity`), so every request
-     * is the one it was; only the connection differs. On [http] they shared the single HTTP/2
-     * connection OkHttp multiplexes per host with every query and document GET: one TCP send
-     * and receive path, one connection flow-control window and one reader thread for 8
-     * concurrent ~100-document batch bodies and multi-MB page answers alike, so a 3 ms existence
-     * check could queue behind either. That coupling is UNMEASURED (perf audit #4): the mixed
-     * read/write table in benchmark/README.md predates the batch path becoming the default, when
-     * writes still went through the feed client's own Jetty connections. `BENCH_MIXED=1` and
-     * `recencyLoadProbe` under a writer would show it. The reputation index has its own client
-     * already. The feed client ([feed]) is Jetty, apart from both.
-     */
-    private val writeHttp = VespaHttp()
-
-    /**
      * The headroom probe, on the endpoint this client already uses:
      * `/metrics/v2/values` reports EVERY content node, so one endpoint answers
      * for the cluster. Built here because this is where `http` and the
@@ -336,7 +322,7 @@ class VespaEventIndex(
 
     /** Null unless batching is on ([feedBatch]). */
     internal val batchFeed: VespaBatchFeed? =
-        feedBatch.takeIf { it > 1 }?.let { VespaBatchFeed(writeHttp, ::documentEndpoint, it, BATCH_CONCURRENCY) }
+        feedBatch.takeIf { it > 1 }?.let { VespaBatchFeed(http, ::documentEndpoint, it, BATCH_CONCURRENCY) }
 
     /** Batches the bundled batch handler has stored since this index opened; 0 while batching is off. */
     val feedBatchesSent: Long get() = batchFeed?.batchesSent ?: 0
@@ -457,9 +443,17 @@ class VespaEventIndex(
      * `fieldSet=event:id`: the same GET, the same answers (a real 404 is absent, a 200 whose id
      * field is set is stored, anything else is refused), but only the id comes back. A whole
      * document is its search columns, stems and near arrays as well, and its tags parsed into a
-     * tree (a stored kind 3 is 50-500 KB of them), all to answer one bit. Whether proton then
-     * skips the document-store read is NOT known here; the bytes and the decode are what it saves
-     * for certain. Not for an address-keyed index, whose replaceables are not at the id docid.
+     * tree (a stored kind 3 is 50-500 KB of them), all to answer one bit. Not for an
+     * address-keyed index, whose replaceables are not at the id docid.
+     *
+     * Proton skips the document-store read for it: `id` is an attribute, and a field set held
+     * wholly in attributes is filled from them (`DocumentRetriever::need_fetch_from_doc_store`,
+     * Vespa 8.788.13). So does the built-in `[id]` set (a 200 with no fields), and the two measured
+     * alike: `BENCH_INSERT_PROBE`, five interleaved rounds per arm on a 62k-document single node,
+     * the writer lock's hold per duplicate re-insert of a 3000-tag kind 3 was a median 2.08 ms
+     * here, 2.07 ms on `[id]`, 2.40 ms on a one-id `dedup` search and 16.5 ms on the whole-document
+     * GET; per small duplicate 2.29, 2.27, 2.46 and 2.27 ms (benchmark/README.md §2bc). `[none]`
+     * is no alternative: Vespa answers it 404 for a stored document.
      */
     private suspend fun stored(id: String): Boolean {
         if (!Hex.isHexKey(id)) return false
@@ -472,6 +466,35 @@ class VespaEventIndex(
             .fields
             ?.id
             .isNullOrEmpty()
+    }
+
+    /**
+     * Each stored id as a [removalStub], read with a document GET of exactly the fields it holds
+     * ([STUB_FIELDS]), bounded-concurrent. Every one of them is an attribute, and proton answers
+     * a field set it holds all of in attributes from memory without reading the document store
+     * (`DocumentRetriever::need_fetch_from_doc_store`, Vespa 8.788), so a stored kind 3's
+     * thousands of tags are neither read, sent nor parsed. The answers are [get]'s: a real 404 is
+     * absent, a 200 is stored, anything else is refused.
+     *
+     * Address-keyed, an id is not a docid, so each is resolved by the id attribute as [get]
+     * resolves it, whole, and stripped: no attribute-only summary carries kind and author.
+     */
+    override suspend fun stubs(ids: List<String>): List<EventDoc> {
+        val hexes = ids.distinct().filter(Hex::isHexKey)
+        if (addressKeyed) return hexes.mapBounded(STUB_GET_FANOUT) { searchById(it)?.removalStub(withDTag = true) }.filterNotNull()
+        return hexes.mapBounded(STUB_GET_FANOUT) { stub(it) }.filterNotNull()
+    }
+
+    /** One id's [removalStub] off the document API, or null when it is not stored. */
+    private suspend fun stub(id: String): EventDoc? {
+        val resp = http.get("${documentEndpoint()}/document/v1/$EVENT_NAMESPACE/$EVENT_DOCTYPE/docid/${docIdSegment(id)}?fieldSet=$STUB_FIELDS")
+        if (resp.statusCode() == 404 && isAbsentDocument(resp.body())) return null
+        require(resp.statusCode() < 400) { "vespa get ${resp.statusCode()}: ${resp.body().take(300)}" }
+        return resp
+            .decode(VESPA_JSON, DocEnvelope.serializer())
+            .fields
+            ?.toDoc()
+            ?.removalStub(withDTag = false)
     }
 
     /** One doc by its `id` attribute via the search stack — the id-lookup path under address-keying. */
@@ -597,7 +620,7 @@ class VespaEventIndex(
                     try {
                         // Null past the bound: the engine did not answer, so whether it applied the
                         // put is unknown, and the feed client puts it again, as on an IOException.
-                        withTimeoutOrNull(FEED_TIMEOUT.toMillis() + DIRECT_PUT_MARGIN.toMillis()) { writeHttp.postJsonOnce(url, body) }
+                        withTimeoutOrNull(FEED_TIMEOUT.toMillis() + DIRECT_PUT_MARGIN.toMillis()) { http.postJsonOnce(url, body) }
                     } catch (e: IOException) {
                         null
                     }
@@ -851,13 +874,16 @@ class VespaEventIndex(
      * identically under address-keying: the `id` ATTRIBUTE carries the event id
      * whatever the docid is — the reason this stays on the search stack.
      *
-     * Except ONE id on an id-keyed index, the per-event insert's dup probe under the writer
-     * lock, which was a whole-document [get]: it stays that GET, routed to the one node holding
-     * the docid, asking for the id field alone ([stored]). Whether that or a one-id search on
-     * `dedup` is faster is not measured; the GET is what the probe paid before, minus the bytes.
+     * Except ONE id on an id-keyed index — the per-event insert's dup probe under the writer
+     * lock, and every other one-id call alike (a bulk chunk of one, a sweep's survivor check) —
+     * which is a document GET routed to the one node holding the docid, asking for the id field
+     * alone ([stored]): measured 0.17-0.32 ms less writer-lock hold per duplicate than a one-id
+     * search on `dedup` (2.29 vs 2.46 ms on a small document, 2.08 vs 2.40 on a large one, see
+     * [stored]).
      */
     override suspend fun existingIds(ids: List<String>): Set<String> {
-        // ONE id is a key lookup: the per-event insert's dup probe, under the writer lock.
+        // ONE id is a key lookup, whoever asks: the per-event insert's dup probe under the
+        // writer lock, a bulk chunk of one, Deletions.sweepWalk's survivor check of one id.
         if (ids.size == 1 && !addressKeyed) return if (stored(ids[0])) setOf(ids[0]) else emptySet()
         // Demotion first: a demoted client must not build (and discard) the
         // ~35KB YQL per chunk — super rides search(), which handles the
@@ -3716,8 +3742,8 @@ class VespaEventIndex(
     fun feedInflight(): Long = feed.inflight()
 
     /**
-     * Graceful: the feed first (it waits for its writes in flight), then the write and the read
-     * transports, whose OkHttp dispatchers and connection pools nothing else would ever release
+     * Graceful: the feed first (it waits for its writes in flight), then the read transport,
+     * whose OkHttp dispatcher and connection pool nothing else would ever release
      * ([VespaHttp.close]) — even when the feed's close throws.
      */
     override fun close() {
@@ -3725,11 +3751,7 @@ class VespaEventIndex(
         try {
             feed.close()
         } finally {
-            try {
-                writeHttp.close()
-            } finally {
-                http.close()
-            }
+            http.close()
         }
     }
 
@@ -3804,6 +3826,12 @@ class VespaEventIndex(
 
         /** Concurrent document-API gets for a pure-id lookup. Gets are light (no summary stage to overrun), so this floats above QUERY_FANOUT. */
         const val ID_GET_FANOUT = 32
+
+        /** Concurrent GETs for [stubs]: the fan-out a kind 5's targets were resolved at when they were whole-document gets. */
+        const val STUB_GET_FANOUT = 16
+
+        /** The fields a [stubs] GET asks for: what a [removalStub] holds, every one an attribute (`event.sd`). */
+        const val STUB_FIELDS = "$EVENT_DOCTYPE:id,pubkey,kind,created_at,owner"
 
         /**
          * Authors per [newestVersions] grouping. The width the store's own

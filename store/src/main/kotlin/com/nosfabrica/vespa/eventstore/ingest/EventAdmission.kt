@@ -133,7 +133,7 @@ internal class EventAdmission(
         val probeVanished = guards.mightHaveVanished(owner)
         if (!probeDeleted && !probeVanished) {
             if (supersedesBesideDupRead(event)) return
-            // The common case reads just the dup get — skip the fan-out
+            // The common case reads just the dup probe — skip the fan-out
             // machinery, which allocates per call.
             if (isStored(event)) duplicate(event)
         } else {
@@ -194,7 +194,7 @@ internal class EventAdmission(
     private suspend fun isStored(event: Event): Boolean = event.id in index.existingIds(listOf(event.id))
 
     /**
-     * A plain replaceable/addressable event with no guard to probe: its dup GET
+     * A plain replaceable/addressable event with no guard to probe: its dup probe
      * and its supersession ([supersede], whose version read is the round trip
      * that matters) run TOGETHER, so the insert waits for one round trip under
      * the writer lock instead of two. True when the event was decided here.

@@ -212,6 +212,9 @@ class MeteredEventIndex(
 
     override suspend fun existingIds(ids: List<String>): Set<String> = meter(PortCall.Exists, ids.size.toLong()) { inner.existingIds(ids) }
 
+    /** A [get] by another shape: booked there, counting the stubs found, as [get] counts its one document. */
+    override suspend fun stubs(ids: List<String>): List<EventDoc> = meterResult(PortCall.Get, { inner.stubs(ids) }, { it.size.toLong() })
+
     override suspend fun count(query: EventQuery): Int = meterQuery(PortCall.Count, query, { inner.count(query) }, { 1L })
 
     /**

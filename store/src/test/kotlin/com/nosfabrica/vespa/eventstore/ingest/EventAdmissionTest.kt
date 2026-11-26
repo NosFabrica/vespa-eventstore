@@ -43,7 +43,7 @@ import kotlin.test.assertTrue
 
 /**
  * [EventAdmission]'s single-event path: a replaceable with no guard to probe
- * sends its dup GET and its supersession's version read TOGETHER, one round
+ * sends its dup probe and its supersession's version read TOGETHER, one round
  * trip under the writer lock instead of two, with the sequential outcomes.
  */
 class EventAdmissionTest {
@@ -55,7 +55,7 @@ class EventAdmissionTest {
 
     private fun profile(at: Long) = Event(id(), alice, at, 0, emptyArray(), "{\"at\":$at}", "")
 
-    /** Answers neither the dup GET nor the version read until both have been asked, once [armed]. */
+    /** Answers neither the dup probe nor the version read until both have been asked, once [armed]. */
     private class Rendezvous(
         val inner: InMemoryEventIndex = InMemoryEventIndex(),
     ) : EventIndex by inner {
@@ -144,8 +144,8 @@ class EventAdmissionTest {
             store.insert(DeletionRequestEvent(id(), alice, 300, arrayOf(arrayOf("e", "e".repeat(64))), "", ""))
             assertTrue(assertFailsWith<RejectedException> { store.insert(note) }.message!!.startsWith("duplicate"))
             store.insert(Event(id(), alice, 400, 1, emptyArray(), "a fresh note", ""))
-            // The one GET left is the tombstone resolving its own target, which is not a dup probe.
-            assertEquals(listOf("e".repeat(64)), gets, "no document read to answer a dup probe")
+            // Not even the tombstone resolving its own target, which reads a stub (EventIndex.stubs).
+            assertEquals(emptyList(), gets, "no document read to answer a dup probe")
         }
 
     /** Lands every write, then throws for one carrying a kind in [kinds]: a timeout after the feed accepted it. */

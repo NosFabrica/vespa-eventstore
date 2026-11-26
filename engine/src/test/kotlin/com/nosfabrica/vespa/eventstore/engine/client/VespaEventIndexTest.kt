@@ -314,36 +314,6 @@ class VespaEventIndexTest {
         }
 
     /**
-     * WRITES TRAVEL ON A CONNECTION OF THEIR OWN. Every query, document GET and batch upload used
-     * to share the one HTTP/2 connection OkHttp multiplexes per host: one TCP send and receive
-     * path, one connection flow-control window, one reader thread, so a burst of ~100-document
-     * batch bodies and a multi-MB page answer queued behind each other (perf audit #4; the
-     * coupling is unmeasured). The batch feed and the lone direct put now have their own client,
-     * configured like the read one, so the requests are byte for byte the same and only the
-     * connection differs.
-     */
-    @Test
-    fun `batch and direct writes do not share the read connection`() =
-        runBlocking {
-            VespaEventIndex(mock.url, feedBatch = 100).use { batched ->
-                val docs = List(150) { doc(content = "batched $it") }
-                mock.connections.clear()
-                batched.putAll(docs)
-                batched.put(doc(content = "a lone write"))
-                batched.search(EventQuery(kinds = listOf(1), limit = 10))
-                assertEquals(docs[0].id, batched.get(docs[0].id)?.id)
-
-                val byPath = mock.connections.groupBy({ it.first }, { it.second })
-                val writes = (byPath[VespaBatchFeed.PATH].orEmpty() + byPath.filterKeys { it.startsWith("/document/v1/event/event/docid/") && it != "/document/v1/event/event/docid/${docs[0].id}" }.values.flatten()).toSet()
-                val reads = (byPath["/search/"].orEmpty() + byPath["/document/v1/event/event/docid/${docs[0].id}"].orEmpty()).toSet()
-                assertTrue(byPath.getValue(VespaBatchFeed.PATH).size >= 2, "the batch path ran: ${mock.connections}")
-                assertEquals(1L, batched.directPuts, "the lone write went direct")
-                assertTrue(writes.isNotEmpty() && reads.isNotEmpty(), "${mock.connections}")
-                assertTrue(writes.intersect(reads).isEmpty(), "writes on $writes, reads on $reads")
-            }
-        }
-
-    /**
      * ONE ID'S EXISTENCE IS A GET OF ITS ID FIELD ALONE. The per-event insert asks it of every
      * event, under the writer lock, and read the whole stored document to learn it, search
      * columns, stems and near arrays included, parsing its tags (a stored kind 3 is 50-500 KB of
@@ -406,6 +376,31 @@ class VespaEventIndexTest {
             } finally {
                 mock.rejectIdTimeSummary = false
             }
+        }
+
+    /**
+     * STUBS ARE THE ATTRIBUTE FIELDS, READ BY KEY. A kind 5's e-tag targets are matched on kind
+     * and owner and removed by id, and were read whole (a stored kind 3 is 50-500 KB of tags)
+     * under the writer lock. One GET per id asks for the stub's fields alone, every one an
+     * attribute, which proton answers from memory; the stub holds them and nothing else. Absent
+     * and non-hex ids are left out, as [EventIndex.get] leaves them.
+     */
+    @Test
+    fun `stubs read only the attribute fields`() =
+        runBlocking {
+            val follows = doc(kind = 3, tags = List(2_000) { listOf("p", "%064x".format(it)) }, content = "x".repeat(1_000))
+            val wrap = doc(kind = 1059, pubkey = "b2".repeat(32), owner = "c3".repeat(32), tags = listOf(listOf("p", "c3".repeat(32))))
+            seed(follows, wrap)
+            mock.documentGetFieldSets.clear()
+
+            val stubs = index.stubs(listOf(follows.id, wrap.id, follows.id, "f".repeat(64), "not hex")).associateBy { it.id }
+
+            assertEquals(setOf(follows.id, wrap.id), stubs.keys)
+            assertEquals(List(3) { VespaEventIndex.STUB_FIELDS }, mock.documentGetFieldSets.toList(), "one GET per distinct hex id, of the stub's fields")
+            val k3 = stubs.getValue(follows.id)
+            assertEquals(listOf(3, follows.pubkey, follows.pubkey, follows.createdAt), listOf(k3.kind, k3.pubkey, k3.owner, k3.createdAt))
+            assertEquals(listOf(emptyList<List<String>>(), ""), listOf(k3.tags, k3.content), "and nothing else")
+            assertEquals("c3".repeat(32), stubs.getValue(wrap.id).owner, "the owner as stored, not the author")
         }
 
     private fun doc(

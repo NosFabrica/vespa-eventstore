@@ -30,6 +30,7 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.mapping.toDoc
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
+import com.vitorpamplona.quartz.nip59Giftwrap.wraps.GiftWrapEvent
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -235,5 +236,53 @@ class DeletionsTest {
             assertEquals(card.tags.map { it.toList() }, removed.single { it.id == card.id }.tags, "and handed over whole, for the projection to react to")
             val stub = removed.single { it.id == article.id }
             assertEquals(listOf(30023, alice, alice, 1_000L, "post"), listOf(stub.kind, stub.pubkey, stub.owner, stub.createdAt, stub.dTagOrEmpty()), "a stub carries what removeDocs reads")
+        }
+
+    /**
+     * An e-tag deletion reads its targets as STUBS too ([EventIndex.stubs]): the deletion matches
+     * on a target's kind and owner and `removeDocs` reads its id (and, address-keyed, its kind,
+     * author and d), so reading the whole document — a deleted kind 3 is 50-500 KB of tags,
+     * under the writer lock — bought nothing. Against the real client, every target is one GET of
+     * the stub's attribute fields; only a trust kind, whose removal the projection reacts to by
+     * reading the document, is read again whole. The victims are the same: what the deletion's
+     * author owns (a gift wrap sent to them included), and not a kind 5, not another author's
+     * event, not an untargeted sibling.
+     */
+    @Test
+    fun `an e-tag deletion removes its victims without reading their documents`() =
+        runBlocking {
+            val removed = mutableListOf<EventDoc>()
+            val recording =
+                object : EventIndex by index {
+                    override suspend fun removeDocs(docs: List<EventDoc>) {
+                        removed += docs
+                        index.removeDocs(docs)
+                    }
+                }
+            val bob = "b0".repeat(32)
+            val bulky = Array(3_000) { arrayOf("p", "%064x".format(it)) }
+            val follows = Event(id(), alice, 1_000L, 3, bulky, "", "")
+            val note = Event(id(), alice, 1_001L, 1, arrayOf(arrayOf("t", "kept?")), "a note", "")
+            val wrap = GiftWrapEvent(id(), bob, 1_002L, arrayOf(arrayOf("p", alice)), "sealed", "")
+            val card = Event(id(), alice, 1_003L, 30382, arrayOf(arrayOf("d", "c".repeat(64)), arrayOf("rank", "40")), "", "")
+            val bobs = Event(id(), bob, 1_004L, 1, emptyArray(), "not alice's", "")
+            val tombstone = DeletionRequestEvent(id(), alice, 1_005L, arrayOf(arrayOf("e", "f".repeat(64))), "", "")
+            val sibling = Event(id(), alice, 1_006L, 1, emptyArray(), "untargeted", "")
+            index.putAll(listOf(follows, note, wrap, card, bobs, tombstone, sibling).map { it.toDoc() })
+            val targets = listOf(follows, note, wrap, card, bobs, tombstone).map { it.id } + "0".repeat(64)
+            val deletion = DeletionRequestEvent(id(), alice, 2_000L, targets.map { arrayOf("e", it) }.toTypedArray(), "", "")
+            mock.documentGetFieldSets.clear()
+
+            Deletions(recording, relay = null, sweepPage = 100).applyDeletion(deletion)
+
+            assertEquals(setOf(follows.id, note.id, wrap.id, card.id), removed.mapTo(HashSet()) { it.id }, "what alice owns, and no other")
+            assertEquals(setOf(bobs.id, tombstone.id, sibling.id), index.search(EventQuery()).mapTo(HashSet()) { it.id })
+            val sets = mock.documentGetFieldSets.toList()
+            assertEquals(targets.size, sets.count { it == "event:id,pubkey,kind,created_at,owner" }, "one stub GET per target: $sets")
+            assertEquals(1, sets.count { it == null }, "and only the card read whole: $sets")
+            assertEquals(card.tags.map { it.toList() }, removed.single { it.id == card.id }.tags, "handed over whole, for the projection to react to")
+            val stub = removed.single { it.id == wrap.id }
+            assertEquals(listOf(1059, bob, alice, 1_002L), listOf(stub.kind, stub.pubkey, stub.owner, stub.createdAt), "a stub carries what the match and removeDocs read")
+            assertEquals(emptyList(), removed.single { it.id == follows.id }.tags, "and none of the tags")
         }
 }
