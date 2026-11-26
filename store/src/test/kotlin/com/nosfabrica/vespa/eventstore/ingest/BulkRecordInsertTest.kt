@@ -30,6 +30,7 @@ import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.ingest.Rejections
 import com.nosfabrica.vespa.eventstore.mapping.toDoc
+import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
 import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.normalizeRelayUrl
@@ -141,6 +142,24 @@ class BulkRecordInsertTest {
         assertBulkMatchesSequential(
             prelude = listOf(existing),
             batch = padding(14) + listOf(existing, dupInBatch, dupInBatch),
+        )
+    }
+
+    /**
+     * A second copy of an id in one batch takes the FIRST copy's verdict, as the per-event path
+     * gives it: a copy of a blocked or `replaced:` event is not stored either, so answering it
+     * `duplicate:` (OK true) told the client an event was stored that never was. A copy of an
+     * accepted event is the duplicate it always was.
+     */
+    @Test
+    fun `an in-batch copy takes the first copy's verdict`() {
+        val covered = note()
+        val newer = Event(id(), alice, next(), 0, emptyArray(), "{\"v\":2}", "")
+        val older = Event(id(), alice, newer.createdAt - 100, 0, emptyArray(), "{\"v\":1}", "")
+        val fresh = note()
+        assertBulkMatchesSequential(
+            prelude = listOf(deletion(covered.id, at = covered.createdAt + 10), newer),
+            batch = padding(16) + listOf(covered, covered, older, older, fresh, fresh),
         )
     }
 
@@ -291,6 +310,159 @@ class BulkRecordInsertTest {
             assertEquals(null, index.get(target.id), "the covered event must not be stored")
         }
 
+    /** As above for NIP-62: a vanish stored between plan and commit voids the early guard read. */
+    @Test
+    fun `a vanish committed between plan and commit still blocks the batch`() =
+        runBlocking {
+            val index = InMemoryEventIndex()
+            val store = NostrSemanticsStore(index, relay = relayUrl)
+            val bulk = BulkRecordInsert(index, relayUrl, GuardOwners(index), nowSecs = { System.currentTimeMillis() / 1000 })
+
+            val target = note(at = 1_000_000_000)
+            val batch = padding(20) + target
+            val plan = bulk.plan(batch)
+
+            store.insert(RequestToVanishEvent(id(), alice, 1_000_000_500, arrayOf(arrayOf("relay", "ALL_RELAYS")), "", ""))
+
+            val outcome = bulk.commit(plan)[batch.indexOf(target)]
+            assertTrue(
+                outcome is IEventStore.InsertOutcome.Rejected && outcome.reason == Rejections.VANISHED,
+                "a vanished author's event must not be stored by a racing batch, got $outcome",
+            )
+            assertEquals(null, index.get(target.id))
+        }
+
+    /** As above through the mixed bulk path: a whole batch carrying the tombstone commits between plan and commit. */
+    @Test
+    fun `a mixed batch committed between plan and commit still blocks the batch`() =
+        runBlocking {
+            val index = InMemoryEventIndex()
+            val store = NostrSemanticsStore(index, relay = relayUrl)
+            val bulk = BulkRecordInsert(index, relayUrl, GuardOwners(index), nowSecs = { System.currentTimeMillis() / 1000 })
+
+            val target = note(at = 1_000_000_000)
+            val batch = padding(20) + target
+            val plan = bulk.plan(batch)
+
+            store.batchInsert(padding(5) + deletion(target.id, at = 1_000_000_500))
+
+            val outcome = bulk.commit(plan)[batch.indexOf(target)]
+            assertTrue(
+                outcome is IEventStore.InsertOutcome.Rejected && outcome.reason == Rejections.DELETED,
+                "got $outcome",
+            )
+            assertEquals(null, index.get(target.id))
+        }
+
+    /**
+     * Under [WriterTopology.SHARED] a rebuild of the guard filters is how a FOREIGN writer's
+     * tombstone reaches this store. One that lands between a narrow batch's plan and its commit
+     * changes what the early guard read should have queried (the owner was unflagged when it was
+     * read, so nothing was), so the commit must read again: the rebuild counts as a guard write.
+     */
+    @Test
+    fun `a guard rebuild between plan and commit voids the early guard read`() =
+        runBlocking {
+            val index = InMemoryEventIndex()
+            val guards = GuardOwners(index, WriterTopology.SHARED, refreshMillis = 0, override = null)
+            val bulk = BulkRecordInsert(index, relayUrl, guards, nowSecs = { System.currentTimeMillis() / 1000 })
+            bulk.commit(bulk.plan(padding(2))) // loads the filters: nobody flagged
+
+            val target = note(at = 1_000_000_000)
+            val batch = padding(20) + target
+            val plan = bulk.plan(batch)
+            // Another process stores a tombstone covering the target; this store's rebuild picks it up.
+            index.put(deletion(target.id, at = 1_000_000_500).toDoc())
+            guards.refresh()
+
+            val outcome = bulk.commit(plan)[batch.indexOf(target)]
+            guards.close()
+            assertEquals(IEventStore.InsertOutcome.Rejected(Rejections.DELETED), outcome)
+            assertEquals(null, index.get(target.id), "the rebuild flagged the owner, so the covered event must not be stored")
+        }
+
+    /**
+     * A narrow batch reads its guards beside the dedup, so its locked commit asks the engine for
+     * nothing before it writes when no guard was stored meanwhile — one round of reads, not two.
+     */
+    @Test
+    fun `a narrow batch reads its guards once, before the lock`() =
+        runBlocking {
+            val index = CountingSearches(InMemoryEventIndex())
+            NostrSemanticsStore(index, relay = relayUrl).insert(deletion("ee".repeat(32), at = 1))
+            val bulk = BulkRecordInsert(index, relayUrl, GuardOwners(index), nowSecs = { System.currentTimeMillis() / 1000 })
+
+            val batch = padding(20)
+            val plan = bulk.plan(batch)
+            assertTrue(index.searches > 0, "the plan reads the guards")
+            index.searches = 0
+            val outcomes = bulk.commit(plan)
+
+            assertEquals(0, index.searches, "the commit must reuse the plan's guard read")
+            assertTrue(outcomes.all { it is IEventStore.InsertOutcome.Accepted })
+        }
+
+    /**
+     * A stream of narrow batches that are ALL duplicates (a relay syncing what it already holds)
+     * must settle to the dedup's one existence read per batch. Under SHARED_STRICT, the default,
+     * the early guard read is a tombstone and a vanish search whatever survives, and a batch with
+     * no survivor never commits, so reading them early tripled the engine reads of such a stream.
+     */
+    @Test
+    fun `an all-duplicate narrow stream settles to one engine read per batch`() =
+        runBlocking {
+            val index = CountingSearches(InMemoryEventIndex())
+            val store = NostrSemanticsStore(index, relay = relayUrl)
+            val batch = padding(20)
+            store.batchInsert(batch)
+            repeat(5) { store.batchInsert(batch) }
+            repeat(5) {
+                index.searches = 0
+                index.existence = 0
+                val outcomes = store.batchInsert(batch)
+                assertTrue(outcomes.all { it == IEventStore.InsertOutcome.Rejected(Rejections.DUPLICATE) }, "$outcomes")
+                assertEquals(0, index.searches, "a duplicate batch reads no guards")
+                assertEquals(1, index.existence, "the dedup is the batch's one engine read")
+            }
+            store.close()
+        }
+
+    /** The other half: once the stream turns fresh again, narrow batches go back to reading their guards beside the dedup. */
+    @Test
+    fun `a fresh stream after a duplicate one reads its guards early again`() =
+        runBlocking {
+            val index = InMemoryEventIndex()
+            val bulk = BulkRecordInsert(index, relayUrl, GuardOwners(index), nowSecs = { System.currentTimeMillis() / 1000 })
+            assertTrue(bulk.plan(padding(20)).earlyGuards != null, "a fresh process reads early")
+            val stored = padding(20)
+            bulk.commit(bulk.plan(stored))
+            repeat(10) { bulk.plan(stored) }
+            assertEquals(null, bulk.plan(stored).earlyGuards, "a duplicate stream stops reading early")
+            repeat(10) { bulk.commit(bulk.plan(padding(20))) }
+            val fresh = bulk.plan(padding(20))
+            assertTrue(fresh.earlyGuards != null, "a fresh stream reads early again")
+            val outcomes = bulk.commit(fresh)
+            assertTrue(outcomes.all { it is IEventStore.InsertOutcome.Accepted }, "$outcomes")
+        }
+
+    /** Counts [search] calls, which is how every guard query reaches the engine. */
+    private class CountingSearches(
+        private val inner: InMemoryEventIndex,
+    ) : EventIndex by inner {
+        var searches = 0
+        var existence = 0
+
+        override suspend fun search(query: EventQuery): List<EventDoc> {
+            searches++
+            return inner.search(query)
+        }
+
+        override suspend fun existingIds(ids: List<String>): Set<String> {
+            existence++
+            return inner.existingIds(ids)
+        }
+    }
+
     /**
      * Records every id removed and put, and runs [afterDedup] once, right after
      * the lock-free dedup read has answered — the window in which a neighbouring
@@ -408,7 +580,7 @@ class BulkRecordInsertTest {
         }
 
     /**
-     * The locked commit's three reads — the batch's tombstones, its owners'
+     * A wide batch's locked commit's three reads — the batch's tombstones, its owners'
      * vanishes and its addresses' stored versions — are independent, so they
      * run together: the writer lock is held for the slowest, not their sum.
      * Proven by an index that answers none of them until all three have
@@ -416,47 +588,74 @@ class BulkRecordInsertTest {
      * out. The batch still ends where the per-event path does.
      */
     @Test
-    fun `the commit's guard and version reads run together`() =
+    fun `a wide batch's commit reads its guards and versions together`() =
         runBlocking {
-            val inner = InMemoryEventIndex()
-            val arrived = HashSet<String>()
-            val all = CompletableDeferred<Unit>()
-            val index =
-                object : EventIndex by inner {
-                    suspend fun rendezvous(read: String) {
-                        synchronized(arrived) { if (arrived.add(read) && arrived.size == 3) all.complete(Unit) }
-                        all.await()
-                    }
-
-                    override suspend fun search(query: EventQuery): List<EventDoc> {
-                        when {
-                            query.kinds == listOf(DeletionRequestEvent.KIND) && query.tags.isNotEmpty() -> rendezvous("tombstones")
-                            query.kinds == listOf(RequestToVanishEvent.KIND) -> rendezvous("vanishes")
-                        }
-                        return inner.search(query)
-                    }
-
-                    // A plain replaceable's versions are read off this grouping (winner and count) since they stopped being a document search.
-                    override suspend fun versionCensus(
-                        kind: Int,
-                        authors: List<String>,
-                    ): Map<String, VersionCensus> {
-                        rendezvous("versions")
-                        return inner.versionCensus(kind, authors)
-                    }
-
-                    override suspend fun putIfNewer(doc: EventDoc): Boolean = super<EventIndex>.putIfNewer(doc)
-                }
-            // SHARED_STRICT (the default): every owner is flagged, so both guard reads run.
-            val store = NostrSemanticsStore(index, relay = relayUrl)
-            val v1 = Event(id(), alice, next(), 0, emptyArray(), "{\"name\":\"old\"}", "")
-            inner.put(v1.toDoc())
-            val v2 = Event(id(), alice, next(), 0, emptyArray(), "{\"name\":\"new\"}", "")
-            val outcomes = withTimeout(10_000) { store.batchInsert(padding(20) + v2) }
-            assertTrue(outcomes.all { it is IEventStore.InsertOutcome.Accepted }, "$outcomes")
-            assertEquals(setOf("tombstones", "vanishes", "versions"), arrived)
-            assertEquals(listOf(v2.id), inner.search(EventQuery(kinds = listOf(0), authors = listOf(alice))).map { it.id })
+            // Past EARLY_GUARDS_MAX the guards are read under the lock, beside the version read.
+            val arrived = readsMeeting(setOf("tombstones", "vanishes", "versions"), padding(BulkRecordInsert.EARLY_GUARDS_MAX))
+            assertEquals(setOf("tombstones", "vanishes", "versions", "dedup"), arrived)
         }
+
+    /** A narrow batch reads its guards before the lock, beside its dedup: neither waits for the other. */
+    @Test
+    fun `a narrow batch reads its guards beside its dedup`() =
+        runBlocking {
+            val arrived = readsMeeting(setOf("tombstones", "vanishes", "dedup"), padding(20))
+            assertEquals(setOf("tombstones", "vanishes", "dedup", "versions"), arrived)
+        }
+
+    /**
+     * Batch-inserts [pad] plus a replaceable whose older version is stored, with every engine read
+     * named in [meeting] held until all of them have arrived: a read that waited for another would
+     * never complete. Returns every read that ran.
+     */
+    private suspend fun readsMeeting(
+        meeting: Set<String>,
+        pad: List<Event>,
+    ): Set<String> {
+        val inner = InMemoryEventIndex()
+        val arrived = HashSet<String>()
+        val all = CompletableDeferred<Unit>()
+        val index =
+            object : EventIndex by inner {
+                suspend fun arrive(read: String) {
+                    synchronized(arrived) { if (arrived.add(read) && arrived.containsAll(meeting)) all.complete(Unit) }
+                    if (read in meeting) all.await()
+                }
+
+                override suspend fun search(query: EventQuery): List<EventDoc> {
+                    when {
+                        query.kinds == listOf(DeletionRequestEvent.KIND) && query.tags.isNotEmpty() -> arrive("tombstones")
+                        query.kinds == listOf(RequestToVanishEvent.KIND) -> arrive("vanishes")
+                    }
+                    return inner.search(query)
+                }
+
+                override suspend fun existingIds(ids: List<String>): Set<String> {
+                    arrive("dedup")
+                    return inner.existingIds(ids)
+                }
+
+                // A plain replaceable's versions are read off this grouping (winner and count) since they stopped being a document search.
+                override suspend fun versionCensus(
+                    kind: Int,
+                    authors: List<String>,
+                ): Map<String, VersionCensus> {
+                    arrive("versions")
+                    return inner.versionCensus(kind, authors)
+                }
+
+                override suspend fun putIfNewer(doc: EventDoc): Boolean = super<EventIndex>.putIfNewer(doc)
+            }
+        // SHARED_STRICT (the default): every owner is flagged, so both guard reads run.
+        val store = NostrSemanticsStore(index, relay = relayUrl)
+        val v1 = Event(id(), alice, next(), 0, emptyArray(), "{\"name\":\"old\"}", "")
+        inner.put(v1.toDoc())
+        val v2 = Event(id(), alice, next(), 0, emptyArray(), "{\"name\":\"new\"}", "")
+        val outcomes = withTimeout(10_000) { store.batchInsert(pad + v2) }
+        assertTrue(outcomes.all { it is IEventStore.InsertOutcome.Accepted }, "$outcomes")
+        assertEquals(listOf(v2.id), inner.search(EventQuery(kinds = listOf(0), authors = listOf(alice))).map { it.id })
+        return synchronized(arrived) { arrived.toSet() }
+    }
 
     /**
      * STAGE D READS NO DOCUMENT FOR A KIND NO REACTION NEEDS WHOLE. A plain

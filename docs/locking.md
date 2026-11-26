@@ -203,7 +203,8 @@ roughly `1 / p50` regardless of engine capacity. Striping lets independent
 owners overlap and the ceiling becomes the engine's. What it costs: a batch
 now waits for in-flight singles (bounded by one insert's latency), and the
 `GuardOwners` note hooks, which today land under `writes`, must stay ordered
-after the kind-5's put within the same stripe (they do — same coroutine).
+before the kind-5's put within the same stripe (they do — same coroutine; before,
+not after, because a put can land and still fail).
 
 Not done here because it changes the store's concurrency contract and needs
 the ingest benchmarks re-run under the relay's real mix; it is a PR of its

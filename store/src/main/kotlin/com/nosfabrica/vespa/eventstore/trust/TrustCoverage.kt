@@ -36,8 +36,9 @@ package com.nosfabrica.vespa.eventstore.trust
  * exactly this per service to choose what to rebuild; it just threw the
  * verdicts away afterwards.
  *
- * A STANDING FACT, not a counter: it is whatever the last reconcile saw, and
- * stale between runs. [checkedAtMs] says how stale, because a coverage number
+ * A STANDING FACT, not a counter: it is the state the last reconcile LEFT
+ * (re-recorded after each service it walks, which then counts as projected),
+ * and stale between runs. [checkedAtMs] says how stale, because a coverage number
  * with no age is the kind of reassurance that hides a problem for days.
  */
 internal object TrustCoverage {

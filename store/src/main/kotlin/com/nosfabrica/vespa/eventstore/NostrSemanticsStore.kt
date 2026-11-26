@@ -29,6 +29,7 @@ import com.nosfabrica.vespa.eventstore.engine.metrics.withActivity
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.engine.query.PhraseRuns
+import com.nosfabrica.vespa.eventstore.engine.text.IndexableChars
 import com.nosfabrica.vespa.eventstore.ingest.BulkMixedInsert
 import com.nosfabrica.vespa.eventstore.ingest.BulkRecordInsert
 import com.nosfabrica.vespa.eventstore.ingest.Deletions
@@ -77,6 +78,7 @@ import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
 import com.vitorpamplona.quartz.nip01Core.tags.dTag.dTag
 import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
+import com.vitorpamplona.quartz.nip50Search.strippingSearchExtensions
 import com.vitorpamplona.quartz.nip59Giftwrap.wraps.GiftWrapEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import com.vitorpamplona.quartz.nip65RelayList.AdvertisedRelayListEvent
@@ -954,14 +956,24 @@ class NostrSemanticsStore(
                 val floor = EventYql.gateFloor(q)
                 val text =
                     LiveGate.Text(
-                        terms = LiveGate.Text.words(q.search),
+                        // The words the page was read with, cut as EventYql cuts them
+                        // ([IndexableChars.searchWords]: the first words within the word,
+                        // token and length caps): a word the engine never asked for must
+                        // not refuse a live note the page served.
+                        terms =
+                            q.search
+                                ?.let(IndexableChars::searchWords)
+                                .orEmpty()
+                                .flatMap(LiveGate.Text::words),
                         phrases =
-                            q.phrases
+                            PhraseRuns
+                                .phrasesOf(q.phrases)
                                 .flatMap(PhraseRuns::pieces)
                                 .map(LiveGate.Text::words)
                                 .filter { it.isNotEmpty() },
                         excluded =
-                            q.notSearch
+                            PhraseRuns
+                                .exclusionsOf(q.notSearch)
                                 .map { w -> PhraseRuns.exclusionPieces(w).map(LiveGate.Text::words).filter { it.isNotEmpty() } }
                                 .filter { it.isNotEmpty() },
                     )
@@ -1320,10 +1332,28 @@ class NostrSemanticsStore(
         // asymmetry with query): as a query it means "everything", and a stray
         // one here would sweep the corpus 10k at a time until the round cap
         // threw, half-wiped.
-        val queries = filters.filterNot { it.isEmpty() }.mapNotNull { it.toEventQuery() }
+        //
+        // The search extensions go FIRST, as the SQLite store strips them before
+        // its own empty-filter check: a delete is matched on its terms alone. In
+        // the other order a filter that was nothing but extensions
+        // (`include:spam`, `observer:<hex>`, `sort:recent`, `language:pt`), or a
+        // blank search, passed the guard and mapped to an UNCONSTRAINED query,
+        // since toEventQuery reads a query of nothing but extensions as no
+        // constraint, and the sweep deleted the whole store. Stripped, each is
+        // the empty filter, and a blank search is no constraint (STORE-S01). It
+        // also leaves a delete with terms and an `observer:` ungated, as SQLite
+        // deletes it: a sweep never resolves a lens, so an observer it carried
+        // read the empty one on Vespa and matched nothing.
+        val queries =
+            filters
+                .strippingSearchExtensions()
+                .filterNot { it.isEmpty() || (it.search?.isBlank() == true && it.copy(search = null).isEmpty()) }
+                .mapNotNull { it.toEventQuery() }
         if (queries.isEmpty()) return
         locks.gated(trust = true, WriteLocks.SWEEP, WriteLocks.SWEEP_TRUST) {
-            queries.forEach { deletions.sweep(it) }
+            // The union, each filter read on the same state (STORE-F07 + D08),
+            // not one filter after another: see Deletions.sweepUnion.
+            deletions.sweepUnion(queries)
         }
     }
 

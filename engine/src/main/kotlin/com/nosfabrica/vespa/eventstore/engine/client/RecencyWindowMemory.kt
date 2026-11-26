@@ -252,7 +252,7 @@ internal class RecencyWindowMemory(
                 k.field(10).text(q.rankKey.toString())
                 k.field(11).text(q.minRank.toString())
             }
-            k.field(12).long(ageBucket(now - anchor).toLong())
+            k.field(12).long(ageBucket(VespaEventIndex.minusSaturated(now, anchor)).toLong())
             return k.key()
         }
 
@@ -285,7 +285,7 @@ internal class RecencyWindowMemory(
             k.field(6).set(q.notSearch, lowerAscii = false)
             k.field(9).long(if (gated) 1 else 0)
             if (gated) k.field(11).text(q.minRank.toString())
-            k.field(12).long(ageBucket(now - anchor).toLong())
+            k.field(12).long(ageBucket(VespaEventIndex.minusSaturated(now, anchor)).toLong())
             return k.key()
         }
 
@@ -296,7 +296,9 @@ internal class RecencyWindowMemory(
          * How far back an anchor sits, coarsely: 0 within a day of the clock,
          * then one bucket per doubling (2 days, 4, 8, … ). Deep pagination
          * walks through the buckets and re-learns at each, which is the point:
-         * the rate a page meets depends on how old it is.
+         * the rate a page meets depends on how old it is. The age is taken
+         * saturated: an anchor near Long.MIN_VALUE (a caller's `until`) wrapped
+         * it negative, into bucket 0 beside the live feed.
          */
         fun ageBucket(ageSecs: Long): Int {
             val days = ageSecs / 86_400L

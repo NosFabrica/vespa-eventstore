@@ -28,6 +28,7 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.eventstore.mapping.toEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
+import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.currentCoroutineContext
@@ -146,7 +147,15 @@ internal class ProviderMap(
         val builtAtSecs: Long,
         /** Build order: a pass never replaces one whose query was issued after its own. */
         val seq: Long,
-    )
+    ) {
+        /**
+         * Every signer some 10040 delegates kind 30382 to, ANY metric: the
+         * projected services plus whatever the search gate admits under
+         * `30382:hops`, `30382:reporters` and the rest. Lazy, so only the
+         * orphan sweep pays for the union.
+         */
+        val cardSigners: Set<String> by lazy { trust.services + delegations.delegatedFor(UserAssertionEvent.KIND) }
+    }
 
     @Volatile private var cached: Pass? = null
 
@@ -221,6 +230,16 @@ internal class ProviderMap(
      * entry's kind means and why a named `3039x:<name>` entry is not admitted.
      */
     suspend fun delegations(): Delegations = pass().delegations
+
+    /**
+     * Every signer some stored 10040 delegates kind 30382 to, for ANY metric,
+     * off the same pass as [get]. Wider than [TrustProviders.services], which
+     * holds only the `rank` and `followers` services the projection writes:
+     * a card by a service named only for `30382:hops` projects nothing, yet a
+     * reader asked for it and the search gate admits it, so it is not an
+     * orphan ([TrustReconciler.sweepOrphanScores]).
+     */
+    suspend fun cardSigners(): Set<String> = pass().cardSigners
 
     /**
      * The pass for a read the consumer serves partial (`AcceptPartial`): the

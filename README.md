@@ -190,7 +190,8 @@ Three consequences worth knowing:
 - **Cards from a service nobody named are dead storage.** A mirror that syncs
   30382s by kind pulls every scoring service on the network, not just the ones
   its users trust, and those cards can never become a cell for any observer.
-  `store.sweepOrphanScores()` deletes them (`dryRun = true` first, to see how
+  `store.sweepOrphanScores()` deletes the cards of every signer no 10040
+  delegates kind 30382 to under any metric (a `30382:hops` provider is kept) (`dryRun = true` first, to see how
   much it would free). It is an operator action, never automatic, and it
   refuses to run at all while no 10040 is readable — that state is
   indistinguishable from a corpus mirrored before its provider lists, where

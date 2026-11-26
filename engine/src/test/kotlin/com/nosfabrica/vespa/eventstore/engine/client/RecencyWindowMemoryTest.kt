@@ -156,9 +156,9 @@ class RecencyWindowMemoryTest {
         assertEquals(1, table.size, "one entry for both")
         val (window, lease) = table.recallWith(shape, VespaEventIndex.TIE_SLACK)
         assertEquals(Recall.Window(3_600, 10), window)
-        assertEquals(50, lease.value)
+        assertEquals(49, lease.value)
         table.forget(shape)
         assertNull(table.recall(shape))
-        assertEquals(50, slack.slackFor(shape).value, "the slack the shape learned is not the window's to drop")
+        assertEquals(49, slack.slackFor(shape).value, "the slack the shape learned is not the window's to drop")
     }
 }

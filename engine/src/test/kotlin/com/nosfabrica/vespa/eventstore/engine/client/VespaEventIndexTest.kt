@@ -873,7 +873,8 @@ class VespaEventIndexTest {
      * A FEED BLOCK IS SAID AT ONCE. A cluster past its disk or memory limit refuses every write, and the
      * batch handler lists each one INSUFFICIENT_STORAGE: the write throws [EngineRefusesWrites] straight
      * away, without re-putting each document through the feed client, whose retries held a refused
-     * batch of 100 for 5 s on a real Vespa. A lone document, which takes the feed client, still fails.
+     * batch of 100 for 5 s on a real Vespa. A lone put is answered at once as well; a write only the
+     * feed client makes still fails, as [EngineRefusesWrites].
      */
     @Test
     fun `a feed block fails a batch write at once without re-putting it`() =
@@ -891,8 +892,16 @@ class VespaEventIndexTest {
                 assertFailsWith<EngineRefusesWrites> { index.putAll(listOf(doc(kind = 1, at = 2_000L))) }
                 assertEquals(before, mock.documentPutAttempts.get(), "a lone document is not re-put through the feed client either")
                 assertTrue(System.nanoTime() - lone < 5_000_000_000L, "a lone document answered at once")
-                // A write only the feed client makes still waits out its retries, but its failure names the engine.
-                val refused = assertFailsWith<EngineRefusesWrites> { index.put(doc(kind = 1, at = 3_000L)) }
+                // A lone put with nothing in flight goes straight to /document/v1 and is answered at once too.
+                val put = System.nanoTime()
+                assertFailsWith<EngineRefusesWrites> { index.put(doc(kind = 1, at = 3_000L)) }
+                assertTrue(System.nanoTime() - put < 5_000_000_000L, "a lone put answered at once")
+                assertEquals(0L, index.directPuts, "and not counted as stored")
+            }
+            // A write only the feed client makes (an address-keyed conditional put) still waits out its
+            // retries, but its failure names the engine.
+            VespaEventIndex(mock.url, addressKeyed = true).use { index ->
+                val refused = assertFailsWith<EngineRefusesWrites> { index.putIfNewer(doc(kind = 0, at = 3_000L)) }
                 assertTrue(refused.cause?.message?.contains("External feed is blocked") == true, refused.cause?.message)
             }
         }
@@ -1988,7 +1997,7 @@ class VespaEventIndexTest {
      */
     @Test
     fun `a transient partial is retried on the index, never handed to the scan`() =
-        runBlocking {
+        runBlocking<Unit> {
             IngestStats.reset()
             val ann = "a7".repeat(32)
             seed(*(1..40).map { doc(kind = 30382, pubkey = ann, at = 1_700_000_000L + it) }.toTypedArray())
@@ -2471,10 +2480,26 @@ class VespaEventIndexTest {
      * did not serve.
      *
      * Pinned so the timer cannot be dropped the way it was never added.
+     *
+     * THIS TEST NEVER RAN until 2026-11-25: its body ended on `assertNotNull`'s
+     * value, so the method returned one, and JUnit skips a test method that is
+     * not void (`runBlocking<Unit>` is what makes it a test). Its last claim had
+     * never been true either. It said discovery costs exactly ONE cursor page;
+     * run at the commit that wrote it (e8bc99c1) the walk read TWO: the page
+     * that found the second, and the open page strictly below it that came back
+     * empty, which is how a walk with no `since` learns it reached the bottom.
+     * Since the walk reads slices (#209) that one open page is a descent: the
+     * one-second page teaches no width (`spanOfPage` keeps the width it had, 1 s
+     * on an open first page), so the walk asks a one-second slice below, then
+     * widens by SLICE_GROWTH through ~1.7e9 empty seconds — 11 empty slices
+     * here, and the last page asked open: 13 cursor pages, every one past the
+     * first empty. That descent is #209's documented price for a walk with no
+     * `since` ("~9 cheap empty queries below its last id"), so it is what is
+     * pinned: the discovery page, then only empty slices and the last page.
      */
     @Test
     fun `what the prefix split cannot reach is one scan, booked as walk-scan`() =
-        runBlocking {
+        runBlocking<Unit> {
             IngestStats.reset()
             val ida = "d4".repeat(32)
             seedBulk((1..200).map { doc(kind = 30382, pubkey = ida, at = 1_700_000_000L) })
@@ -2499,11 +2524,16 @@ class VespaEventIndexTest {
                     stages["walk.ties.prefix"]?.calls,
                     "the budget is READS across the whole split, not a depth",
                 )
-                // ONE cursor page, and no more. The routing is discovered, not
-                // predicted, so the walk necessarily reads the page that shows
-                // it the boundary — and then resolves the second rather than
-                // paging on. That one page IS the cost the probe used to be.
-                assertEquals(1L, stages["walk.ids.page"]?.calls, "discovery costs exactly one cursor page")
+                // ONE page discovers the second, and every other cursor page is
+                // the walk's way down to the epoch below it, where nothing is.
+                // The routing is discovered, not predicted, so the walk reads
+                // the page that shows it the boundary, resolves the second, and
+                // resumes strictly below it, empty slices widening by
+                // SLICE_GROWTH until the last page, asked open at the bottom.
+                val empty = assertNotNull(stages["walk.slice.empty"], "below the second the walk descends by empty slices: ${stages.keys.sorted()}").calls
+                assertEquals(null, stages["walk.slice.short"], "and finds nothing there")
+                assertEquals(1L + empty + 1L, stages["walk.ids.page"]?.calls, "the discovery page, the empty slices and the last page: no other cursor page")
+                assertTrue(empty <= 12, "a geometric descent: 1 s, then x8 a slice, reaches the epoch in ~11 slices, not $empty")
                 assertNotNull(stages["walk.ids.tiegroup"], "and the bounded boundary read that measured the group")
             } finally {
                 scanning.close()
@@ -2621,6 +2651,66 @@ class VespaEventIndexTest {
                 assertTrue(mock.searchRequests.all { (it["hits"]?.toInt() ?: 0) <= 48 }, "no request may ask past the deployed cap")
             } finally {
                 mock.refuseHitsAbove = null
+                mock.scrambleTieOrder = false
+            }
+        }
+
+    /**
+     * A BOUNDARY SECOND WIDER THAN THE DEPLOYED HITS CAP. The `[T,T]` read that resolves a cut
+     * boundary group asks for at most VESPA_UNBOUNDED_HITS, and a provider's bulk second holds
+     * far more: the engine answered with the cap's worth of ITS members, and the page kept the
+     * lowest ids of that subset, not of the second. A capped tie read is now cut, and resolved
+     * lowest ids first by id prefix, as the id walk resolves a dense second — in every mode and
+     * under every strategy.
+     */
+    @Test
+    fun `a tie group wider than the hits cap keeps the lowest ids of the whole second`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            val provider = "dc".repeat(32)
+            seedBulk((0 until 200).map { hashedDoc(kind = 30382, pubkey = provider, at = now - 100) })
+            val q = EventQuery(kinds = listOf(30382), authors = listOf(provider), limit = 10, nowSecs = now)
+            val expected = reference.search(q).map { it.id }
+            mock.refuseHitsAbove = 48
+            mock.scrambleTieOrder = true
+            try {
+                for (strategy in RecencyStrategy.entries) {
+                    val tuning = ClientTuning(unboundedHits = 48)
+                    val builds =
+                        mapOf(
+                            "default" to VespaEventIndex(mock.url, tuning = tuning, recencyStrategy = strategy),
+                            "id-first" to VespaEventIndex(mock.url, tuning = tuning, recencyStrategy = strategy, idFirstMaxDirectHits = 0),
+                            "documents" to VespaEventIndex(mock.url, tuning = tuning, recencyStrategy = strategy, idFirst = false),
+                        )
+                    try {
+                        for ((name, build) in builds) {
+                            repeat(2) { read -> assertEquals(expected, build.search(q).map { it.id }, "$strategy $name read $read: the lowest ids of the boundary second") }
+                        }
+                    } finally {
+                        builds.values.forEach { it.close() }
+                    }
+                }
+            } finally {
+                mock.refuseHitsAbove = null
+                mock.scrambleTieOrder = false
+            }
+        }
+
+    /** The band pager's `[T,T]` read past the cap: a limit past the band landing inside a second wider than VESPA_UNBOUNDED_HITS. */
+    @Test
+    fun `a paged read inside a second wider than the hits cap keeps the lowest ids`() =
+        runBlocking {
+            val band = EventYql.MATCH_PHASE_BAND
+            val provider = "dd".repeat(32)
+            seedBulk((0 until band + 200).map { hashedDoc(kind = 30382, pubkey = provider, at = 9_000L) })
+            val q = EventQuery(kinds = listOf(30382), authors = listOf(provider), limit = band + 25)
+            val expected = reference.search(q).map { it.id }
+            mock.scrambleTieOrder = true
+            try {
+                VespaEventIndex(mock.url, tuning = ClientTuning(unboundedHits = band + 50)).use { capped ->
+                    assertEquals(expected, capped.search(q).map { it.id }, "the lowest ids of the boundary second")
+                }
+            } finally {
                 mock.scrambleTieOrder = false
             }
         }
@@ -3990,6 +4080,33 @@ class VespaEventIndexTest {
         }
 
     /**
+     * AN UNSIGNED RUMOR IS A WHOLE DOCUMENT. The store keeps rumors (a kind-14 inside a gift
+     * wrap, an event its caller never signed), and they decode with an empty `sig`, which is how
+     * a direct read told an id-only hit from a document: the rumor on a direct page was read
+     * again by id, two queries for a page one serves. An id-only hit is the one with no pubkey,
+     * which the `idtime` summary never carries and every document has.
+     */
+    @Test
+    fun `a direct page holding an unsigned rumor needs no second query`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            val author = "ab".repeat(32)
+            seedBulk((1..5).map { doc(kind = 14, pubkey = author, at = now - it * 100_000L, content = "dm $it").let { d -> if (it == 2) d.copy(sig = "") else d } })
+            val q = EventQuery(kinds = listOf(14), authors = listOf(author), limit = 10, nowSecs = now)
+            for (strategy in RecencyStrategy.entries) {
+                VespaEventIndex(mock.url, recencyStrategy = strategy, recencyMemory = false).use { direct ->
+                    val before = mock.searchRequests.size
+                    val page = direct.search(q)
+                    val all = mock.searchRequests.drop(before)
+                    assertEquals(emptyList(), all.filter { it.isHydrate() }, "$strategy: no document read again by id")
+                    if (strategy == RecencyStrategy.MATCH_PHASE) assertEquals(1, all.size, "one query for a page that fits its slack: $all")
+                    assertEquals(reference.search(q).map { it.id to it.content }, page.map { it.id to it.content }, "$strategy: the page, whole")
+                    assertEquals("", page.single { it.content == "dm 2" }.sig, "$strategy: the rumor, unsigned")
+                }
+            }
+        }
+
+    /**
      * ONE QUERY UNLESS THE PAGE IS LARGE, AND A CROWDED SECOND COSTS IDS. A 70-hit page of
      * one feed is served in one query; a page planned past the cap is id-first; a feed whose
      * boundary second holds thirty notes is direct too, its cut group read as ids and only the
@@ -4253,6 +4370,36 @@ class VespaEventIndexTest {
             } finally {
                 mock.degradeNextSearches = 0
                 builds.values.forEach { it.close() }
+            }
+        }
+
+    /**
+     * AN `until` AT THE BOTTOM OF `Long`. A speculative window is `[anchor - window, anchor]`, and
+     * with the anchor at the caller's `until` near [Long.MIN_VALUE] the subtraction wrapped to the
+     * far future: the attempt came back empty, its boundary became that far-future second, and the
+     * fallback read everything strictly older than it — the newest page, served to a read that
+     * matches nothing.
+     */
+    @Test
+    fun `an until near Long MIN_VALUE matches nothing under every strategy`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            seedBulk((1..20).map { doc(kind = 1, at = now - it) })
+            val shapes =
+                listOf(
+                    EventQuery(kinds = listOf(1), until = Long.MIN_VALUE, limit = 5),
+                    EventQuery(kinds = listOf(1), until = Long.MIN_VALUE + 1, limit = 5),
+                    EventQuery(kinds = listOf(1), since = Long.MIN_VALUE, until = Long.MIN_VALUE + 3_600L, limit = 5),
+                ).map { it.copy(nowSecs = now) }
+            for (strategy in RecencyStrategy.entries) {
+                for ((name, build) in modeBuilds(strategy)) {
+                    build.use { b ->
+                        for (q in shapes) {
+                            assertEquals(reference.search(q).map { it.id }, b.search(q).map { it.id }, "$strategy $name: $q")
+                            assertEquals(emptyList(), b.search(q).map { it.id }, "$strategy $name, read again: $q")
+                        }
+                    }
+                }
             }
         }
 }

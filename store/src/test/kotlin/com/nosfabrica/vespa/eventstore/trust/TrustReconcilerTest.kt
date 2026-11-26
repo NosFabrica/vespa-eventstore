@@ -148,6 +148,30 @@ class TrustReconcilerTest {
             assertEquals(serviceCells(service to 87), reputations.get(subject)?.influenceScores)
         }
 
+    /**
+     * The coverage a reconcile records is the state it LEAVES: a boot reconcile
+     * that walks every unprojected service has made them all usable, and the
+     * health page and `trust.coverage.*` gauges must say so now, not at the next
+     * reconcile hours later.
+     */
+    @Test
+    fun `coverage after a repairing reconcile counts the repaired services as projected`() =
+        runBlocking {
+            store.insert(card())
+            store.insert(list10040())
+            store.insert(list10040(author = observer2, serviceKey = service2))
+            store.insert(card(signer = service2))
+            reputations.docs.clear() // neither service carries a cell
+
+            TrustCoverage.reset()
+            val report = reconciler.reconcile()
+            assertEquals(setOf(service, service2), report.rebuilt.toSet(), "both were walked")
+            assertEquals(2, TrustCoverage.servicesNamed)
+            assertEquals(2, TrustCoverage.servicesProjected, "the walked services are projected now")
+            assertEquals(2, TrustCoverage.lensesResolvable, "and every lens resolves to one")
+            TrustCoverage.reset()
+        }
+
     @Test
     fun `reconcile leaves a healthy projection alone`() =
         runBlocking {
@@ -474,6 +498,32 @@ class TrustReconcilerTest {
             assertTrue(reconciler.verify().isClean(), "repair converged")
         }
 
+    /**
+     * A stale version left stored beside its winner (a supersession sweep that
+     * failed after the winner was written) must not speak for the address. The
+     * newest version dropped `rank`, which the cell path reads as a retraction;
+     * a derive that folded every version kept the stale rank, so verify called
+     * the faithful cells drift and every repair wrote the retracted rank back.
+     */
+    @Test
+    fun `a derive reads only the newest version, so a stale one cannot bring back a retracted rank`() =
+        runBlocking {
+            store.insert(list10040())
+            val v1 = card(rank = 87, followers = 120)
+            store.insert(v1)
+            store.insert(card(rank = null, followers = 150)) // newer: rank retracted
+            assertNull(reputations.get(subject)?.influenceScores?.get(ServiceKey(service)), "the cell path retracted the rank")
+            index.put(v1.toDoc()) // the stale version, left stored
+
+            val audit = reconciler.verify(repair = true)
+            assertTrue(audit.isClean(), "verify called the faithful cell path drift: ${audit.drift.map { it.expected }}")
+            assertNull(reputations.get(subject)?.influenceScores?.get(ServiceKey(service)), "repair wrote the stale rank back")
+
+            reconciler.rebuildAll()
+            assertNull(reputations.get(subject)?.influenceScores?.get(ServiceKey(service)), "rebuildAll wrote the stale rank back")
+            assertEquals(serviceCells(service to 150.0), reputations.get(subject)?.followerCounts, "the newest version's followers stand")
+        }
+
     /** A parent whose only card is by a service nobody names derives empty: it is drift, and repair drops it. */
     @Test
     fun `verify drops a parent that only an unnamed service's card stands behind`() =
@@ -598,6 +648,47 @@ class TrustReconcilerTest {
         }
 
     /**
+     * Delegated for ANY 30382 metric is named. GrapeRank providers are appointed
+     * under `30382:hops` and the like, and the search gate admits their cards on
+     * exactly that entry; the sweep used to know only `rank` and `followers`, so
+     * it deleted, irreversibly, the cards a reader's own 10040 asked for.
+     */
+    @Test
+    fun `a service delegated for another 30382 metric is not swept`() =
+        runBlocking {
+            store.insert(list10040()) // keeps the attribution map non-empty
+            store.insert(list10040(author = observer2, serviceKey = service2, types = listOf("30382:hops")))
+            store.insert(card(signer = service2, about = "c1".repeat(32)))
+            assertTrue(
+                projection.recompute
+                    .delegations()
+                    .of(observer2)
+                    .admits(UserAssertionEvent.KIND, service2),
+                "the search gate admits service2's cards",
+            )
+
+            val dry = reconciler.sweepOrphanScores(dryRun = true)
+            assertTrue(dry.orphans.isEmpty(), "the dry run must not list a delegated service")
+            val report = reconciler.sweepOrphanScores()
+            assertTrue(report.isClean())
+            assertEquals(1, index.count(EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = listOf(service2))), "a delegated service's cards stand")
+        }
+
+    /** Only a non-rank metric is stored at all: the attribution is readable, so the sweep runs and keeps that service. */
+    @Test
+    fun `lists naming only another 30382 metric still sweep the unnamed signer`() =
+        runBlocking {
+            store.insert(list10040(types = listOf("30382:hops")))
+            store.insert(card(about = "c1".repeat(32)))
+            store.insert(card(signer = service2, about = "c2".repeat(32)))
+
+            val report = reconciler.sweepOrphanScores()
+            assertFalse(report.refused, "a 10040 delegating 30382 is readable attribution")
+            assertEquals(listOf(service2), report.orphans)
+            assertEquals(1, index.count(EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = listOf(service))), "the delegated service survives")
+        }
+
+    /**
      * The footgun this refuses: "nobody named it" and "no 10040 is readable yet"
      * produce the same candidate list, and the second is the mirror that stored
      * its scores before its provider lists — sweeping there deletes the whole
@@ -671,6 +762,28 @@ class TrustReconcilerTest {
             val report = racing.sweepOrphanScores()
             assertEquals(listOf(service2), report.remapped)
             assertTrue(report.orphans.isEmpty(), "it was never swept")
+            assertEquals(1, index.count(EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = listOf(service2))), "its cards stand")
+        }
+
+    /** The re-check under the lock reads every 30382 delegation too, not only rank and followers. */
+    @Test
+    fun `a service delegated mid-sweep for another 30382 metric is dropped from the sweep`() =
+        runBlocking {
+            store.insert(list10040())
+            store.insert(card(signer = service2, about = "c1".repeat(32)))
+
+            var claimed = false
+            val racing =
+                TrustReconciler(index, reputations, projection.recompute, projection.backlog, gate = { body ->
+                    if (!claimed) {
+                        claimed = true
+                        store.insert(list10040(author = observer2, serviceKey = service2, types = listOf("30382:hops")))
+                    }
+                    body()
+                })
+
+            val report = racing.sweepOrphanScores()
+            assertEquals(listOf(service2), report.remapped)
             assertEquals(1, index.count(EventQuery(kinds = listOf(UserAssertionEvent.KIND), authors = listOf(service2))), "its cards stand")
         }
 

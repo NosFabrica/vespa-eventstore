@@ -53,7 +53,8 @@ import kotlinx.coroutines.launch
  * asks for one when it cannot apply a change as a cell (a crash marker, a
  * reconcile, a removal by id it cannot resolve). Cells are keyed by the
  * SIGNING SERVICE: the newest card by each mapped service about the subject
- * holds that service's cell, both tags. A version missing a tag contributes
+ * holds that service's cell, both tags, and is the ONLY version read — a stale
+ * one left beside it contributes nothing. A version missing a tag contributes
  * nothing to that dimension (retraction); already-expired cards (NIP-40)
  * contribute nothing — the derive queries carry the same expiry cutoff every
  * read path applies. Idempotent and self-healing; when no cells are left the
@@ -81,6 +82,9 @@ internal class TrustRecompute(
      * compute what. See [Delegations]; the write side's projection is above.
      */
     suspend fun delegations(): Delegations = providers.delegations()
+
+    /** Every signer a stored 10040 delegates kind 30382 to, any metric — see [ProviderMap.cardSigners]. */
+    suspend fun cardSigners(): Set<String> = providers.cardSigners()
 
     /** [providerMap] for a read served partial: survives a degraded cluster with a cold cache (see [ProviderMap.servingTrust]). */
     suspend fun servingProviderMap(): TrustProviders = providers.servingTrust()
@@ -561,23 +565,39 @@ internal class TrustRecompute(
         docs: List<EventDoc>,
         serviceProviders: TrustProviders,
     ): ReputationDoc {
+        // ONE VERSION PER SERVICE: the address's winner, never a fold of every
+        // version. The docs are one subject's, so a signer IS an address
+        // (30382, service, subject), and the store holds one version per
+        // address except beside a supersession sweep that has not run or has
+        // failed (the winner is written first, so a failure leaves a stale
+        // version rather than none). Folding every version let an older one's
+        // tag survive a newer one that dropped it: a retracted rank came back
+        // on every verify repair, crash-marker drain and rebuild, while
+        // [applyCards] had faithfully removed it. Picked in DERIVE_ORDER, last
+        // wins, so the winner is (newest created_at, then lowest id) — the
+        // store's replaceable-winner rule, and deterministic (an engine-order
+        // pick let rebuilds change served scores with no event changing).
+        val newest = LinkedHashMap<String, EventDoc>()
+        for (doc in docs.sortedWith(DERIVE_ORDER)) {
+            // Only services some stored 10040 names are projected (memory: the
+            // reputation type is global); a signer per address, so filtering
+            // before the pick changes no winner.
+            if (serviceProviders.maps(doc.pubkey)) newest[doc.pubkey] = doc
+        }
         val influence = LinkedHashMap<ServiceKey, Int>()
         val followers = LinkedHashMap<ServiceKey, Double>()
-        // Folded OLDEST-first so the NEWEST card wins each cell — deterministic
-        // (an engine-order fold let rebuilds change served scores with no event
-        // changing). Ties go to the LOWEST id (sorted after, so it overwrites),
-        // matching the store's replaceable-winner rule.
-        for (doc in docs.sortedWith(DERIVE_ORDER)) {
+        for ((service, doc) in newest) {
             // Direct by-kind reconstruction — no JSON round trip; runs once per
-            // fetched card across every recompute walk.
+            // winning card across every recompute walk. A winner that does not
+            // reconstruct contributes nothing: an older version is not the
+            // address's record either.
             val card = doc.toEvent() as? UserAssertionEvent ?: continue
-            // Keyed by the SIGNING SERVICE. Only services some stored 10040
-            // names are projected (memory: the reputation type is global), and
-            // both tags land whatever dimension the service was named for — a
-            // query reads the dimension it resolved the observer's lens to.
-            if (!serviceProviders.maps(card.pubKey)) continue
-            card.boundedRank()?.let { rank -> influence[ServiceKey(card.pubKey)] = rank }
-            card.followerCount()?.toDouble()?.let { count -> followers[ServiceKey(card.pubKey)] = count }
+            // Keyed by the SIGNING SERVICE, both tags whatever dimension the
+            // service was named for — a query reads the dimension it resolved
+            // the observer's lens to. A tag the winner lacks contributes
+            // nothing (retraction), as in [applyCards].
+            card.boundedRank()?.let { rank -> influence[ServiceKey(service)] = rank }
+            card.followerCount()?.toDouble()?.let { count -> followers[ServiceKey(service)] = count }
         }
         return ReputationDoc(subject, influence, followers)
     }

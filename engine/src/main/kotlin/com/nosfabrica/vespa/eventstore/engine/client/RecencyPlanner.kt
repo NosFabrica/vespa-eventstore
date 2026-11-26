@@ -247,7 +247,10 @@ internal class RecencyPlanner(
         // plan and the ranking it feeds must not disagree about "now".
         val anchor = q.until ?: q.nowSecs ?: (System.currentTimeMillis() / 1000)
         for (window in windows) {
-            val since = anchor - window
+            // Saturated: an anchor near Long.MIN_VALUE (a caller's `until`) wrapped the floor to
+            // the far future. A rung reaching the bottom of Long windows nothing.
+            val since = VespaEventIndex.minusSaturated(anchor, window)
+            if (since == Long.MIN_VALUE) return q
             // An existing `since` at least this tight makes the rung (and any
             // wider one) pointless — the query is already windowed.
             if (q.since != null && since <= q.since) return q

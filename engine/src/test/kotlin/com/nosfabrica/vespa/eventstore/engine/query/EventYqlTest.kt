@@ -20,6 +20,8 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.query
 import com.nosfabrica.vespa.eventstore.engine.app.VespaApp
+import com.nosfabrica.vespa.eventstore.engine.text.IndexableChars
+import com.nosfabrica.vespa.eventstore.engine.text.NearText
 import com.nosfabrica.vespa.eventstore.engine.text.StemText
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -29,6 +31,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.io.ByteArrayInputStream
 import java.util.zip.ZipInputStream
+import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -60,6 +63,7 @@ class EventYqlTest {
                 EventQuery(tagsAll = mapOf("t" to listOf("a", "b")), tags = mapOf("e" to listOf(b)), limit = 10),
                 EventQuery(tagsAll = mapOf("t" to listOf("only")), limit = 10),
                 EventQuery(tags = mapOf("t" to listOf("x\u0001y", "z")), limit = 10),
+                EventQuery(tags = mapOf("t" to listOf("a\uD83Db", "z", "\uD83D\uDD25")), limit = 10),
                 EventQuery(kinds = listOf(1), since = 100, until = 200, notExpiredAt = 150, limit = 10),
                 EventQuery(kinds = listOf(1), expiresBefore = 300),
                 EventQuery(kinds = listOf(1), ranking = EventYql.RANK_RECENCY_GATED, observer = a, rankKey = a, minRank = 2.0, limit = 10),
@@ -737,6 +741,41 @@ class EventYqlTest {
         assertEquals("⚡⚡", EventYql.build(EventQuery(phrases = listOf("⚡⚡")))!!.params["p0"])
     }
 
+    /**
+     * Each quoted phrase and each exclusion is a clause of its own, so thousands of them built a
+     * query without bound beside the capped words. They are cut to [PhraseRuns.MAX_PHRASES]
+     * phrases of [PhraseRuns.MAX_PHRASE_TOKENS] tokens, and [PhraseRuns.MAX_EXCLUSIONS]
+     * exclusions of no more than that, the first ones kept.
+     */
+    @Test
+    fun `phrases and exclusions are capped in number and length, keeping the first`() {
+        fun size(q: VespaQuery) = q.yql.length + q.params.entries.sumOf { it.key.length + it.value.length }
+        val phrases = (0 until 5_000).map { "p$it q$it" }
+        val exclusions = (0 until 5_000).map { "x$it" }
+        val q = EventYql.build(EventQuery(search = "bitcoin", phrases = phrases, notSearch = exclusions, limit = 50))!!
+        assertTrue(size(q) < 64 * 1024, "5,000 phrases and 5,000 exclusions built ${size(q)} chars")
+        assertEquals("p0 q0", q.params["p0"])
+        assertNotNull(q.params["p${PhraseRuns.MAX_PHRASES - 1}"])
+        assertNull(q.params["p${PhraseRuns.MAX_PHRASES}"])
+        assertEquals("x0", q.params["n0"])
+        assertNotNull(q.params["n${PhraseRuns.MAX_EXCLUSIONS - 1}"])
+        assertNull(q.params["n${PhraseRuns.MAX_EXCLUSIONS}"])
+        assertEquals((1 + PhraseRuns.MAX_PHRASES).toString(), q.params["ranking.features.query(n_words)"])
+
+        // A long phrase is cut at a token: a looser requirement, still in order.
+        val sentence = (1..1_000).joinToString(" ") { "t$it" }
+        val cut = EventYql.build(EventQuery(phrases = listOf(sentence)))!!
+        assertEquals((1..PhraseRuns.MAX_PHRASE_TOKENS).joinToString(" ") { "t$it" } + " ", cut.params["p0"])
+        // A long exclusion is DROPPED, never cut: cut, it would exclude more than was typed.
+        val long = (1..PhraseRuns.MAX_PHRASE_TOKENS + 1).joinToString("-") { "t$it" }
+        val dropped = EventYql.build(EventQuery(search = "bitcoin", notSearch = listOf(long, "spam")))!!
+        assertEquals("spam", dropped.params["n0"])
+        assertNull(dropped.params["n1"])
+        // One huge piece of text costs no more than the caps allow.
+        val huge = EventYql.build(EventQuery(phrases = listOf("z".repeat(200_000)), notSearch = listOf("y".repeat(200_000))))!!
+        assertTrue(size(huge) < 8 * 1024, "built ${size(huge)} chars")
+    }
+
     @Test
     fun `notSearch words emit negated exact clauses with out-of-band params`() {
         val q = EventYql.build(EventQuery(search = "cat", notSearch = listOf("dog", "e-cash")))!!
@@ -805,6 +844,35 @@ class EventYqlTest {
         // value sinks the conjunction. Dropping it would WIDEN the query to
         // documents that lack the term entirely.
         assertNull(EventYql.build(EventQuery(tagsAll = mapOf("d" to listOf(bad, "good")))))
+    }
+
+    /**
+     * A LONE surrogate has no UTF-8 form: the request writer sent it as `?`, so `#t:["\uD83D"]`
+     * read the events tagged `?`. No document can hold one (VespaText.isStorable refuses it), so
+     * the value matches nothing, in the YQL and in the JSON select form alike.
+     */
+    @Test
+    fun `a tag value with a lone surrogate is unmatchable in both forms`() {
+        for (lone in listOf("\uD83D", "\uDD25", "a\uD83Db", "\uDD25\uD83D", "x\uD83D")) {
+            assertNull(EventYql.build(EventQuery(tags = mapOf("t" to listOf(lone)), limit = 10)), lone)
+            assertNull(EventYql.build(EventQuery(tagsAll = mapOf("t" to listOf(lone, "x")), limit = 10)), lone)
+        }
+        val q = EventYql.build(EventQuery(tags = mapOf("t" to listOf("a\uD83Db", "x")), limit = 10))!!
+        assertTrue("tag_index contains \"t:x\"" in q.yql, q.yql)
+        val where = assertNotNull(assertNotNull(q.select).where)
+        assertTrue("\"t:x\"" in where, where)
+        for (text in listOf(q.yql, where)) assertTrue(text.none(Char::isSurrogate) && "t:a" !in text, text)
+        // A real pair is one character, and stays matchable.
+        val fire = EventYql.build(EventQuery(tags = mapOf("t" to listOf("\uD83D\uDD25")), limit = 10))!!
+        assertTrue("t:\uD83D\uDD25" in fire.yql && "t:\uD83D\uDD25" in fire.select!!.where!!, fire.yql)
+    }
+
+    @Test
+    fun `a search word with a lone surrogate sends none`() {
+        val q = EventYql.build(EventQuery(search = "a\uD83Db \uDD25zap"))!!
+        assertEquals(listOf("a", "b", "zap"), listOf(q.params["w0"], q.params["w1"], q.params["w2"]))
+        assertTrue(q.params.values.none { v -> v.any(Char::isSurrogate) }, q.params.toString())
+        assertNull(EventYql.build(EventQuery(search = "\uD83D")), "a word of nothing but one is no match")
     }
 
     /**
@@ -1016,6 +1084,60 @@ class EventYqlTest {
         assertEquals("José", q.params["w0"])
         assertEquals("jose", q.params["fw0"])
         assertTrue("({prefix:true}@fw0)" in q.yql)
+    }
+
+    /**
+     * A search's YQL grew by every word and by every character of a word (one trigram per
+     * character on each of five gram fields): 10,000 words built 38 MB of YQL and 40,007
+     * parameters, one 100,000-character word 17 MB, and the relay admits 262,144-character
+     * messages. A search is cut to [IndexableChars.MAX_SEARCH_WORDS] words of at most
+     * [IndexableChars.MAX_WORD_CHARS] characters, so the worst one stays bounded.
+     */
+    @Test
+    fun `a search is cut to a bounded number of words of bounded length`() {
+        fun size(q: VespaQuery) = q.yql.length + q.params.entries.sumOf { it.key.length + it.value.length }
+        val many = (0 until 10_000).joinToString(" ") { "w${it}x${"abcdefgh".substring(it % 4)}" }
+        val wide = EventYql.build(EventQuery(search = many, limit = 50))!!
+        assertTrue(size(wide) < 256 * 1024, "10,000 words built ${size(wide)} chars")
+        assertEquals("w0xabcdefgh", wide.params["w0"], "the FIRST words are kept")
+        assertNotNull(wide.params["w${IndexableChars.MAX_SEARCH_WORDS - 1}"])
+        assertNull(wide.params["w${IndexableChars.MAX_SEARCH_WORDS}"])
+        assertEquals(IndexableChars.MAX_SEARCH_WORDS.toString(), wide.params["ranking.features.query(n_words)"])
+
+        // The worst words the caps allow: every one as long as a word may be, no two alike —
+        // all letters (the most trigrams), or a token at every other character.
+        val r = Random(7)
+        val worst = (0 until 100).joinToString(" ") { (0 until 1_000).map { 'a' + r.nextInt(26) }.joinToString("") }
+        val big = EventYql.build(EventQuery(search = worst, limit = 50))!!
+        assertTrue(size(big) < 256 * 1024, "100 words of 1,000 letters built ${size(big)} chars")
+        val dotted = (0 until 100).joinToString(" ") { (0 until 500).joinToString(".") { "${'a' + r.nextInt(26)}" } }
+        val dense = EventYql.build(EventQuery(search = dotted, limit = 50))!!
+        assertTrue(size(dense) < 256 * 1024, "100 words of 500 tokens built ${size(dense)} chars")
+
+        val long = "q".repeat(100_000)
+        val one = EventYql.build(EventQuery(search = long, limit = 50))!!
+        assertTrue(size(one) < 64 * 1024, "one 100,000-char word built ${size(one)} chars")
+        assertEquals(IndexableChars.MAX_WORD_CHARS, one.params["w0"]!!.length)
+        // Cut at a code point, never between the halves of a surrogate pair.
+        val emoji = "a".repeat(IndexableChars.MAX_WORD_CHARS - 1) + "🔥".repeat(10)
+        assertEquals("a".repeat(IndexableChars.MAX_WORD_CHARS - 1), EventYql.build(EventQuery(search = emoji))!!.params["w0"])
+    }
+
+    @Test
+    fun `a word longer than any near element gets no prefix or typo clause`() {
+        // NearText drops elements over MAX_ELEMENT_LEN, so a prefix of a longer word, or a word
+        // further than the typo budget from one, can match nothing and still walks the dictionary.
+        val long = EventYql.build(EventQuery(search = "k".repeat(1_000)))!!
+        for (field in FuzzyWordGroup.ALL_NEAR_FIELDS) assertFalse("$field contains" in long.yql, field)
+        assertNull(long.params["fw0"], "no folded twin is sent for clauses that are not there")
+        val edge = "k".repeat(NearText.MAX_ELEMENT_LEN)
+        val atEdge = EventYql.build(EventQuery(search = edge))!!
+        assertTrue("(name_near contains ({prefix:true}@fw0))" in atEdge.yql, "a word as long as an element can still prefix it")
+        assertTrue("fuzzy(@fw0)" in atEdge.yql)
+        val past = EventYql.build(EventQuery(search = edge + "kk"))!!
+        assertFalse("prefix:true}@fw0" in past.yql, "no element is long enough to start with it")
+        assertTrue("fuzzy(@fw0)" in past.yql, "an element two edits shorter can still be its typo")
+        assertFalse("fuzzy(@fw0)" in EventYql.build(EventQuery(search = edge + "kkkk"))!!.yql)
     }
 
     @Test
@@ -1259,6 +1381,74 @@ class EventYqlTest {
         assertNull(EventYql.build(EventQuery(search = "“ ”")))
     }
 
+    /**
+     * Each word reaches the default grammar's `userInput()`, which PARSES it — measured on the
+     * local Vespa (2026-11-25, 31,654 notes): `created_at:>0` matched every note, `-bar` every
+     * note (a NOT over nothing), `kind:1` every kind 1, `kind:` was an HTTP 400, and
+     * `bitcoin!50` re-weighted the term. Quartz lifts only extension keys spelled a-z, and a star
+     * or quote inside a word becomes a space, so `foo*-bar` used to send a `-bar` word.
+     */
+    @Test
+    fun `a search word carries no Vespa query syntax into userInput`() {
+        fun sent(search: String): List<String> {
+            val q = assertNotNull(EventYql.build(EventQuery(search = search)), search)
+            return q.params
+                .filterKeys { it.matches(Regex("w\\d+|wp\\d+|wj")) }
+                .values
+                .toList()
+        }
+        val searches =
+            listOf(
+                "created_at:>0",
+                "-bar",
+                "foo*-bar",
+                "kind:1",
+                "kind:",
+                "name:vitor",
+                "bitcoin!50",
+                "bitcoin!",
+                "#-bar",
+                "zzqq(-bar",
+                "a;b",
+                "a<b",
+                "x[y]",
+                "--bar",
+                "+-bar",
+                "－bar",
+                "kind：1",
+                "bitcoin！",
+                "created_at:[0;99]",
+                "nostr:npub1abc pico-8",
+            )
+        for (search in searches) {
+            for (word in sent(search)) {
+                assertTrue(word.none { it in ":!()[];<>\"*：！（）［］；＜＞" }, "'$search' sent '$word'")
+                word.forEachIndexed { i, c ->
+                    if (c in "-+－＋") assertTrue(i > 0 && word[i - 1].isLetterOrDigit(), "'$search' sent a sign that opens a term: '$word'")
+                }
+            }
+        }
+
+        fun words(search: String) =
+            EventYql
+                .build(EventQuery(search = search))!!
+                .params
+                .filterKeys { it.matches(Regex("w\\d+")) }
+                .toSortedMap()
+                .values
+                .toList()
+        // The words are still the document's tokens: what the index split on, the query splits on.
+        assertEquals(listOf("kind", "1"), words("kind:1"))
+        assertEquals(listOf("bar"), words("-bar"))
+        assertEquals(listOf("foo", "bar"), words("foo*-bar"))
+        assertEquals(listOf("created_at", "0"), words("created_at:>0"))
+        assertEquals(listOf("bitcoin"), words("bitcoin!50").take(1))
+        // An in-word hyphen is not a sign: "pico-8" is still one word, as typed.
+        assertEquals(listOf("pico-8"), words("pico-8"))
+        // A search that is only syntax still matches nothing, never everything.
+        assertNull(EventYql.build(EventQuery(search = "-: !( )")))
+    }
+
     @Test
     fun `only a phrase Vespa would refuse is rewritten`() {
         val ok = "one no no no no no two"
@@ -1331,6 +1521,21 @@ class EventYqlTest {
         assertFalse("about_gram contains" in dell.yql)
         assertFalse("about_gram contains" in EventYql.build(EventQuery(search = "odel"))!!.yql)
         assertTrue("about_gram contains" in EventYql.build(EventQuery(search = "odell"))!!.yql)
+    }
+
+    @Test
+    fun `an AND gram net asks for each trigram once, the phrase net keeps every position`() {
+        // "hahaha…" is 28 trigrams and 2 distinct: ANDing a term with itself
+        // matches nothing more, and five nets paid it 28 times each.
+        val haha = EventYql.build(EventQuery(search = "ha".repeat(15)))!!
+        for (field in listOf("name_gram", "display_name_gram", "search_primary_gram", "about_gram", "search_secondary_gram")) {
+            assertEquals(2, Regex("(?<![a-z_])$field contains").findAll(haha.yql).count(), field)
+        }
+        // The floor still counts every trigram, so which words get a net is unchanged.
+        assertTrue("name_gram contains \"aaa\")" in EventYql.build(EventQuery(search = "aaaa"))!!.yql)
+        // A phrase needs its repeats: each trigram sits at its own position.
+        val phrase = EventYql.build(EventQuery(search = "hahaha"))!!
+        assertTrue("search_text_gram contains phrase(\"hah\", \"aha\", \"hah\", \"aha\"))" in phrase.yql, phrase.yql)
     }
 
     @Test

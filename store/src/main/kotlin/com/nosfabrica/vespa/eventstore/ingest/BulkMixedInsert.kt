@@ -73,18 +73,22 @@ internal class BulkMixedInsert(
     /** The vanish erase against the REAL index — the per-event path's paged [Deletions.sweep]. */
     private val erase = Deletions(index, relay, sweepPage)
 
-    /** Preload, replay, write the diff. Callers hold the store's writer lock across the whole run. */
-    suspend fun run(events: List<Event>): List<IEventStore.InsertOutcome> {
+    /**
+     * Preload, replay, write the diff. Callers hold the store's writer lock across the whole run,
+     * which counts as one guard write ([GuardOwners.writingGuards]): its batch carries a kind 5 or 62.
+     */
+    suspend fun run(events: List<Event>): List<IEventStore.InsertOutcome> = guards.writingGuards { replayAndWrite(events) }
+
+    private suspend fun replayAndWrite(events: List<Event>): List<IEventStore.InsertOutcome> {
         val snapshot = InMemoryEventIndex()
         preloadWorkingSet(snapshot, events)
         val beforeDocs = snapshot.search(EventQuery())
         val before = beforeDocs.mapTo(HashSet()) { it.id }
         // The exact per-event rules, over the snapshot — the SAME class the
         // per-event path runs, so the two cannot drift. Its guards are the
-        // snapshot's own (default SHARED_STRICT: no cache, probe every time),
-        // which is what a replay wants — the real store's cache answers for
-        // the real index.
-        val replay = EventAdmission(snapshot, Deletions(snapshot, relay, sweepPage), GuardOwners(snapshot), nowSecs)
+        // snapshot's own (SHARED_STRICT: no cache, probe every time), built
+        // without reading the environment ([GuardOwners.forReplay]).
+        val replay = EventAdmission(snapshot, Deletions(snapshot, relay, sweepPage), GuardOwners.forReplay(snapshot), nowSecs)
         val outcomes = events.map { replay.tryAdmit(it) }
         val after = snapshot.search(EventQuery())
         val afterIds = after.mapTo(HashSet()) { it.id }
@@ -119,6 +123,16 @@ internal class BulkMixedInsert(
         // has nothing to come after, so records and guards go in ONE pipelined
         // write instead of two round trips.
         val together = removed.isEmpty() && vanishes.isEmpty()
+        // The guards' owners are noted BEFORE any write that can store a guard: a write that
+        // lands and then fails stored it all the same, and its re-offer is a duplicate, which
+        // notes nothing (the per-event path does the same, [EventAdmission]). Over-flagging, for
+        // a write that never landed, only costs the owner's events a probe ([GuardOwners]).
+        guardsAdded.forEach {
+            when (it.kind) {
+                DeletionRequestEvent.KIND -> guards.noteDeletionStored(it.pubkey)
+                RequestToVanishEvent.KIND -> guards.noteVanishStored(it.pubkey)
+            }
+        }
         try {
             writeRecords(if (together) records + guardsAdded else records, removed)
         } catch (t: Throwable) {
@@ -132,26 +146,21 @@ internal class BulkMixedInsert(
         owed.settle(index, events.filter { it !is DeletionRequestEvent && it !is RequestToVanishEvent })
         // The vanishes' erase of what the snapshot never held. Per owner, the
         // newest ADMITTED vanish covering this relay decides it: each one
-        // erases the owner's stored history up to its own created_at, so for
-        // documents stored BEFORE this batch the union is the newest one's
-        // window, whatever the batch order. Applied after the removes and
-        // BEFORE the requests are put, which is what makes it exact: the
-        // replay already decided every event of this batch (an owner's event
-        // inside a window was erased or VANISHED there, so no record put above
-        // is inside one; the surviving request itself, which its own window
-        // covers, is put after). Paged by [sweepPage], so neither the read nor
+        // erases the owner's stored history strictly before its own created_at
+        // ([Deletions.applyVanish]), so for documents stored BEFORE this batch
+        // the union is the newest one's window, whatever the batch order.
+        // Applied after the removes and BEFORE the requests are put, which is
+        // what makes it exact: the replay already decided every event of this
+        // batch with the same rule (an owner's event inside a window was erased
+        // or VANISHED there, so no record put above is inside one, and one at
+        // the vanish's own second, ahead of it, is outside every window; an
+        // older request a newer window covers is put after). Paged by [sweepPage], so neither the read nor
         // the remove is ever the whole history, and a deployment that caps
         // unlimited hits cannot cut it short: the preload query this replaced
         // came back truncated there, and the vanish was reported Accepted over
         // the rest.
         vanishes.forEach { erase.applyVanish(it) }
         if (guardsAdded.isNotEmpty() && !together) index.putAll(guardsAdded)
-        guardsAdded.forEach {
-            when (it.kind) {
-                DeletionRequestEvent.KIND -> guards.noteDeletionStored(it.pubkey)
-                RequestToVanishEvent.KIND -> guards.noteVanishStored(it.pubkey)
-            }
-        }
         return outcomes
     }
 

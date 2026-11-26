@@ -40,7 +40,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * provider lists stays unprojected with nothing left to trip. [reconcile]
  * repairs per affected service (worth running at startup); [rebuildAll] is the
  * operator's hammer. Also owns the one trust-side DELETION: [sweepOrphanScores]
- * drops the 30382s signed by services no 10040 names.
+ * drops the 30382s signed by services no 10040 delegates kind 30382 to.
  *
  * Every MUTATING pass runs through [gate] — the store's writer lock — else a
  * reconcile racing live ingest can overwrite a fresh derivation with one from
@@ -68,7 +68,7 @@ class TrustReconciler internal constructor(
     data class OrphanSweep(
         /** Distinct kind-30382 signers stored when the sweep started. */
         val servicesSeen: Int,
-        /** The signers no stored 10040 names: swept, or (under [dryRun]) the ones that would be. Complete. */
+        /** The signers no stored 10040 delegates 30382 to, any metric: swept, or (under [dryRun]) the ones that would be. Complete. */
         val orphans: List<String>,
         /** Cards deleted; under [dryRun], how many WOULD be. */
         val scoresSwept: Int,
@@ -351,18 +351,27 @@ class TrustReconciler internal constructor(
         // service, whether any subject carries its cell. It used to keep only
         // the negatives (what to rebuild) and drop the rest, so nothing in the
         // store could answer "how much of the trust view is usable".
-        val projectedCount = verdicts.count { it != null && it.second }.toLong()
         val projectedServices =
             verdicts
                 .filterNotNull()
                 .filter { it.second }
                 .map { it.first }
                 .toHashSet()
-        val resolvable =
-            providers.lenses.values
-                .count { lens -> listOfNotNull(lens.rank, lens.followers).any { it in projectedServices } }
-                .toLong()
-        TrustCoverage.record(examined.toLong(), projectedCount, providers.lenses.size.toLong(), resolvable)
+
+        // Recorded AGAIN after every walk below, with the walked service
+        // counted as projected: the figure is the state this reconcile LEAVES.
+        // Recorded only here, a boot reconcile that repaired every service
+        // left the health page and the `trust.coverage.*` gauges showing the
+        // pre-repair coverage until the next reconcile, hours later. Recorded
+        // here too, so a walk that throws still leaves a measurement.
+        fun recordCoverage() {
+            val resolvable =
+                providers.lenses.values
+                    .count { lens -> listOfNotNull(lens.rank, lens.followers).any { it in projectedServices } }
+                    .toLong()
+            TrustCoverage.record(examined.toLong(), projectedServices.size.toLong(), providers.lenses.size.toLong(), resolvable)
+        }
+        recordCoverage()
 
         // Phase 2 — rebuilds: heavy walks whose mutating batches take the
         // writer lock through the gate.
@@ -378,6 +387,8 @@ class TrustReconciler internal constructor(
                 gate = gate,
             )
             rebuilt += service
+            projectedServices += service
+            recordCoverage()
             TrustProgress.advance(RECONCILE, rebuilt.size.toLong(), unprojected.size.toLong())
             onProgress?.invoke(total, total, rebuilt.size, 0)
         }
@@ -387,17 +398,26 @@ class TrustReconciler internal constructor(
 
     /**
      * DELETE the orphan scores: every stored kind-30382 whose SIGNER no stored
-     * 10040 names, either dimension. Unmapped cards project nothing, rank
-     * nothing, gate nothing — a relay mirroring 30382s by kind accumulates them
-     * by the hundreds of thousands per service. A DELETION, not a repair, and
-     * deliberately never automatic — [reconcile] never calls it.
+     * 10040 delegates kind 30382 to, under ANY metric. Such cards project
+     * nothing, rank nothing, gate nothing and unpack in no search — a relay
+     * mirroring 30382s by kind accumulates them by the hundreds of thousands
+     * per service. A DELETION, not a repair, and deliberately never automatic —
+     * [reconcile] never calls it.
+     *
+     * ANY METRIC, not the projection's two: a service named only under
+     * `30382:hops` (GrapeRank's providers name `hops`, `reporters`, `muters`)
+     * writes no cell, so [TrustProviders.maps] calls it unmapped — but the
+     * reader asked for it and the search gate ([Delegations]) admits its cards.
+     * Judged by `maps`, the sweep deleted exactly those, irreversibly. Orphan
+     * status reads [TrustRecompute.cardSigners] instead: every signer any
+     * stored 10040 delegates 30382 to, off the same pass as the projection.
      *
      * REFUSAL invariant: "no 10040 names it" and "no 10040 was readable"
      * produce the identical candidate list, and the second is a real, observed
      * state (a corpus mirrored before its provider lists — the same ambiguity
      * behind [ProviderMap.get]'s no-empty-cache rule). Sweeping there would
-     * irreversibly delete the ENTIRE score corpus, so an empty attribution map
-     * sweeps nothing and reports [OrphanSweep.refused].
+     * irreversibly delete the ENTIRE score corpus, so a pass in which no 10040
+     * delegates 30382 at all sweeps nothing and reports [OrphanSweep.refused].
      *
      * Safety: the candidate list is a snapshot, so membership is RE-CHECKED
      * under [gate] before every page — deleting a mapped service's card is the
@@ -418,17 +438,17 @@ class TrustReconciler internal constructor(
         dryRun: Boolean = false,
         onProgress: ((servicesDone: Int, totalServices: Int, scoresSwept: Int, totalScores: Int) -> Unit)? = null,
     ): OrphanSweep {
-        val providers = recompute.providerMap()
+        val delegated = recompute.cardSigners()
         // The refusal above: no attribution readable = every service looks
         // orphaned. Nothing is deleted and the caller is told why.
-        if (providers.isEmpty()) return OrphanSweep(0, emptyList(), 0, emptyList(), dryRun, refused = true)
+        if (delegated.isEmpty()) return OrphanSweep(0, emptyList(), 0, emptyList(), dryRun, refused = true)
 
         // ONE server-side grouping (EventIndex.countByAuthor): every signer and
         // its card count with no doc reconstruction, so the dry run needs no
         // per-service query. A signer the grouping missed keeps its cards —
         // completeness only matters in the harmless direction.
         val cardsBySigner = index.countByAuthor(EventQuery(kinds = listOf(UserAssertionEvent.KIND)))
-        val candidates = cardsBySigner.keys.filterNot(providers::maps)
+        val candidates = cardsBySigner.keys.filterNot(delegated::contains)
         val doomed = candidates.sumOf { cardsBySigner[it] ?: 0 }
         onProgress?.invoke(0, candidates.size, 0, doomed)
         if (candidates.isEmpty()) return OrphanSweep(cardsBySigner.size, emptyList(), 0, emptyList(), dryRun, refused = false)
@@ -461,7 +481,7 @@ class TrustReconciler internal constructor(
                     // Re-read INSIDE the lock, per page: a 10040 committed since
                     // the snapshot must stop the deletion at the first page
                     // boundary, not at the end.
-                    if (recompute.providerMap().maps(service)) {
+                    if (service in recompute.cardSigners()) {
                         stillOrphan = false
                         drained = true
                         return@holding

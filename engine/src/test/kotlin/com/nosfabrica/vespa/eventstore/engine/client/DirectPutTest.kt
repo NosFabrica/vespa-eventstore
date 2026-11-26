@@ -1,0 +1,156 @@
+/*
+ * Copyright (c) 2026 NosFabrica
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to use,
+ * copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+ * Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+ * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+package com.nosfabrica.vespa.eventstore.engine.client
+
+import com.nosfabrica.vespa.eventstore.engine.MockVespaEngine
+import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
+import com.nosfabrica.vespa.eventstore.engine.doc.SearchFields
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeout
+import java.util.concurrent.CountDownLatch
+import kotlin.test.AfterTest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+
+/**
+ * A lone put skips the feed client (and its dispatcher's millisecond sleep) only when nothing the
+ * feed client holds could be overtaken by it: VespaEventIndex.putDirect.
+ */
+class DirectPutTest {
+    private val mock = MockVespaEngine()
+    private val index = VespaEventIndex(mock.url)
+    private var seq = 0
+
+    @AfterTest
+    fun stop() {
+        mock.holdWrites?.countDown()
+        index.close()
+        mock.stop()
+    }
+
+    private fun doc(
+        kind: Int = 1,
+        search: SearchFields = SearchFields.NONE,
+    ) = EventDoc(
+        id = (++seq).toString(16).padStart(64, '0'),
+        pubkey = "a1".repeat(32),
+        createdAt = 1_000L + seq,
+        kind = kind,
+        tags = emptyList(),
+        content = "hello",
+        sig = "e".repeat(128),
+        owner = "a1".repeat(32),
+        search = search,
+    )
+
+    @Test
+    fun `a lone put with nothing in flight goes straight to the engine`() =
+        runBlocking<Unit> {
+            val d = doc()
+            index.put(d)
+            assertEquals(1, index.directPuts)
+            assertNotNull(index.get(d.id), "and it is stored")
+        }
+
+    @Test
+    fun `a put waits its turn behind a write the feed client still holds`() =
+        runBlocking<Unit> {
+            val gate = CountDownLatch(1)
+            mock.holdWrites = gate
+            val d = doc()
+            // A remove of the very document, held unanswered inside the feed client.
+            val remove = async(Dispatchers.Default) { index.remove(d.id) }
+            val deadline = System.nanoTime() + 10_000_000_000
+            while (mock.heldWrites < 1 && System.nanoTime() < deadline) Thread.sleep(10)
+            assertEquals(1, mock.heldWrites, "the remove is held in flight")
+
+            val put = async(Dispatchers.Default) { index.put(d) }
+            while (mock.heldWrites < 2 && System.nanoTime() < deadline) Thread.sleep(10)
+            gate.countDown()
+            withTimeout(30_000) {
+                remove.await()
+                put.await()
+            }
+            assertEquals(0, index.directPuts, "the put went behind the remove, through the feed client")
+            assertNotNull(index.get(d.id), "so the put, sent second, is what stands")
+        }
+
+    @Test
+    fun `a document whose docid cannot be a url segment goes the feed client's way`() =
+        runBlocking<Unit> {
+            // Address-keyed, an addressable event's docid is its address, and a d tag with a space
+            // (or a `/`, or anything non-ASCII) cannot be one path segment of a document-API url.
+            VespaEventIndex(mock.url, addressKeyed = true).use { keyed ->
+                val article = doc(kind = 30023).copy(tags = listOf(listOf("d", "my post")))
+                keyed.put(article)
+                val docPaths = mock.protocols.map { it.first }.filter { it.startsWith("/document/v1/") }
+                assertEquals(emptyList(), docPaths.filter { it.endsWith("/docid/null") }, "nothing is stored under the docid `null`")
+                assertEquals(0, keyed.directPuts, "the feed client took the put")
+                assertNotNull(keyed.get(article.id), "and it is stored")
+            }
+        }
+
+    @Test
+    fun `a cancelled direct put still orders the next write on its docid behind it`() =
+        runBlocking<Unit> {
+            // The store's writer lock: a write issued after another one returned is behind it.
+            val writes = Mutex()
+            val gate = CountDownLatch(1)
+            mock.holdWrites = gate
+            val d = doc()
+            val put = launch(Dispatchers.Default) { writes.withLock { index.put(d) } }
+            val deadline = System.nanoTime() + 10_000_000_000
+            while (mock.heldWrites < 1 && System.nanoTime() < deadline) Thread.sleep(10)
+            assertEquals(1, mock.heldWrites, "the direct put has reached the engine and is held there")
+
+            // Its caller gives up (a client gone, a withTimeout); the engine may still apply it.
+            put.cancel()
+            mock.holdWrites = null
+            val remove = launch(Dispatchers.Default) { writes.withLock { index.remove(d.id) } }
+            Thread.sleep(300)
+            assertFalse(remove.isCompleted, "the remove waits for the engine's answer to the put")
+            gate.countDown()
+            withTimeout(30_000) {
+                put.join()
+                remove.join()
+            }
+            assertNull(index.get(d.id), "so the remove, sent second, is what stands")
+        }
+
+    @Test
+    fun `a put the engine refuses goes the feed client's way`() =
+        runBlocking<Unit> {
+            // The feed client's schema net drops a column the engine does not know and feeds again.
+            mock.rejectNearFields = true
+            val d = doc(kind = 0, search = SearchFields(name = "odell"))
+            index.put(d)
+            assertEquals(0, index.directPuts)
+            assertNotNull(index.get(d.id))
+        }
+}

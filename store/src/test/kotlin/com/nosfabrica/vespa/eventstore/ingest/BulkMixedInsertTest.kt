@@ -38,6 +38,7 @@ import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import kotlinx.coroutines.runBlocking
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -236,6 +237,34 @@ class BulkMixedInsertTest {
         }
 
     /**
+     * The mixed path's vanish horizon is the per-event one (STORE-D07): the owner's history is
+     * erased strictly before the vanish's created_at, both what was stored before the batch and
+     * what the batch put ahead of the vanish, and an event at that second offered after the
+     * vanish is blocked.
+     */
+    @Test
+    fun `a vanish in a mixed batch spares the owner's events at its own second`() =
+        runBlocking {
+            val index = InMemoryEventIndex()
+            val store = NostrSemanticsStore(index, relay = relayUrl)
+            val storedBefore = note(alice, at = 999)
+            val storedAt = note(alice, at = 1_000)
+            store.insert(storedBefore)
+            store.insert(storedAt)
+            val aheadAt = note(alice, at = 1_000)
+            val behindAt = note(alice, at = 1_000)
+            val batch = listOf(note(bob), aheadAt, vanish(alice, at = 1_000), behindAt)
+            val outcomes = store.batchInsert(batch)
+            assertEquals(IEventStore.InsertOutcome.Accepted, outcomes[1])
+            assertTrue(outcomes[3] is IEventStore.InsertOutcome.Rejected, "an event at the vanish's second, after it, is blocked: ${outcomes[3]}")
+            assertEquals(null, index.get(storedBefore.id), "history before the vanish is erased")
+            assertTrue(index.get(storedAt.id) != null, "a stored event at the vanish's second survives")
+            assertTrue(index.get(aheadAt.id) != null, "an event at that second put ahead of the vanish survives")
+            assertEquals(null, index.get(behindAt.id))
+            store.close()
+        }
+
+    /**
      * Parity with the per-event path around a vanish, with a sweep page far
      * below the history: events before it in the batch are admitted and then
      * erased, older ones after it are vanished, newer ones stay, a stored
@@ -395,5 +424,83 @@ class BulkMixedInsertTest {
             store.batchInsert((1..5).map { note(bob) } + deletion(bob, ids = listOf(target.id)))
             assertEquals(2, puts.size, "a tombstone that erases lands after the erase: $puts")
             assertEquals(null, inner.get(target.id))
+        }
+
+    /** Lands every write, then throws for one carrying a kind in [kinds]: a timeout after the feed accepted it. */
+    private class LandsThenThrows(
+        val inner: InMemoryEventIndex,
+        private val kinds: Set<Int>,
+    ) : EventIndex by inner {
+        var armed = true
+
+        override suspend fun put(doc: EventDoc) {
+            inner.put(doc)
+            check(!(armed && doc.kind in kinds)) { "timeout after landing" }
+        }
+
+        override suspend fun putAll(docs: List<EventDoc>) {
+            inner.putAll(docs)
+            check(!(armed && docs.any { it.kind in kinds })) { "timeout after landing" }
+        }
+
+        override suspend fun putIfNewer(doc: EventDoc): Boolean = super<EventIndex>.putIfNewer(doc)
+    }
+
+    /**
+     * The mixed path's form of a guard write that lands and then fails: the owners were noted
+     * only after the write returned, so a tombstone stored by the together-write (records and
+     * guards in one putAll) or a vanish stored after its erase flagged nobody, and under
+     * SINGLE_WRITER the event it covers was admitted afterwards for good.
+     */
+    @Test
+    fun `a mixed batch's guard that lands and then fails still flags its owner`() =
+        runBlocking {
+            for (kind in listOf(DeletionRequestEvent.KIND, RequestToVanishEvent.KIND)) {
+                val index = LandsThenThrows(InMemoryEventIndex(), setOf(kind))
+                val store = NostrSemanticsStore(index, relay = relayUrl, writers = WriterTopology.SINGLE_WRITER)
+                store.insert(note(alice)) // loads the guard filters, with nobody in them
+                val target = note(alice, at = 1_000)
+                val guard =
+                    if (kind == DeletionRequestEvent.KIND) {
+                        // Names an event not stored yet: nothing to erase, so records and guard share one write.
+                        deletion(alice, at = 2_000, ids = listOf(target.id))
+                    } else {
+                        RequestToVanishEvent(id(), alice, 2_000, arrayOf(arrayOf("relay", "ALL_RELAYS")), "", "")
+                    }
+                assertFailsWith<IllegalStateException> { store.batchInsert(listOf(note(bob), guard)) }
+                index.armed = false
+                assertTrue(index.inner.get(guard.id) != null, "the guard landed (kind $kind)")
+
+                val outcome = store.batchInsert(listOf(target)).single()
+                assertTrue(outcome is IEventStore.InsertOutcome.Rejected, "the covered event is blocked (kind $kind), got $outcome")
+                assertEquals(null, index.inner.get(target.id), "and not stored (kind $kind)")
+                store.close()
+            }
+        }
+
+    /**
+     * The replay's guard object is the snapshot's, which caches nothing whatever the operator
+     * set, so building it per batch must not read `GUARD_OWNERS_DISABLE`: it re-parsed the
+     * variable for every mixed batch, and an unparseable value failed every one of them even
+     * on a store built with an explicit setting, which never reads it.
+     */
+    @Test
+    fun `a mixed batch's replay never reads the guard-cache switch`() =
+        runBlocking {
+            val reads = AtomicInteger()
+            val saved = GuardOwners.environment
+            try {
+                val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl, guardOwnersDisabled = false)
+                GuardOwners.environment = {
+                    reads.incrementAndGet()
+                    "not a boolean"
+                }
+                val outcomes = store.batchInsert((1..5).map { note(bob) } + deletion(bob, ids = listOf("dd".repeat(32))))
+                assertTrue(outcomes.all { it == IEventStore.InsertOutcome.Accepted }, "$outcomes")
+                assertEquals(0, reads.get(), "the environment is read once, by the store that asks for it")
+                store.close()
+            } finally {
+                GuardOwners.environment = saved
+            }
         }
 }
