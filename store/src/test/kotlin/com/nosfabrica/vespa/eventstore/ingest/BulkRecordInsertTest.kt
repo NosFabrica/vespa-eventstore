@@ -504,7 +504,7 @@ class BulkRecordInsertTest {
      * The raced replaceable duplicate: two batches carry the same kind-0, and the
      * other one commits it between this batch's lock-free dedup and its locked
      * commit. The version read in commit then finds the event ITSELF as the
-     * address's best. It is a duplicate — what the per-event path, whose dup GET
+     * address's best. It is a duplicate — what the per-event path, whose dup probe
      * runs under the lock, answers — not a winner: removing the stored copy and
      * re-putting it reported `Accepted`, left the address empty between the two
      * writes, and handed the projection a remove and a put for one unchanged event.

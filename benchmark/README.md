@@ -2550,7 +2550,8 @@ supersede, deletions, and addressable long-form).
 | `batchInsert()` | 0.05 | **0.05** |
 
 **The bulk path issues ≈47× fewer engine round-trips per event.** The per-event
-path pays, per event, up to four reads before the write — a dup probe (`get`), a
+path pays, per event, up to four reads before the write — a dup probe (then a
+`get`; now `existingIds`, a GET of the id field, §2bc), a
 NIP-09 deletion probe (`search`), a NIP-62 vanish probe (`search`), and a
 replaceable/addressable supersession probe (`search`) — averaging ~1.3 reads
 across this corpus (most kind-1 notes skip the supersession/guard probes).
@@ -2702,6 +2703,9 @@ documents stored. The column is the writer lock's hold per insert
   small ones: one search through the query container against one keyed GET. An
   address-keyed index still asks it, its replaceables not being at the id docid. Fresh inserts do not separate (5.7–6.0 ms
   medians, overlapping ranges), as their probe answers 404 in every arm.
+
+The dup probe is metered as `exists` (`PortCall.Exists`), not `get`, since it
+moved (docs/upgrading.md).
 
 ### 2c. Draft-churn supersession — server-side conditional put (`BENCH_CONDPUT=1`)
 
@@ -3429,7 +3433,7 @@ query container; the feed client cannot handshake through it, so the put went di
 
 | step | ms |
 |---|---|
-| the admission checks (dedup GET; the NIP-09/NIP-62 guard queries, in parallel) | ~1.1 |
+| the admission checks (dedup GET, then of the whole document, now of its id field, §2bc; the NIP-09/NIP-62 guard queries, in parallel) | ~1.1 |
 | waiting to leave the relay (the feed client's dispatcher drains its queue, then sleeps 1 ms) | ~2.2 |
 | the put itself in Vespa (`/document/v1` POST) | ~2.5 |
 | everything else (websocket, verify, hand-offs between threads) | ~1.2 |
@@ -3697,7 +3701,7 @@ clients against nostr-bench `event` at 20, alone and together, two runs each.
 | write latency | 20–22 ms | 229–291 ms |
 
 Reads did not notice the writes; writes fell to a tenth. Every write's admission checks
-(the dedup GET, the NIP-09/NIP-62 guard queries, the batch's dedup and guard reads) are
+(the dedup GET, of the whole document then, §2bc; the NIP-09/NIP-62 guard queries; the batch's dedup and guard reads) are
 queries, and they wait in the same query-container queue as 200 clients' REQs, ~120 ms
 each at saturation. 500 live subscribers on the side received every event either way.
 

@@ -21,7 +21,7 @@ Terminology, because "blocking" means two different things here:
 
 | site | primitive | guards | verdict |
 |---|---|---|---|
-| `NostrSemanticsStore.writes` | coroutine `Mutex` | query-then-write atomicity for event documents: dedup GET → guard probes → put, supersession, kind-5/62 sweeps | **load-bearing, but coarser than the invariant needs** — every constraint is scoped to one OWNER (see below); a per-owner scheme or an engine-conditioned fast path is the real win |
+| `NostrSemanticsStore.writes` | coroutine `Mutex` | query-then-write atomicity for event documents: dup probe (`existingIds`) → guard probes → put, supersession, kind-5/62 sweeps | **load-bearing, but coarser than the invariant needs** — every constraint is scoped to one OWNER (see below); a per-owner scheme or an engine-conditioned fast path is the real win |
 | `NostrSemanticsStore.trustGate` | coroutine `Mutex` | a reputation document's derive+write against a live card's cell update; the dirt marker's rewrite against a write-ahead | **load-bearing** — the derive reads N cards and writes one document, which no engine condition can express; slicing (`GATE_SLICE`) is the fairness knob. Taken BEFORE `writes`, never while holding it — see "What the audit found" |
 | `DirtLedger.pending` / `inherited` | was plain fields | the in-memory work ledger | **was wrong since the gate split; now lock-free** (`AtomicReference` with CAS union / take) — see "What the audit found" |
 | `GuardOwners.loadLock` | coroutine `Mutex` | one corpus walk at a time (load and rebuild) | **fine** — it serialises a multi-minute scan, which is the point; a CAS "in progress" flag would only turn a waiter into a spinner |
@@ -197,7 +197,8 @@ reader-writer arrangement for the paths that span owners:
   exclusive is the standard construction and suspends like `Mutex` does.
 
 What it buys: the per-event path is measured at ~143 inserts/s with p50
-6.6 ms (`benchmark/README.md` §2bb) — the lock is held across the dup GET,
+6.6 ms (`benchmark/README.md` §2bb) — the lock is held across the dup probe
+(then a whole-document GET; now a GET of the id field, metered as `exists`, §2bc),
 the guard probes and the put, so one process serialises client EVENTs at
 roughly `1 / p50` regardless of engine capacity. Striping lets independent
 owners overlap and the ceiling becomes the engine's. What it costs: a batch

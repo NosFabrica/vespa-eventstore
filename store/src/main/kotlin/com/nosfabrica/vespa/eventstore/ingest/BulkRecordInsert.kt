@@ -370,7 +370,7 @@ internal class BulkRecordInsert(
                 // The condition refuses an IDENTICAL incumbent too, so a loser
                 // whose own id is stored is the raced duplicate (see [Plan]),
                 // not a stale version: `duplicate:` (OK true), which is what the
-                // per-event path's locked dup GET answers. One existence read
+                // per-event path's locked dup probe answers. One existence read
                 // over the losers only — usually none, so usually no round trip.
                 val losers = groups.values.flatten().filter { outcome[it] != null }
                 val storedLosers =
@@ -414,7 +414,7 @@ internal class BulkRecordInsert(
                     // this, `lost` is false for the store's best when it IS this
                     // event (same created_at, same id), so the stored copy was
                     // removed, the same bytes re-put, and the event reported
-                    // Accepted. The per-event path's dup GET runs first and says
+                    // Accepted. The per-event path's dup probe runs first and says
                     // duplicate; so does this, and the address keeps its doc.
                     if (versions.any { it.id == e.id }) {
                         outcome[i] = IEventStore.InsertOutcome.Rejected(Rejections.DUPLICATE)
