@@ -17,9 +17,8 @@
     </handler>
     <!-- This package SHIPS WITHOUT an <accesslog> element on purpose (if you
          are reading a deployed copy that has one, it was injected below):
-         Vespa's default (JSON, one line
-         per HTTP request, hourly rotation, zstd) is what most deployments
-         want, and declaring it explicitly would oblige us to restate
+         declaring Vespa's log (JSON, one line per HTTP request, hourly
+         rotation, zstd) explicitly would oblige us to restate
          fileNamePattern and friends — Vespa rejects a configured access log
          without one, so an explicit element means owning defaults we would
          rather inherit.
@@ -32,10 +31,11 @@
          and compressed but never pruned — enough to evict a Kubernetes pod
          off an emptyDir sizeLimit roughly hourly.
 
-         Set VESPA_ACCESS_LOG=disabled and VespaApp.zipBytes() injects a
-         disabled accesslog element here at deploy time. Right where the HTTP
-         client is your own ingest and the useful record is the router's stats
-         plus Vespa's metrics. -->
+         So the log is OFF by default: unless VESPA_ACCESS_LOG=default,
+         VespaApp.zipBytes() injects a disabled accesslog element here at
+         deploy time. The useful record is the relay's stats plus Vespa's
+         metrics; VESPA_ACCESS_LOG=default ships this file as it is, with
+         Vespa's own log, for a deployment that wants every request traced. -->
     <nodes>
       <!-- The container JVM's DIRECT (off-heap) buffer budget: bounded first,
            raised second. This is the process serving :8080 — every query AND
