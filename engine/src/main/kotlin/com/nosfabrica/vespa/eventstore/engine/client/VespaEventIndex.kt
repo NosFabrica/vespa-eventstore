@@ -3392,7 +3392,7 @@ class VespaEventIndex(
     ): SearchRoot {
         val t0 = if (ledger?.slowQueryThresholdNanos != null) System.nanoTime() else 0L
         val sent = if (EventYql.P_MATCH_PHASE_MAX_HITS in vq.params && servingNodes.get() != 1) vq.copy(params = vq.params - EventYql.P_MATCH_PHASE_MAX_HITS) else vq
-        val envelope = queryBody(sent, hits).decode(VESPA_JSON, SearchEnvelope.serializer())
+        val envelope = queryBody(sent, hits).decodeSearch()
         val root = envelope.root
         root.coverage.nodes
             .takeIf { it > 0 }

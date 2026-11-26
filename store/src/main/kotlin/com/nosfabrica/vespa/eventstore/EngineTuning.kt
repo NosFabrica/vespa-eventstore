@@ -74,7 +74,7 @@ class EngineTuning(
     val feedBatch: Int? = null,
     /** `VESPA_FEED_CONNECTIONS` — feed connections PER ENDPOINT, at least 1. Default: 32 split across the feed endpoints (`VespaFeed`). */
     val feedConnections: Int? = null,
-    /** `VESPA_FEED_COMPRESSION` — `auto`, `gzip` or `none`. Default `auto` (`VespaFeed`). */
+    /** `VESPA_FEED_COMPRESSION` — `none`, `auto` or `gzip`. Default `none` (`ClientTuning.DEFAULT_FEED_COMPRESSION`). */
     val feedCompression: FeedCompression? = null,
     /** `VESPA_FEED_STREAMS` — HTTP/2 streams per feed connection, at least 1. Default 128 (`VespaFeed`). */
     val feedStreams: Int? = null,
@@ -121,7 +121,7 @@ class EngineTuning(
     /** `VESPA_TRUST_GATE_SLICE` — subjects per write-gate hold in a recompute, at least 1. Default 500 (`TrustRecompute`). */
     val trustGateSlice: Int? = null,
     // ---- per deploy ---------------------------------------------------------
-    /** `VESPA_ACCESS_LOG` — `default` or `disabled`: the container's HTTP access log in the package `open()` deploys (`VespaApp`). */
+    /** `VESPA_ACCESS_LOG` — `default` (Vespa's own log) or `disabled`: the container's HTTP access log in the package `open()` deploys (`VespaApp`). Default `disabled`. */
     val accessLog: String? = null,
     // ---- per process, added later: LAST so no positional argument shifts ----
     /** `VESPA_EXPIRY_SWEEP_PAGE` — ids the NIP-40 expiry sweep removes per writer-lock hold, at least 1. Default 1000 (`NostrSemanticsStore.deleteExpiredEvents`). */

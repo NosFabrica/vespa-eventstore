@@ -1854,6 +1854,60 @@ renders every shape's where-node back to the YQL clause `build` writes;
 and requires the same ids in the same order. The unit tests' mock engine answers
 `select` as a refusing engine would, so they run on YQL as before.
 
+### The relay's own CPU per REQ (2026-11-26)
+
+The query container is the largest consumer; the relay is next. Profiled the same
+way (JFR on vespa-relay, 25 s under nostr-bench `req` at 200 clients over a 101k-note
+corpus, one Vespa query per REQ), the relay spent its ~450 us per REQ on:
+
+| where the relay's CPU went | share |
+|---|---|
+| decoding Vespa's search answers (kotlinx: a String per key, a map lookup, an unescape per value) | 30% |
+| OkHttp's HTTP/2 client (a call thread per query, the connection's reader thread, stream bookkeeping) | ~30% |
+| writing each websocket frame's UTF-8 into its direct buffer, two thirds of it `java.nio.Buffer.session` | 11% |
+| quartz's relay session, the observer gate, coroutines | the rest |
+
+Two of those moved. Search answers are now read by `FastSearchDecoder`: a hand decoder
+for the answer a recency read nearly always gets (count, coverage, hits holding an
+event's fields), matching keys where they lie and finding a string's ends with the
+JDK's vectorized `String.indexOf`; anything else returns null and kotlinx decodes the
+same text (`FastSearchDecoderTest` holds it to kotlinx's answer on 12,000 generated
+answers). And vespa-relay encodes a frame with `String.toByteArray` and one bulk copy:
+on JDK 25 Netty has no `Unsafe` memory access, so its `writeUtf8` put byte by byte.
+Three rounds each, alternated, CPU per REQ from `/proc`:
+
+| | relay us/REQ | REQ/s |
+|---|---|---|
+| before | 464 / 453 / 456 | 2,498 / 2,545 / 2,451 |
+| frame encoding | 431 / 421 / 436 | 2,516 / 2,547 / 2,614 |
+| frame encoding, then the decoder (its own A/B) | 429 / 430 / 426 -> 411 / 404 / 400 | ~2,590 -> ~2,640 |
+
+The decoder's share fell from 30% to 17%; the frame write's to 0.5%. What was tried and
+lost: queries over HTTP/1.1 with a pool of 1,024 kept-alive connections, to shed
+OkHttp's HTTP/2 bookkeeping. Relay CPU per REQ rose 394-410 -> 503-508 us, the query
+container's 553-559 -> 668-679 us, REQ/s fell 2,670-2,761 -> 2,165-2,235 (-19%):
+HTTP/2 stays. What is left is OkHttp's per-call thread hand-off and reader thread, the
+decoder's remaining unescape of `tags` and `content` (which the relay then escapes
+again), and the per-frame atomics of a reply's eleven offers. Each needs a structural
+change: a non-blocking HTTP/2 client, an event that carries its JSON escaped, a batched
+reply. A REQ already costs one Vespa query here (1.01 per REQ measured), so fewer
+queries per REQ only pays for REQs with several filters.
+
+A review of the decoder then widened it and tightened it (2026-11-26). It now reads the
+`idtimetag` summary's `tag_index` and a ranked search's `matchfeatures` (as the JSON slice it
+is, through kotlinx, so the object is kotlinx's), so the id walk's d-tag pages and NIP-50
+searches no longer fall back; a page past `STRING_DECODE_MAX_BYTES` is split into hits at the
+byte level and each decoded on its own (`FastSearchDecoder.decodeStream`), so no String larger
+than one hit is built and the largest pages are covered too. Keys are matched on their length
+first, the escaped-string buffer is sized to the string, and an unranked `0.0` relevance is
+taken without a parse. Measured against the first version, seven alternated rounds: 2,570 vs
+2,545 REQ/s and 411 vs 417 us of relay CPU per REQ in the last four, within the rounds' own
+spread (2,450-2,784): no measurable change on this `nip01` workload, which none of the widened
+shapes is part of. `FastSearchDecoderTest` now runs both entries on every case, against
+kotlinx's string and stream decoders, and includes answers captured from Vespa: it writes an
+emoji as an escaped surrogate pair (`\uD83D\uDE00`) and CJK raw, which the generated cases had
+not.
+
 ### Small batches take the bulk path (2026-11-23)
 
 `NostrSemanticsStore.batchInsert` sent batches under `BULK_MIN` (16) through the
@@ -3702,6 +3756,21 @@ Same harness and slice as above (vespa-relay's ingest benchmark, the first 100k 
 14-15% more publishes per second, a fifth of the relay's CPU per event and 7% of Vespa's. That is
 for a Vespa on the same host or LAN; across a WAN the bytes are the cost, and gzip keeps them to
 about 40% for tag-heavy events (`auto` or `gzip` there).
+
+**The default is `none` now (2026-11-26).** Only the feed client compresses: a batch through the
+bundled handler (`VESPA_FEED_BATCH`, on by default since) and a lone put with nothing in flight
+(`putDirect`) never did, so `auto` had come to gzip only the writes left to the client, the
+admissions that find it busy. Re-measured through vespa-relay on a same-host Vespa, four rounds
+each, alternated, a fresh 20,000-note slice of 2.3 KB notes per round:
+
+| | `auto` | `none` |
+|---|---|---|
+| bulk publish, s per 20,000 | 16.5 / 17.4 / 18.1 / 18.1 | 16.8 / 16.6 / 17.1 / 16.8 |
+| 20 clients publishing, ev/s | 932 / 943 / 1,049 / 1,106 | 1,082 / 957 / 1,037 / 1,045 |
+
+~4% on bulk (won 3/4), level on small notes (under 512 bytes, which `auto` never gzipped). So
+`none` is the default, and a deployment across a WAN sets `gzip`, knowing it reaches only the feed
+client's share of the writes: batches and direct puts go uncompressed whatever it says.
 
 ## Mixed read/write load (`BENCH_MIXED=1`)
 

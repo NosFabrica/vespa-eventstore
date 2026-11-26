@@ -47,12 +47,12 @@ class VespaAppTest {
         }
 
     /**
-     * The package AS BUILT. Deliberately not `zipBytes()`: the no-arg overload
-     * reads VESPA_ACCESS_LOG, so every assertion built on it would quietly
-     * change meaning — and the shipped-package tests would FAIL — in a shell
-     * that happens to export the variable. The baseline has to be pinned.
+     * The package AS BUILT, which `default` ships. Deliberately not `zipBytes()`:
+     * the no-arg overload reads VESPA_ACCESS_LOG, so every assertion built on it
+     * would quietly change meaning in a shell that happens to export the
+     * variable. The baseline has to be pinned.
      */
-    private val shipped = VespaApp.zipBytes(null)
+    private val shipped = VespaApp.zipBytes("default")
 
     private fun entry(
         name: String,
@@ -181,15 +181,23 @@ class VespaAppTest {
     }
 
     @Test
-    fun `blank and the keep-default value ship the package as built`() {
-        // No `zipBytes() == zipBytes(null)` case: with the variable unset those
-        // are the same call, and with it set to disabled they differ by design,
-        // so the assertion is either vacuous or wrong. What the no-arg overload
-        // adds — reading the environment — is not assertable from inside the
-        // JVM that reads it; the integration test deploys the rewritten package
-        // instead, which is the half that actually broke.
-        assertContentEquals(shipped, VespaApp.zipBytes("   "), "blank must not rewrite")
-        assertContentEquals(shipped, VespaApp.zipBytes("default"), "default must not rewrite")
+    fun `the keep-default value ships the package as built`() {
+        assertContentEquals(VespaApp::class.java.getResourceAsStream(VespaApp.RESOURCE)!!.use { it.readBytes() }, shipped, "default must not rewrite")
+        assertEquals(0, parse(entry("services.xml")).getElementsByTagName("accesslog").length, "default keeps Vespa's own access log")
+    }
+
+    /**
+     * OFF BY DEFAULT. Unset and blank deploy the same services.xml as `disabled`. No
+     * `zipBytes()` case: what the no-arg overload adds, reading the environment, is not
+     * assertable from inside the JVM that reads it.
+     */
+    @Test
+    fun `unset and blank turn the access log off, as disabled does`() {
+        val off = entry("services.xml", VespaApp.zipBytes("disabled"))
+        for ((what, zip) in listOf("unset" to VespaApp.zipBytes(null), "blank" to VespaApp.zipBytes("   "))) {
+            assertEquals(off, entry("services.xml", zip), "$what must deploy the disabled package")
+            assertEquals("disabled", parse(entry("services.xml", zip)).child("accesslog")?.getAttribute("type"), "$what injects the disabled log")
+        }
     }
 
     @Test
@@ -366,7 +374,7 @@ class VespaAppTest {
 
     @Test
     fun `one author shard ships the package as built`() {
-        assertContentEquals(shipped, VespaApp.zipBytes(null, authorShards = 1))
+        assertContentEquals(shipped, VespaApp.zipBytes("default", authorShards = 1))
         assertEquals(1, VespaApp.authorShardsOf(null))
         assertEquals(1, VespaApp.authorShardsOf("  "))
         assertEquals(4, VespaApp.authorShardsOf("4"))

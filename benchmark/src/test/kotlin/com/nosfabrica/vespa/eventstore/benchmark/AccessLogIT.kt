@@ -46,9 +46,10 @@ import kotlin.test.assertTrue
  * build` was green throughout — it validates the package's SHAPE, and only a
  * config server validates its MEANING. The second attempt (a regex splice)
  * then broke on its own guard reading the prose in services.xml. Twice bitten,
- * and the ITs still could not have caught either: they all call
- * [VespaApp.zipBytes] with the variable unset, which early-returns the package
- * as built and never touches the rewrite.
+ * and the ITs still could not have caught either: they all called
+ * [VespaApp.zipBytes] with the variable unset, which then early-returned the
+ * package as built and never touched the rewrite. (Unset now means disabled;
+ * `default` is the package as built.)
  *
  * So this deploys the REWRITTEN package, which is what the other six do not:
  *
@@ -133,7 +134,7 @@ class AccessLogIT {
                 // 3. THE POSITIVE CONTROL. Same container, same traffic, same
                 //    place looked at — only the package differs. If this does
                 //    not fire, the assertion above proved nothing.
-                deployer.deploy(VespaApp.zipBytes(null))
+                deployer.deploy(VespaApp.zipBytes("default"))
                 // NOT awaitServing: /ApplicationStatus answers 200 CONTINUOUSLY
                 // across a config change, so it returns while the container is
                 // still running the previous package — traffic sent then lands
