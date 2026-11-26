@@ -20,12 +20,15 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.client
 
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.decodeFromStream
+import java.io.ByteArrayInputStream
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -36,8 +39,11 @@ import kotlin.test.fail
 
 /**
  * [FastSearchDecoder] answers what kotlinx answers, or nothing. Every response here is decoded
- * both ways: where the hand decoder returns a value it must be kotlinx's, field for field; where
- * kotlinx throws, the hand decoder must not return one.
+ * both ways, and through both of the hand decoder's entries: [FastSearchDecoder.decode] on the
+ * text, held to kotlinx's `decodeFromString`, and [FastSearchDecoder.decodeStream] on its UTF-8
+ * bytes, held to kotlinx's `decodeFromStream` (the two fallbacks `VespaHttp.decodeSearch` uses).
+ * Where the hand decoder returns a value it must be kotlinx's, field for field; where kotlinx
+ * throws, the hand decoder must not return one.
  */
 class FastSearchDecoderTest {
     /** Every field the callers read, rendered so two envelopes compare as text. */
@@ -66,9 +72,19 @@ class FastSearchDecoderTest {
 
     private fun kotlinx(text: String): SearchEnvelope = VESPA_JSON.decodeFromString(SearchEnvelope.serializer(), text)
 
+    @OptIn(ExperimentalSerializationApi::class)
+    private fun kotlinxStream(bytes: ByteArray): SearchEnvelope = VESPA_JSON.decodeFromStream(SearchEnvelope.serializer(), ByteArrayInputStream(bytes))
+
+    private fun split(bytes: ByteArray): SearchEnvelope? = FastSearchDecoder.decodeStream(ByteArrayInputStream(bytes))
+
+    /** Both entries read [text], and each answers what its kotlinx fallback answers. */
     private fun assertSame(text: String) {
         val fast = assertNotNull(FastSearchDecoder.decode(text), "the hand decoder reads this shape:\n$text")
         assertEquals(kotlinx(text).canon(), fast.canon(), text)
+        // The bytes a large payload arrives as (a lone surrogate written as `?`, as the wire carries it).
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        val split = assertNotNull(split(bytes), "the hand decoder reads this shape a hit at a time too:\n$text")
+        assertEquals(kotlinxStream(bytes).canon(), split.canon(), text)
     }
 
     // ---- generated responses ---------------------------------------------------
@@ -128,6 +144,15 @@ class FastSearchDecoderTest {
                 when (nextInt(3)) {
                     0 -> put("owner", JsonPrimitive(hex(64)))
                     1 -> put("owner", JsonNull)
+                }
+                // The idtimetag summary's array, and a ranked search's features.
+                when (nextInt(5)) {
+                    0 -> put("tag_index", JsonArray(List(nextInt(4)) { JsonPrimitive("t:" + text(6)) }))
+                    1 -> put("tag_index", JsonNull)
+                }
+                when (nextInt(6)) {
+                    0 -> put("matchfeatures", JsonObject(mapOf("freshness" to JsonPrimitive(nextDouble()), "itemRawScore(mtch_exact)" to JsonPrimitive(0.0), "n" to JsonPrimitive(nextInt()))))
+                    1 -> put("matchfeatures", JsonNull)
                 }
             },
         )
@@ -204,6 +229,9 @@ class FastSearchDecoderTest {
             val fast = FastSearchDecoder.decode(cut)
             val slow = runCatching { kotlinx(cut) }
             if (fast != null) assertEquals(slow.getOrThrow().canon(), fast.canon(), "a value from a cut response must be kotlinx's: $cut")
+            val bytes = cut.toByteArray(Charsets.UTF_8)
+            val split = split(bytes)
+            if (split != null) assertEquals(runCatching { kotlinxStream(bytes) }.getOrThrow().canon(), split.canon(), "a value from a cut payload must be kotlinx's: $cut")
         }
     }
 
@@ -220,8 +248,37 @@ class FastSearchDecoderTest {
         assertSame(real)
         // The idtime summary: ids and times only.
         assertSame("""{"root":{"fields":{"totalCount":2},"coverage":{"coverage":100,"documents":5,"full":true,"nodes":1},"children":[{"relevance":0.0,"fields":{"id":"ab","created_at":5}},{"fields":{"id":"cd","created_at":4}}]}}""")
+        // A key twice: the last wins, in kotlinx and here.
+        assertSame("""{"root":{"children":[{"fields":{"id":"ab"}}],"children":[{"fields":{"id":"cd"}},{"fields":{"id":"ef"}}]}}""")
         // No hits at all, and no children key.
         assertSame("""{"root":{"id":"toplevel","relevance":1.0,"fields":{"totalCount":0},"coverage":{"coverage":100,"documents":0,"full":true,"nodes":1,"results":1,"resultsFull":1}}}""")
+    }
+
+    /**
+     * ANSWERS AS VESPA WRITES THEM, captured from vespaengine/vespa 8.763 (`vespa-answers/`): notes with
+     * emoji (which Vespa writes as escaped surrogate pairs, `\uD83D\uDE00`), CJK and Hebrew (written raw),
+     * a ZWJ sequence, a BOM, DEL, quotes, backslashes, newlines, tabs, a kind 0's JSON content and tags
+     * holding all of it; the `nip01`, `idtimetag` (`tag_index`) summaries, and ranked searches whose hits
+     * carry `matchfeatures` (`text_relevance`, `search`).
+     */
+    @Test
+    fun `answers captured from Vespa decode as kotlinx decodes them`() {
+        for (name in listOf("nip01", "idtimetag", "rank-text_relevance", "rank-search")) {
+            val text = assertNotNull(javaClass.getResource("/vespa-answers/$name.json"), "capture $name").readText(Charsets.UTF_8)
+            assertSame(text)
+            assertTrue(kotlinx(text).root.children.isNotEmpty(), "$name holds hits")
+        }
+    }
+
+    /** A page past `STRING_DECODE_MAX_BYTES` (~1.4 MB here): [FastSearchDecoder.decodeStream] reads it a hit at a time, as kotlinx's stream does. */
+    @Test
+    fun `a page too large for one String decodes a hit at a time`() {
+        val rnd = Random(11)
+        val hits = JsonArray(List(3_000) { rnd.hit() })
+        val big = JsonObject(mapOf("root" to JsonObject(mapOf("fields" to JsonObject(mapOf("totalCount" to JsonPrimitive(3_000))), "children" to hits)))).toString()
+        assertTrue(big.length > 1_000_000, "a large page: ${big.length}")
+        assertSame(big)
+        assertEquals(3_000, split(big.toByteArray(Charsets.UTF_8))!!.root.children.size)
     }
 
     /** Each of these is a shape kotlinx reads differently, or decides alone: the hand decoder hands it over. */
@@ -237,8 +294,10 @@ class FastSearchDecoderTest {
             mapOf(
                 "a degradation report" to """{"root":{"coverage":{"coverage":50,"degraded":{"match-phase":true,"timeout":false}},"children":[]}}""",
                 "errors" to env(""","errors":[{"code":12,"summary":"Timed out","message":"m"}]"""),
-                "match-features" to env(hitJson = """{"fields":{"id":"ab","matchfeatures":{"x":1.0}}}"""),
-                "a summary field past an event's" to env(hitJson = """{"fields":{"id":"ab","tag_index":["t:x"]}}"""),
+                "a summary field past those it reads" to env(hitJson = """{"fields":{"id":"ab","documentid":"id:event:event::ab"}}"""),
+                "a null inside tag_index" to env(hitJson = """{"fields":{"id":"ab","tag_index":["t:x",null]}}"""),
+                "match-features that are not an object" to env(hitJson = """{"fields":{"id":"ab","matchfeatures":[1]}}"""),
+                "a hit that is not an object" to """{"root":{"children":[1]}}""",
                 "an escaped key" to env(hitJson = """{"fields":{"\u0069d":"ab"}}"""),
                 "an escaped key outside the summary" to """{"ro\u006ft":{"children":[]}}""",
                 "a fraction where an integer goes" to env(hitJson = """{"fields":{"id":"ab","created_at":5.0}}"""),
@@ -248,7 +307,11 @@ class FastSearchDecoderTest {
                 "NaN" to env(hitJson = """{"relevance":NaN,"fields":{"id":"ab"}}"""),
                 "a trailing value" to env() + " {}",
             )
-        for ((what, text) in handedOver) assertNull(FastSearchDecoder.decode(text), "$what goes to kotlinx: $text")
+        for ((what, text) in handedOver) {
+            assertNull(FastSearchDecoder.decode(text), "$what goes to kotlinx: $text")
+            assertNull(split(text.toByteArray(Charsets.UTF_8)), "$what goes to kotlinx a hit at a time too: $text")
+        }
+        assertNull(split(byteArrayOf('{'.code.toByte(), '"'.code.toByte(), 0xC3.toByte(), '"'.code.toByte(), ':'.code.toByte(), '1'.code.toByte(), '}'.code.toByte())), "malformed UTF-8 is kotlinx's to replace")
     }
 
     /** kotlinx keeps a raw control character inside a string (it is not JSON, but it reads it); so does the hand decoder. */
