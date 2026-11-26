@@ -48,10 +48,16 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventYql
 import com.nosfabrica.vespa.eventstore.engine.query.SelectForm
 import com.nosfabrica.vespa.eventstore.engine.query.VespaQuery
 import com.nosfabrica.vespa.eventstore.engine.requirePlainReplaceable
+import com.vitorpamplona.quartz.nip01Core.core.isAddressable
+import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.utils.Hex
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -192,6 +198,16 @@ class VespaEventIndex(
      * turns it off, which is also how the probe measures what it buys.
      */
     recencyMemory: Boolean = tuning.recencyMemoryOrEnv(),
+    /**
+     * Whether speculative reads are planned by where the stored DATA lies: anchored where it
+     * ends ([dataEndHint]) once the clock has been seen to sit past it, and read straight below
+     * where it starts ([dataStartHint]) once a scroll has been seen to pass it. On by default;
+     * off plans every read from the request alone, which is what the clock-anchored tests of the
+     * window mechanics describe.
+     */
+    private val dataBounds: Boolean = true,
+    /** How long a data-bound answer is used before it is asked again; tests set 0 to see every refresh. */
+    private val dataBoundsTtlMillis: Long = DATA_END_TTL_MS,
     /**
      * PROTOTYPE (#161), OFF by default: whether puts feed the body's edge
      * n-grams (`search_text_edge`, [com.nosfabrica.vespa.eventstore.engine.text.EdgeText]).
@@ -338,6 +354,57 @@ class VespaEventIndex(
      * Switched by the same `VESPA_RECENCY_MEMORY`.
      */
     private val narrowPrior: NarrowPrior? = if (recencyMemory) NarrowPrior() else null
+
+    /** Where a stale data bound is re-read without holding up a read; cancelled by [close]. */
+    private val hintScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * Where the DATA ends: the newest `created_at` at or before the clock ([dataEnd],
+     * [EventYql.buildNewestAtOrBefore]). A speculative read anchors at it rather than at the
+     * clock, because the clock is only a guess at where a page lies — on a quiet, archived or
+     * restored store every window back from the clock is empty, the read is learned NARROW, and
+     * every later read of its shape pays the unwindowed match (measured on the 300k bench corpus,
+     * 42 days behind the clock: kinds 1/7/30023 limit 100, 9.0ms recalled-narrow against
+     * 4.6-6.0ms at a window from the data's end). Any anchor is exact — a window bounds only the
+     * old side, so everything newer, a write that landed after the hint included, is inside it.
+     * Wanted once a read anchored at the clock has found EVERY window empty: a live store, whose
+     * first window is never empty, never sends the query.
+     */
+    private val dataEndHint =
+        DataBoundHint(dataBoundsTtlMillis, hintScope) { now ->
+            searchRoot(EventYql.buildNewestAtOrBefore(now), hits = 1)
+                .children
+                .firstOrNull()
+                ?.fields
+                ?.createdAt
+        }
+
+    /**
+     * Where the DATA starts: the oldest `created_at` stored ([EventYql.buildOldest]). A read whose
+     * `until` lies below it has nothing to find, and its one unwindowed query proves that at the
+     * cost of what lies below (nothing, or what was written there since): no window attempts and
+     * no count ladder before it — measured on the bench corpus, an empty 20-day scroll-back was
+     * six queries, 13-17ms, two attempts and the three-rung ladder before the read. Wanted once
+     * a read below an `until` an hour or more past found nothing; a client that never scrolls
+     * past the data never sends the query.
+     */
+    private val dataStartHint =
+        DataBoundHint(dataBoundsTtlMillis, hintScope) {
+            searchRoot(EventYql.buildOldest(), hits = 1)
+                .children
+                .firstOrNull()
+                ?.fields
+                ?.createdAt
+        }
+
+    /**
+     * The content nodes the last answer covered (its `coverage.nodes`), 0 before the first.
+     * A recency read sends its limit-sized match-phase depth ([EventYql.P_MATCH_PHASE_MAX_HITS])
+     * only while this is 1: max-hits is per node, and [recallRoot] proves a degraded page exact
+     * only on one node, so on more a small depth would cut most reads and rerun each one exact —
+     * two queries where the profile's own depth answers in one.
+     */
+    private val servingNodes = AtomicInteger(0)
 
     // ADDRESS-KEYED mode (VESPA_ADDRESS_KEYED=1, the [addressKeyed] parameter):
     // replaceable/addressable events are stored under their NIP-01 address as
@@ -834,14 +901,23 @@ class VespaEventIndex(
         planned: Boolean = false,
     ): List<VespaSummary> {
         val eligible = idFirst && q.limit != null && q.isRecencyOrdered() && fallbacks.idTimeSummaryAvailable
+        if (!planned && q.limit != null && recencyStrategy == RecencyStrategy.SPECULATIVE && q.isWindowable()) {
+            dataEndHint.refresh()
+            if (q.until != null) dataStartHint.refresh()
+        }
         if (!eligible) return recallPage(q, planned, idOnly = false)
         // A threshold of 0 never reads the start: today's id-first path, untouched.
         val start = if (idFirstMaxDirectHits > 0) readStart(q, planned) else null
-        if (start != null && start.hits <= idFirstMaxDirectHits && !start.cutBefore) {
+        // A read whose ANSWER is provably small is direct whatever its limit: a profile or a
+        // contact list asked with no limit (the relay's 500) would otherwise read 500 ids and then
+        // hydrate the one document there is — two queries for one event. Its first query asks for
+        // documents at its own planned hits, which costs nothing past the matches there are.
+        val bounded = start != null && answerBound(q)?.let { it <= idFirstMaxDirectHits } == true
+        if (start != null && (start.hits <= idFirstMaxDirectHits || bounded) && !start.cutBefore) {
             IngestStats.tick(FETCH_DIRECT_STAGE)
             val page =
                 try {
-                    withContext(DirectRead(idFirstMaxDirectHits)) { recallPage(q, planned, idOnly = false, start = start) }
+                    withContext(DirectRead(if (bounded) maxOf(idFirstMaxDirectHits, start.hits) else idFirstMaxDirectHits)) { recallPage(q, planned, idOnly = false, start = start) }
                 } catch (e: IllegalArgumentException) {
                     if (!fallbacks.isMissingIdTimeSummary(e)) throw e
                     fallbacks.markIdTimeSummaryMissing()
@@ -928,6 +1004,13 @@ class VespaEventIndex(
         val family: RecencyWindowMemory.Shape? = null,
         /** Whether that family's cold reads vote narrow: the read skips its attempts, as a recalled-narrow one. */
         val priorNarrow: Boolean = false,
+        /**
+         * [anchor] is the request's CLOCK: no `until` before it, and no [dataEndHint] either. Only
+         * such a read's empty windows say the clock has passed the data.
+         */
+        val clockAnchored: Boolean = true,
+        /** The request's clock, read once for the whole read. */
+        val now: Long = 0,
     )
 
     /**
@@ -972,7 +1055,8 @@ class VespaEventIndex(
         // between the anchor and `until` (future-dated notes included) is
         // inside every window — so the anchor is free to be the request clock.
         val now = q.nowSecs ?: (System.currentTimeMillis() / 1000)
-        val anchor = q.until?.let { minOf(it, now) } ?: now
+        val clockAnchor = q.until?.let { minOf(it, now) } ?: now
+        val anchor = minOf(clockAnchor, dataEnd(now))
         // The shape is keyed ONCE per read: the recall here and the
         // learn/forget after share it (the digest walks the author list).
         val shape = if (windowMemory != null || slackMemory != null) RecencyWindowMemory.shapeOf(q, anchor, now) else null
@@ -981,7 +1065,7 @@ class VespaEventIndex(
         // A COLD read (nothing remembered for its exact shape) asks its family's prior, once.
         val family = if (recalled == null && narrowPrior != null) RecencyWindowMemory.familyOf(q, anchor, now) else null
         val priorNarrow = family != null && narrowPrior!!.isNarrow(family)
-        val narrow = recalled is RecencyWindowMemory.Recall.Narrow || priorNarrow
+        val narrow = recalled is RecencyWindowMemory.Recall.Narrow || priorNarrow || boundedRead(q, limit)
         val first = if (narrow) narrowLease(lease) else lease
         return ReadStart(
             fetchLimitOf(limit, first?.value ?: TIE_SLACK),
@@ -992,8 +1076,48 @@ class VespaEventIndex(
             anchor = anchor,
             family = family,
             priorNarrow = priorNarrow,
+            clockAnchored = clockAnchor == now && anchor == now,
+            now = now,
         )
     }
+
+    /**
+     * The most documents [q] can match, when its filter says so: one live version per author and
+     * kind for replaceable kinds, per author, kind and `d` value for addressable ones (NIP-01's
+     * newest-wins, which the write path enforces). Null when nothing bounds it. Used only to pick
+     * how a read is FETCHED, never to cap one: a second version that slipped past a racing write
+     * would cost a larger page, not a missing one.
+     */
+    private fun answerBound(q: EventQuery): Int? {
+        if (q.authors.isEmpty() || q.kinds.isEmpty() || q.ids.isNotEmpty()) return null
+        val perAuthorKind =
+            when {
+                q.kinds.all { it.isReplaceable() } -> {
+                    1L
+                }
+
+                q.kinds.all { it.isAddressable() } -> {
+                    q.tags["d"]
+                        ?.size
+                        ?.toLong()
+                        ?.takeIf { it > 0 } ?: return null
+                }
+
+                else -> {
+                    return null
+                }
+            }
+        return (q.authors.size.toLong() * q.kinds.size * perAuthorKind).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    }
+
+    /** [q]'s answer is bounded at or under [limit] by its filter ([answerBound]). */
+    private fun boundedRead(
+        q: EventQuery,
+        limit: Int,
+    ): Boolean = answerBound(q)?.let { it <= limit } == true
+
+    /** The anchor a speculative read may start from: [dataEndHint], else the clock [now]. Never past [now]. */
+    private fun dataEnd(now: Long): Long = dataEndHint.get()?.let { minOf(it, now) } ?: now
 
     /** [ReadStart.cutBefore] for a read about to fetch at [lease]: a slack the shape LEARNED at [TIE_SLACK] or more. */
     private fun cutBefore(lease: TieSlackMemory.Lease?): Boolean = lease != null && lease.epoch != 0L && lease.value >= TIE_SLACK
@@ -1304,11 +1428,27 @@ class VespaEventIndex(
             val anchor = s.anchor
             val shape = s.shape
             // What the last read of this shape learned (RecencyWindowMemory):
-            // a NARROW shape skips straight to the unwindowed read — the shipped
-            // cost, nothing speculated — and a remembered WINDOW, scaled to this
-            // limit, replaces the cold first guess.
+            // a NARROW shape skips straight to the unwindowed read, nothing
+            // speculated. The planner still ships it: a read the recency profile takes
+            // goes as it is, one query; a deep `until` goes through the count ladder,
+            // whose rungs bound what an unranked read would otherwise sort (everything
+            // below the `until`, on a large corpus millions). A remembered WINDOW,
+            // scaled to this limit, replaces the cold first guess.
             val recalled = s.recalled
             val firstLease = s.lease
+            // An answer its filter bounds at `limit` or under ([answerBound]: a profile, a contact
+            // list) has a match set no bigger: the read the engine answers cheapest unwindowed, and
+            // one a window cannot prove early, since a short page is all a bounded read ever gets.
+            if (boundedRead(q, limit)) {
+                outcome("bounded")
+                return@timed recallPage(q, planned = true, idOnly = idOnly, shape = shape, coldSlack = MIN_TIE_SLACK, leased = narrowLease(firstLease))
+            }
+            // Below where the data STARTS ([dataStartHint]) there is nothing to window: the
+            // unwindowed read alone proves the page (empty, or what was written below since).
+            if (q.until != null && dataStartHint.get()?.let { q.until < it } == true) {
+                outcome("before.data")
+                return@timed recallPage(q, planned = true, idOnly = idOnly, shape = shape, coldSlack = MIN_TIE_SLACK, leased = narrowLease(firstLease))
+            }
             if (recalled is RecencyWindowMemory.Recall.Narrow) {
                 outcome("recalled.narrow")
                 return@timed recallPage(planner.shipped(q), planned = true, idOnly = idOnly, shape = shape, coldSlack = MIN_TIE_SLACK, leased = narrowLease(firstLease))
@@ -1329,7 +1469,7 @@ class VespaEventIndex(
                 val span = if (page.size >= limit) minusSaturated(anchor, page[limit - 1].createdAt) else null
                 if (span != null && span <= RecencyPlanner.NARROW_HORIZON) {
                     outcome("prior.busy")
-                    learn(shape, RecencyWindowMemory.Recall.Window(span.coerceIn(RecencyPlanner.FIRST_WINDOW, RecencyPlanner.MAX_WINDOW), limit))
+                    learn(shape, RecencyWindowMemory.Recall.Window(RecencyPlanner.learnedWindow(span), limit))
                     vote(family, narrow = false)
                 } else {
                     learn(shape, RecencyWindowMemory.Recall.Narrow)
@@ -1339,7 +1479,7 @@ class VespaEventIndex(
             }
             var window =
                 (recalled as? RecencyWindowMemory.Recall.Window)
-                    ?.let { (it.window * limit / it.limit).coerceIn(RecencyPlanner.FIRST_WINDOW, RecencyPlanner.MAX_WINDOW) }
+                    ?.let { RecencyPlanner.recalledWindow(it.window, it.limit, limit) }
                     ?.also { outcome("recalled.window") }
                     ?: RecencyPlanner.FIRST_WINDOW
             var attempts = 0
@@ -1396,7 +1536,12 @@ class VespaEventIndex(
                 measuredWindow = window
                 if (page.size >= remaining) {
                     outcome(if (attempts == 1) "first" else "widened")
-                    learn(shape, RecencyWindowMemory.Recall.Window(window, limit))
+                    // Learn the span the page NEEDED — anchor back to its limit-th
+                    // newest — not the window this attempt happened to try: a cold
+                    // hour that held 860 matches for a limit of 1 would otherwise
+                    // recall as 100 hours for a limit of 100.
+                    val answer = carried + page
+                    learn(shape, RecencyWindowMemory.Recall.Window(RecencyPlanner.learnedWindow(minusSaturated(anchor, answer[limit - 1].createdAt)), limit))
                     family?.let { vote(it, narrow = false) }
                     return@timed carried + page
                 }
@@ -1404,19 +1549,56 @@ class VespaEventIndex(
                 boundary = since
                 // The rate is the WHOLE window's — everything in [since, anchor],
                 // carried pages included — exactly what the re-fetching loop saw.
-                if (RecencyPlanner.projected(window, carried.size, limit) > RecencyPlanner.NARROW_HORIZON) {
+                // A window under the cold hour is a REMEMBERED one that missed, not a measurement
+                // of the shape's rate: its count says the memory overshot (a span learned at another
+                // anchor of the same age bucket), so it widens to at least the hour instead of
+                // projecting narrow off a minute's empty window — which, remembered, served every
+                // read of the shape unwindowed (a 60s window 281s past a filter's newest note).
+                if (window >= RecencyPlanner.FIRST_WINDOW && RecencyPlanner.projected(window, carried.size, limit) > RecencyPlanner.NARROW_HORIZON) {
                     fallback = "narrow"
                     break
                 }
-                window = RecencyPlanner.widen(window, carried.size, limit)
+                window = maxOf(RecencyPlanner.widen(window, carried.size, limit), RecencyPlanner.FIRST_WINDOW)
             }
             outcome("fallback.$fallback")
+            // The unwindowed read, for what the carried pages do not already hold.
+            // A shape that came back short has MEASURED its rate: the fallback
+            // starts its tie slack there, not at the wide default.
+            val measured = if (attempts > 0) TieSlackMemory.measuredSlack(carried.size, measuredWindow) else null
+            // With no attempt run (the caller's `since`, a refused first attempt) the
+            // fallback IS the read's first page: it takes the slack the read started
+            // with, the one its mode was chosen by ([recallSummaries]).
+            // The planner ships a read the recency profile takes as it is (one query, the
+            // match-phase bounding the sort); a deep `until` gets the count ladder, whose rungs
+            // bound what an unranked read would otherwise sort: everything below the `until`.
+            // Below where the data starts there is nothing to bound, and the read goes alone.
+            val rest = q.olderThan(boundary, limit - carried.size)
+            val belowData = rest.until?.let { until -> dataStartHint.get()?.let { until < it } } == true
+            val answer = carried + recallPage(if (belowData) rest else planner.shipped(rest), planned = true, idOnly = idOnly, shape = shape, coldSlack = measured, leased = firstLease.takeIf { attempts == 0 })
+            // What the read teaches its shape, now that its whole answer is known.
             when (fallback) {
                 // Too thin to window: the next read of this shape skips the attempts,
-                // and a cold one votes its family narrow.
+                // and a cold one votes its family narrow — unless the answer is EMPTY below a
+                // caller's `until` an hour or more in the past (a client stamping `until` with its
+                // own clock is reading the present, and its empty shape IS narrow): that is where
+                // the data ends, not a rate, and the next read of the shape pages at another
+                // `until`. Remembered narrow, a scroll past the oldest note taught the dense reads
+                // sharing its shape (same filter, same age bucket) to sort their whole match set
+                // (through the relay: a 1-day scroll-back, 4ms to 17ms).
                 "narrow", "attempts", "window" -> {
-                    learn(shape, RecencyWindowMemory.Recall.Narrow)
-                    family?.let { vote(it, narrow = true) }
+                    if (answer.isEmpty() && q.until != null && q.until < minusSaturated(s.now, RecencyPlanner.FIRST_WINDOW)) {
+                        // Perhaps below where the data starts: from now on reads with an `until`
+                        // ask where that is ([dataStartHint]), and skip straight to their read below it.
+                        if (dataBounds) dataStartHint.want()
+                    } else {
+                        learn(shape, RecencyWindowMemory.Recall.Narrow)
+                        family?.let { vote(it, narrow = true) }
+                        // Every window back from the CLOCK was empty: on a store whose data ends
+                        // before the clock that is the data's age, not the shape's rate. From now on
+                        // reads anchor where the data ends ([dataEndHint]); on a live store, whose
+                        // first window is never empty, this never fires and no hint is ever asked.
+                        if (dataBounds && carried.isEmpty() && s.clockAnchored) dataEndHint.want()
+                    }
                 }
 
                 // An attempt the engine cut says nothing about the shape's rate.
@@ -1429,14 +1611,7 @@ class VespaEventIndex(
                     Unit
                 }
             }
-            // The unwindowed read, for what the carried pages do not already hold.
-            // A shape that came back short has MEASURED its rate: the fallback
-            // starts its tie slack there, not at the wide default.
-            val measured = if (attempts > 0) TieSlackMemory.measuredSlack(carried.size, measuredWindow) else null
-            // With no attempt run (the caller's `since`, a refused first attempt) the
-            // fallback IS the read's first page: it takes the slack the read started
-            // with, the one its mode was chosen by ([recallSummaries]).
-            carried + recallPage(planner.shipped(q.olderThan(boundary, limit - carried.size)), planned = true, idOnly = idOnly, shape = shape, coldSlack = measured, leased = firstLease.takeIf { attempts == 0 })
+            answer
         }
 
     /**
@@ -3216,8 +3391,12 @@ class VespaEventIndex(
         hits: Int,
     ): SearchRoot {
         val t0 = if (ledger?.slowQueryThresholdNanos != null) System.nanoTime() else 0L
-        val envelope = queryBody(vq, hits).decode(VESPA_JSON, SearchEnvelope.serializer())
+        val sent = if (EventYql.P_MATCH_PHASE_MAX_HITS in vq.params && servingNodes.get() != 1) vq.copy(params = vq.params - EventYql.P_MATCH_PHASE_MAX_HITS) else vq
+        val envelope = queryBody(sent, hits).decode(VESPA_JSON, SearchEnvelope.serializer())
         val root = envelope.root
+        root.coverage.nodes
+            .takeIf { it > 0 }
+            ?.let(servingNodes::set)
         // Published BEFORE the coverage check, deliberately: a degraded answer
         // is the one an operator most wants to see in the numbers, and
         // requireComplete throws.
@@ -3481,6 +3660,7 @@ class VespaEventIndex(
      * ([VespaHttp.close]) — even when the feed's close throws.
      */
     override fun close() {
+        hintScope.cancel()
         try {
             feed.close()
         } finally {
@@ -3633,6 +3813,9 @@ class VespaEventIndex(
 
         /** The [IngestStats] stage every [RecencyStrategy.SPECULATIVE] read books under; see [outcome]. */
         const val SPECULATIVE_STAGE = "recency.speculative"
+
+        /** How long a data-bound answer ([dataEndHint], [dataStartHint]) is used before it is asked again. */
+        const val DATA_END_TTL_MS = 5_000L
 
         /** Booked once each time a refused `select` query parks it and reads go as YQL for a while. */
         const val SELECT_REFUSED_STAGE = "query.select.refused"
