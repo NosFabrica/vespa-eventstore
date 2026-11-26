@@ -4129,7 +4129,7 @@ class VespaEventIndexTest {
      */
     @Test
     fun `a store whose data ends before the clock is read from where its data ends`() =
-        runBlocking {
+        runBlocking<Unit> {
             val end = 5_000_000L
             seed(*(1..200).map { doc(kind = 1, at = end - it) }.toTypedArray())
             VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE).use { speculative ->
@@ -4173,6 +4173,58 @@ class VespaEventIndexTest {
                 val sent = mock.searchRequests.drop(before)
                 assertEquals(1, sent.size, "the unwindowed read alone: $sent")
                 assertNull(sent.single().sinceFloor(), "$sent")
+            }
+        }
+
+    /**
+     * A scroll past the oldest note finds every window empty. That is where the data ends, not
+     * the shape's rate — but it was learned as NARROW for the shape, which keys on the filter and
+     * the anchor's age bucket, so the dense reads sharing both were served unwindowed from then
+     * on, their whole match set sorted (through the relay: a 1-day scroll-back, 4ms to 17ms).
+     */
+    @Test
+    fun `an empty scroll past the data teaches the shape nothing`() =
+        runBlocking<Unit> {
+            val now = System.currentTimeMillis() / 1000
+            val end = 5_000_000L
+            seed(*(1..200).map { doc(kind = 1, at = end - it) }.toTypedArray())
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE, dataEndAnchor = false).use { speculative ->
+                val past = EventQuery(kinds = listOf(1), until = end - 20 * 86_400L, limit = 10, nowSecs = now)
+                assertEquals(reference.search(past).map { it.id }, speculative.search(past).map { it.id })
+                assertEquals(emptyList(), reference.search(past).map { it.id }, "the scroll is past the data")
+                val dense = past.copy(until = end)
+                val before = mock.searchRequests.size
+                assertEquals(reference.search(dense).map { it.id }, speculative.search(dense).map { it.id })
+                val sent = mock.searchRequests.drop(before)
+                assertEquals(1, sent.size, "one windowed read: $sent")
+                assertNotNull(sent.single().sinceFloor(), "windowed, not the whole match set sorted: $sent")
+            }
+        }
+
+    /**
+     * A remembered window can be far too tight for the next read of its shape: the shape keys on
+     * the filter and the anchor's age bucket, so a span learned at one anchor is recalled at
+     * another. Here a dense read teaches a span of seconds, and a limit-1 read anchored 300s past
+     * the data recalls it as a minute — empty. That miss projected NARROW off one empty minute,
+     * and remembered, every read of the shape was served unwindowed from then on. Now a window
+     * under the cold hour widens instead, and the shape keeps its window.
+     */
+    @Test
+    fun `a remembered window that misses widens instead of teaching the shape narrow`() =
+        runBlocking<Unit> {
+            val now = System.currentTimeMillis() / 1000
+            val end = 5_000_000L
+            seed(*(1..300).map { doc(kind = 1, at = end - it) }.toTypedArray())
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE, dataEndAnchor = false).use { speculative ->
+                val dense = EventQuery(kinds = listOf(1), until = end, limit = 100, nowSecs = now)
+                assertEquals(reference.search(dense).map { it.id }, speculative.search(dense).map { it.id })
+                val past = EventQuery(kinds = listOf(1), until = end + 300, limit = 1, nowSecs = now)
+                assertEquals(reference.search(past).map { it.id }, speculative.search(past).map { it.id }, "the recalled minute misses, the hour finds it")
+                val before = mock.searchRequests.size
+                assertEquals(reference.search(dense).map { it.id }, speculative.search(dense).map { it.id })
+                val sent = mock.searchRequests.drop(before)
+                assertEquals(1, sent.size, "still one windowed read: $sent")
+                assertNotNull(sent.single().sinceFloor(), "not served unwindowed: $sent")
             }
         }
 

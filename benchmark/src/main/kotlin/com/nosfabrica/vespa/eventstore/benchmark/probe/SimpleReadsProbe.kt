@@ -81,36 +81,41 @@ object SimpleReadsProbe {
                     "#p miss, no limit (idle test)" to EventQuery(kinds = listOf(1), tags = mapOf("p" to listOf("cd".repeat(32))), limit = DEFAULT_LIMIT),
                     "id miss" to EventQuery(ids = listOf("ab".repeat(32)), limit = 1),
                 )
-            println(String.format("%-36s %5s %8s %8s %8s  %s", "shape", "hits", "p50 ms", "p95 ms", "queries", "same page"))
+            // Several passes in order, as a relay meets them: one shape's reads teach the memory the
+            // next shape reads, so a single pass hides what a shape left behind for the others.
+            val passes = System.getenv("BENCH_PASSES")?.toIntOrNull() ?: 1
             var mismatches = 0
-            for ((name, shape) in shapes) {
-                fun req() = shape.copy(nowSecs = System.currentTimeMillis() / 1000, notExpiredAt = System.currentTimeMillis() / 1000)
-                val want = reference.search(req()).map { it.id }
-                val got = client.search(req()).map { it.id }
-                val same = got == want
-                if (!same) mismatches++
-                repeat(5) { client.search(req()) }
-                ledger.reset()
-                IngestStats.reset()
-                val nanos =
-                    (1..reps)
-                        .map {
-                            val t0 = System.nanoTime()
-                            client.search(req())
-                            System.nanoTime() - t0
-                        }.sorted()
-                val engine = ledger.snapshot().engine
-                val queries = engine.sumOf { it.queries }.toDouble() / reps
-                // Vespa's own split, per read: search (matching + ranking + sorting), summary fill, docs matched.
-                val vespa = String.format("vespa %4.1f+%4.1f ms, matched %6.0f", engine.sumOf { it.engineNanos } / 1e6 / reps, engine.sumOf { it.summaryNanos } / 1e6 / reps, engine.sumOf { it.docsMatched }.toDouble() / reps)
-                // Which recency outcomes the timed reads took, per read.
-                val outcomes =
-                    IngestStats
-                        .snapshot()
-                        .filter { (k, v) -> k.startsWith("recency.") && k != "recency.speculative" && v.calls > 0 }
-                        .entries
-                        .joinToString(" ") { (k, v) -> "${k.removePrefix("recency.").removePrefix("speculative.")}=${"%.1f".format(v.calls.toDouble() / reps)}" }
-                println(String.format("%-36s %5d %8.1f %8.1f %8.1f  %-4s %s  %s", name, want.size, nanos[reps / 2] / 1e6, nanos[minOf(reps - 1, reps * 95 / 100)] / 1e6, queries, if (same) "yes" else "NO", vespa, outcomes))
+            for (pass in 1..passes) {
+                println(String.format("%-36s %5s %8s %8s %8s  %s", "shape (pass $pass)", "hits", "p50 ms", "p95 ms", "queries", "same page"))
+                for ((name, shape) in shapes) {
+                    fun req() = shape.copy(nowSecs = System.currentTimeMillis() / 1000, notExpiredAt = System.currentTimeMillis() / 1000)
+                    val want = reference.search(req()).map { it.id }
+                    val got = client.search(req()).map { it.id }
+                    val same = got == want
+                    if (!same) mismatches++
+                    repeat(5) { client.search(req()) }
+                    ledger.reset()
+                    IngestStats.reset()
+                    val nanos =
+                        (1..reps)
+                            .map {
+                                val t0 = System.nanoTime()
+                                client.search(req())
+                                System.nanoTime() - t0
+                            }.sorted()
+                    val engine = ledger.snapshot().engine
+                    val queries = engine.sumOf { it.queries }.toDouble() / reps
+                    // Vespa's own split, per read: search (matching + ranking + sorting), summary fill, docs matched.
+                    val vespa = String.format("vespa %4.1f+%4.1f ms, matched %6.0f", engine.sumOf { it.engineNanos } / 1e6 / reps, engine.sumOf { it.summaryNanos } / 1e6 / reps, engine.sumOf { it.docsMatched }.toDouble() / reps)
+                    // Which recency outcomes the timed reads took, per read.
+                    val outcomes =
+                        IngestStats
+                            .snapshot()
+                            .filter { (k, v) -> k.startsWith("recency.") && k != "recency.speculative" && v.calls > 0 }
+                            .entries
+                            .joinToString(" ") { (k, v) -> "${k.removePrefix("recency.").removePrefix("speculative.")}=${"%.1f".format(v.calls.toDouble() / reps)}" }
+                    println(String.format("%-36s %5d %8.1f %8.1f %8.1f  %-4s %s  %s", name, want.size, nanos[reps / 2] / 1e6, nanos[minOf(reps - 1, reps * 95 / 100)] / 1e6, queries, if (same) "yes" else "NO", vespa, outcomes))
+                }
             }
             // The same reads through the store FACADE, as a relay opens it (no deploy, the slow-read
             // ledger on): what the Nostr-semantics and trust layers add over the bare index.
@@ -129,7 +134,16 @@ object SimpleReadsProbe {
                                 store.query<Event>(f)
                                 System.nanoTime() - t0
                             }.sorted()
-                    println(String.format("%-36s %5d %8.1f %8.1f", name, n, nanos[reps / 2] / 1e6, nanos[minOf(reps - 1, reps * 95 / 100)] / 1e6))
+                    // The relay's path: the raw projection, one filter list per REQ.
+                    repeat(5) { store.rawQuery(listOf(f)) { } }
+                    val raw =
+                        (1..reps)
+                            .map {
+                                val t0 = System.nanoTime()
+                                store.rawQuery(listOf(f)) { }
+                                System.nanoTime() - t0
+                            }.sorted()
+                    println(String.format("%-36s %5d %8.1f %8.1f   rawQuery %6.1f %6.1f", name, n, nanos[reps / 2] / 1e6, nanos[minOf(reps - 1, reps * 95 / 100)] / 1e6, raw[reps / 2] / 1e6, raw[minOf(reps - 1, reps * 95 / 100)] / 1e6))
                 }
                 store.close()
             }

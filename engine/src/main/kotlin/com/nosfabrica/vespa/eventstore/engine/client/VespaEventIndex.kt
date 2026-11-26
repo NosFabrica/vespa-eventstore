@@ -1068,6 +1068,9 @@ class VespaEventIndex(
         limit: Int,
     ): Boolean = answerBound(q)?.let { it <= limit } == true
 
+    /** The request's clock, in seconds. */
+    private fun anchorClockOf(q: EventQuery): Long = q.nowSecs ?: (System.currentTimeMillis() / 1000)
+
     /** The anchor the request alone gives: its `until` or its clock, whichever is earlier. */
     private fun clockAnchorOf(q: EventQuery): Long {
         val now = q.nowSecs ?: (System.currentTimeMillis() / 1000)
@@ -1534,24 +1537,50 @@ class VespaEventIndex(
                 boundary = since
                 // The rate is the WHOLE window's — everything in [since, anchor],
                 // carried pages included — exactly what the re-fetching loop saw.
-                if (RecencyPlanner.projected(window, carried.size, limit) > RecencyPlanner.NARROW_HORIZON) {
+                // A window under the cold hour is a REMEMBERED one that missed, not a measurement
+                // of the shape's rate: its count says the memory overshot (a span learned at another
+                // anchor of the same age bucket), so it widens to at least the hour instead of
+                // projecting narrow off a minute's empty window — which, remembered, served every
+                // read of the shape unwindowed (a 60s window 281s past a filter's newest note).
+                if (window >= RecencyPlanner.FIRST_WINDOW && RecencyPlanner.projected(window, carried.size, limit) > RecencyPlanner.NARROW_HORIZON) {
                     fallback = "narrow"
                     break
                 }
-                window = RecencyPlanner.widen(window, carried.size, limit)
+                window = maxOf(RecencyPlanner.widen(window, carried.size, limit), RecencyPlanner.FIRST_WINDOW)
             }
             outcome("fallback.$fallback")
+            // The unwindowed read, for what the carried pages do not already hold.
+            // A shape that came back short has MEASURED its rate: the fallback
+            // starts its tie slack there, not at the wide default.
+            val measured = if (attempts > 0) TieSlackMemory.measuredSlack(carried.size, measuredWindow) else null
+            // With no attempt run (the caller's `since`, a refused first attempt) the
+            // fallback IS the read's first page: it takes the slack the read started
+            // with, the one its mode was chosen by ([recallSummaries]).
+            // When every attempt came back EMPTY the count ladder would only re-measure what they
+            // did (its first rung is the hour just read): the unwindowed read alone, which costs
+            // what lies below — nothing, past the oldest note — instead of three counts first.
+            val rest = q.olderThan(boundary, limit - carried.size)
+            val fallbackRead = if (attempts > 0 && carried.isEmpty()) rest else planner.shipped(rest)
+            val answer = carried + recallPage(fallbackRead, planned = true, idOnly = idOnly, shape = shape, coldSlack = measured, leased = firstLease.takeIf { attempts == 0 })
+            // What the read teaches its shape, now that its whole answer is known.
             when (fallback) {
                 // Too thin to window: the next read of this shape skips the attempts,
-                // and a cold one votes its family narrow.
+                // and a cold one votes its family narrow — unless the answer is EMPTY below a
+                // caller's past `until`: that is where the data ends, not a rate, and the next
+                // read of the shape pages at another `until`. Remembered narrow, a scroll past the
+                // oldest note taught the dense reads sharing its shape (same filter, same age
+                // bucket) to sort their whole match set (through the relay: a 1-day scroll-back,
+                // 4ms to 17ms).
                 "narrow", "attempts", "window" -> {
-                    learn(shape, RecencyWindowMemory.Recall.Narrow)
-                    family?.let { vote(it, narrow = true) }
-                    // Every window back from the CLOCK was empty: on a store whose data ends
-                    // before the clock that is the data's age, not the shape's rate. From now on
-                    // reads anchor where the data ends ([dataEndHint]); on a live store, whose
-                    // first window is never empty, this never fires and no hint is ever asked.
-                    if (dataEndAnchor && carried.isEmpty() && s.clockAnchored) dataEndWanted.set(true)
+                    if (!(answer.isEmpty() && q.until != null && q.until < anchorClockOf(q))) {
+                        learn(shape, RecencyWindowMemory.Recall.Narrow)
+                        family?.let { vote(it, narrow = true) }
+                        // Every window back from the CLOCK was empty: on a store whose data ends
+                        // before the clock that is the data's age, not the shape's rate. From now on
+                        // reads anchor where the data ends ([dataEndHint]); on a live store, whose
+                        // first window is never empty, this never fires and no hint is ever asked.
+                        if (dataEndAnchor && carried.isEmpty() && s.clockAnchored) dataEndWanted.set(true)
+                    }
                 }
 
                 // An attempt the engine cut says nothing about the shape's rate.
@@ -1564,14 +1593,7 @@ class VespaEventIndex(
                     Unit
                 }
             }
-            // The unwindowed read, for what the carried pages do not already hold.
-            // A shape that came back short has MEASURED its rate: the fallback
-            // starts its tie slack there, not at the wide default.
-            val measured = if (attempts > 0) TieSlackMemory.measuredSlack(carried.size, measuredWindow) else null
-            // With no attempt run (the caller's `since`, a refused first attempt) the
-            // fallback IS the read's first page: it takes the slack the read started
-            // with, the one its mode was chosen by ([recallSummaries]).
-            carried + recallPage(planner.shipped(q.olderThan(boundary, limit - carried.size)), planned = true, idOnly = idOnly, shape = shape, coldSlack = measured, leased = firstLease.takeIf { attempts == 0 })
+            answer
         }
 
     /**

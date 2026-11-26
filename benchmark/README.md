@@ -1414,6 +1414,23 @@ default limit and hydrated. After, the windows hold 1–400 documents, and what 
 the engine's floor (~0.7ms of search) plus summaries, transport and decoding: a 100-event page is
 ~2.5ms of search, ~0.7ms of summary fill and ~2.5ms in the client.
 
+**One pass hides what shapes teach each other.** The memory keys a shape on its filter and its
+anchor's age bucket, so a span one read learns is recalled by reads at other anchors. Run three
+times in order (`BENCH_PASSES=3`), the first build of these rules regressed from pass two: an
+empty 20-day scroll learned kinds 1/7/30023 narrow, and a limit-1 read anchored 281s past that
+filter's newest note recalled a 60s window, found it empty and learned narrow too — after which the
+dense `until` reads of the shape sorted their whole match set (newest 1 at `until` = newest note,
+2.3ms to 12.6ms; a 1-day scroll-back, 4ms to 13ms). The last three rules in AGENTS.md's *Recency
+planning* close it; on pass three every dense read is windowed, one query, 2.0–4.9ms, and the empty
+scroll is three queries (two attempts and the unwindowed read), 4.9ms.
+
+**Through the relay** (vespa-relay main at 2ac8de97 built against this store, the same corpus, a
+Python `websockets` client one REQ at a time, warm): every shape above is 2.3–6.0ms p50 — when the
+client does not offer `permessage-deflate`. Offering it (the Python client's default) the relay
+compresses every EVENT frame and the 50–100-event pages rise to 8.3–9.0ms: about 35µs an event in
+compression and inflation. strfry on the same corpus, cores and client, without compression:
+0.3–4.8ms.
+
 ### The tie slack is learned per shape (2026-11-22, revised 2026-11-23)
 
 A recency page overfetched a flat `TIE_SLACK` of 64, sized for wide pages: a
