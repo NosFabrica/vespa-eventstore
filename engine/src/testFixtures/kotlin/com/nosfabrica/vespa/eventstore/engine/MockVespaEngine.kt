@@ -354,6 +354,12 @@ class MockVespaEngine(
     val connections: MutableList<Pair<String, String>> = Collections.synchronizedList(ArrayList())
 
     /**
+     * The `fieldSet` each document GET asked for (null for none: the whole document), in arrival
+     * order. Honoured as Vespa does for a `<doctype>:<field>,…` set: only those fields come back.
+     */
+    val documentGetFieldSets: MutableList<String?> = Collections.synchronizedList(ArrayList())
+
+    /**
      * The `Accept-Encoding` each request carried (`""` when it had none), as path and header, in
      * arrival order. Whether the client asked for gzip decides whether Vespa spends its rendering
      * threads compressing the answer, and no response the client decodes can show which it asked.
@@ -706,15 +712,19 @@ class MockVespaEngine(
 
             method == "GET" && path.startsWith(docPrefix) -> {
                 val doc = runBlocking { inner.get(path.removePrefix(docPrefix)) }
+                val fieldSet = rawQuery?.let { params(it)["fieldSet"] }
+                documentGetFieldSets += fieldSet
                 if (doc == null) {
                     // Real Vespa's shape for a missing document: the path and the id, no error code.
                     Reply(404, """{"pathId":"$path","id":"id:event:event::${path.removePrefix(docPrefix)}"}""")
                 } else {
+                    val fields = doc.indexFields()
+                    val asked = fieldSet?.substringAfter("event:", "")?.split(',')?.toSet()
                     Reply(
                         200,
                         buildJsonObject {
                             put("id", path)
-                            put("fields", doc.indexFields())
+                            put("fields", if (asked == null) fields else JsonObject(fields.filterKeys { it in asked }))
                         }.toString(),
                     )
                 }

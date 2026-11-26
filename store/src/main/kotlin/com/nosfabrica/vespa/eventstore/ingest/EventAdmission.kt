@@ -124,7 +124,7 @@ internal class EventAdmission(
     suspend fun admitStored(event: Event) {
         // The admission reads — dedup, NIP-09 tombstone, NIP-62 vanish — are
         // independent, so fire them together and check in the original
-        // precedence (duplicate > deleted > vanished). The dup GET deliberately
+        // precedence (duplicate > deleted > vanished). The dup read deliberately
         // stays a read: folding it into a conditional put was A/B-measured
         // 15-35% slower (see docs/server-side-constraints.md). Guard probes run
         // only when this owner HAS a stored tombstone/vanish (GuardOwners).
@@ -135,13 +135,13 @@ internal class EventAdmission(
             if (supersedesBesideDupRead(event)) return
             // The common case reads just the dup get — skip the fan-out
             // machinery, which allocates per call.
-            if (index.get(event.id) != null) duplicate(event)
+            if (isStored(event)) duplicate(event)
         } else {
             coroutineScope {
-                val existing = async { index.get(event.id) }
+                val existing = async { isStored(event) }
                 val deleted = if (probeDeleted) async { deletions.isDeleted(event) } else null
                 val vanished = if (probeVanished) async { deletions.isVanished(event) } else null
-                if (existing.await() != null) duplicate(event)
+                if (existing.await()) duplicate(event)
                 if (deleted?.await() == true) throw RejectedException(Rejections.DELETED)
                 if (vanished?.await() == true) throw RejectedException(Rejections.VANISHED)
             }
@@ -186,6 +186,14 @@ internal class EventAdmission(
     }
 
     /**
+     * The dup probe: whether [event]'s id is stored. An EXISTENCE question, so it is asked as one
+     * ([EventIndex.existingIds]), never as a document read: the engine answers one id with a GET
+     * of its id field alone, where `get` brought the whole stored document back, search columns
+     * and parsed tags included, under the writer lock, to answer one bit.
+     */
+    private suspend fun isStored(event: Event): Boolean = event.id in index.existingIds(listOf(event.id))
+
+    /**
      * A plain replaceable/addressable event with no guard to probe: its dup GET
      * and its supersession ([supersede], whose version read is the round trip
      * that matters) run TOGETHER, so the insert waits for one round trip under
@@ -209,7 +217,7 @@ internal class EventAdmission(
         if (!(event.kind.isReplaceable() || event.kind.isAddressable()) || event.kind in BulkRecordInsert.WHOLE_DOC_KINDS) return false
         val stored =
             coroutineScope {
-                val existing = async { index.get(event.id) != null }
+                val existing = async { isStored(event) }
                 val written = runCatching { supersede(event) }
                 if (written.getOrNull() == true) {
                     existing.cancel()

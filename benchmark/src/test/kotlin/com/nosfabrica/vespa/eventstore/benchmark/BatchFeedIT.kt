@@ -76,6 +76,10 @@ class BatchFeedIT {
                             assertEquals(n.search, got.search, "the search columns")
                         }
                         assertNull(index.get(expired.id), "the expired event was dropped by the routing selection")
+                        // One id's existence is a document GET asking for the id field alone
+                        // (`fieldSet=event:id`): the same answers `get` gives, from a real engine.
+                        assertEquals(setOf(notes[0].id), index.existingIds(listOf(notes[0].id)), "a stored id, by its id field")
+                        assertEquals(emptySet(), index.existingIds(listOf(expired.id)), "an absent one")
                         assertEquals(
                             notes.map { it.id }.toSet(),
                             index.search(EventQuery(kinds = listOf(1), search = "tarantellas", limit = 400)).map { it.id }.toSet(),

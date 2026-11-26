@@ -385,6 +385,28 @@ class VespaEventIndex(
         return resp.decode(VESPA_JSON, DocEnvelope.serializer()).fields?.toDoc(withNearState = true)
     }
 
+    /**
+     * Whether [get] would answer a document for [id], asked of the document API with
+     * `fieldSet=event:id`: the same GET, the same answers (a real 404 is absent, a 200 whose id
+     * field is set is stored, anything else is refused), but only the id comes back. A whole
+     * document is its search columns, stems and near arrays as well, and its tags parsed into a
+     * tree (a stored kind 3 is 50-500 KB of them), all to answer one bit. Whether proton then
+     * skips the document-store read is NOT known here; the bytes and the decode are what it saves
+     * for certain. Not for an address-keyed index, whose replaceables are not at the id docid.
+     */
+    private suspend fun stored(id: String): Boolean {
+        if (!Hex.isHexKey(id)) return false
+        val resp = http.get("${documentEndpoint()}/document/v1/$EVENT_NAMESPACE/$EVENT_DOCTYPE/docid/${docIdSegment(id)}?fieldSet=$EVENT_DOCTYPE:id")
+        if (resp.statusCode() == 404 && isAbsentDocument(resp.body())) return false
+        require(resp.statusCode() < 400) { "vespa get ${resp.statusCode()}: ${resp.body().take(300)}" }
+        // [get]'s null for a 200: no fields, or an empty id field ([VespaSummary.toDoc]).
+        return !resp
+            .decode(VESPA_JSON, DocEnvelope.serializer())
+            .fields
+            ?.id
+            .isNullOrEmpty()
+    }
+
     /** One doc by its `id` attribute via the search stack — the id-lookup path under address-keying. */
     private suspend fun searchById(id: String): EventDoc? {
         val vq = EventYql.build(EventQuery(ids = listOf(id))) ?: return null
@@ -761,8 +783,15 @@ class VespaEventIndex(
      * the full-summary path end to end (see benchmark/README.md). Works
      * identically under address-keying: the `id` ATTRIBUTE carries the event id
      * whatever the docid is — the reason this stays on the search stack.
+     *
+     * Except ONE id on an id-keyed index, the per-event insert's dup probe under the writer
+     * lock, which was a whole-document [get]: it stays that GET, routed to the one node holding
+     * the docid, asking for the id field alone ([stored]). Whether that or a one-id search on
+     * `dedup` is faster is not measured; the GET is what the probe paid before, minus the bytes.
      */
     override suspend fun existingIds(ids: List<String>): Set<String> {
+        // ONE id is a key lookup: the per-event insert's dup probe, under the writer lock.
+        if (ids.size == 1 && !addressKeyed) return if (stored(ids[0])) setOf(ids[0]) else emptySet()
         // Demotion first: a demoted client must not build (and discard) the
         // ~35KB YQL per chunk — super rides search(), which handles the
         // no-valid-ids case itself.

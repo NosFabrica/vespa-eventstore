@@ -337,6 +337,35 @@ class VespaEventIndexTest {
             }
         }
 
+    /**
+     * ONE ID'S EXISTENCE IS A GET OF ITS ID FIELD ALONE. The per-event insert asks it of every
+     * event, under the writer lock, and read the whole stored document to learn it, search
+     * columns, stems and near arrays included, parsing its tags (a stored kind 3 is 50-500 KB of
+     * them). The document API's GET is the cheaper lookup by key (~35% faster than a search over
+     * the id attribute, see [search]), so it stays a GET, with `fieldSet=event:id`. It answers
+     * exactly what `get(id) != null` answers: absent on a real 404, present on a 200 whose id
+     * field is set, refused on anything else. A wider set is still one existence query.
+     */
+    @Test
+    fun `one id's existence reads only its id field`() =
+        runBlocking {
+            val stored = doc(content = "x".repeat(10_000))
+            seed(stored)
+            mock.documentGetFieldSets.clear()
+            mock.protocols.clear()
+            val absent = "f".repeat(64)
+
+            assertEquals(setOf(stored.id), index.existingIds(listOf(stored.id)))
+            assertEquals(emptySet(), index.existingIds(listOf(absent)))
+            assertEquals(emptySet(), index.existingIds(listOf("not hex")), "never a url, as get() never sends one")
+
+            assertEquals(listOf<String?>("event:id", "event:id"), mock.documentGetFieldSets.toList())
+            assertTrue(mock.protocols.none { it.first == "/search/" }, "a GET, not a search: ${mock.protocols}")
+            assertEquals(setOf(stored.id), index.existingIds(listOf(stored.id, absent)), "two ids are one existence query")
+            assertEquals(stored.id, index.get(stored.id)?.id, "get() still reads the whole document")
+            assertEquals(null, mock.documentGetFieldSets.last())
+        }
+
     private fun doc(
         kind: Int = 1,
         pubkey: String = "a1".repeat(32),
