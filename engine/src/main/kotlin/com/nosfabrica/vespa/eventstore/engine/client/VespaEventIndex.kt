@@ -3216,7 +3216,7 @@ class VespaEventIndex(
         hits: Int,
     ): SearchRoot {
         val t0 = if (ledger?.slowQueryThresholdNanos != null) System.nanoTime() else 0L
-        val envelope = queryBody(vq, hits).decode(VESPA_JSON, SearchEnvelope.serializer())
+        val envelope = queryBody(vq, hits).decodeSearch()
         val root = envelope.root
         // Published BEFORE the coverage check, deliberately: a degraded answer
         // is the one an operator most wants to see in the numbers, and
