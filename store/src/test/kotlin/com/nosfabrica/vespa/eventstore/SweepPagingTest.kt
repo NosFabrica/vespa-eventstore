@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.eventstore
 
+import com.nosfabrica.vespa.eventstore.engine.DocRef
 import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
@@ -47,7 +48,7 @@ import kotlin.test.assertTrue
  */
 class SweepPagingTest {
     /**
-     * Records every search, so both halves of "the read is bounded" are
+     * Records every search (and every id walk, in [queries]), so both halves of "the read is bounded" are
      * checkable: [searchLimits] for how many rows a round may return, and
      * [queries] for how NARROW the match set was in the first place.
      */
@@ -61,6 +62,16 @@ class SweepPagingTest {
             searchLimits += query.limit
             queries += query
             return inner.search(query)
+        }
+
+        /** A version walk reads too: an a-tag deletion's victims and putIfNewer's versions come this way. */
+        override suspend fun visitIds(
+            query: EventQuery,
+            withDTag: Boolean,
+            onPage: suspend (List<DocRef>) -> Boolean,
+        ) {
+            queries += query
+            inner.visitIds(query, withDTag, onPage)
         }
     }
 

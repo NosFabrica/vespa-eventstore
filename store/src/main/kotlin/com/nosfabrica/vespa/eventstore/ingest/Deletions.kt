@@ -56,6 +56,9 @@ internal class Deletions(
      */
     private val sweepPage: Int,
 ) {
+    /** How an a-tag deletion reads its victims: as stubs, unless a decorator needs them whole. */
+    private val versionReads = VersionReads(index)
+
     /**
      * NIP-09: a kind 5 authored by this event's OWNER, e/a-tagging it, with
      * created_at >= the event's, blocks the insert. Both target styles are
@@ -158,8 +161,14 @@ internal class Deletions(
                     // address whatever the a-tag's d part, and an empty d carries no
                     // "d:" pair in tag_index to match on.
                     val keyed = address.kind.isAddressable() && address.dTag.isNotEmpty()
-                    index
-                        .search(if (keyed) byAuthor.copy(tags = mapOf("d" to listOf(address.dTag))) else byAuthor)
+                    val q = if (keyed) byAuthor.copy(tags = mapOf("d" to listOf(address.dTag))) else byAuthor
+                    // STUBS, not documents (id, created_at and the first d off the id walk;
+                    // kind and author from the address): all the match below and
+                    // removeDocs read of a victim — the store's own putIfNewer sweeps its
+                    // replaced versions the same way. A deleted kind 3 is 50-500 KB of
+                    // tags, read here under the writer lock to be thrown away. Whole only
+                    // where a decorator reacts to the removal by reading the document.
+                    (if (address.kind in BulkRecordInsert.WHOLE_DOC_KINDS) index.search(q) else versionReads.walked(q, address.kind, address.pubKeyHex))
                         // Still the exact match: it normalizes missing == empty d.
                         .filter { !address.kind.isAddressable() || it.dTagOrEmpty() == address.dTag }
                 }.flatten()

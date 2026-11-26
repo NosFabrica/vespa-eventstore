@@ -186,4 +186,54 @@ class DeletionsTest {
             assertEquals(cardIds, memory.search(EventQuery()).mapTo(HashSet()) { it.id }, "only what the remover left")
             assertEquals(4, holds, "ten ids, three per hold")
         }
+
+    /**
+     * An a-tag deletion removes its victims by what an ADDRESS fixes (kind, author, d) and what a
+     * version walk carries (id, created_at), so it reads them as stubs, never as documents: a
+     * deleted kind 3 is 50-500 KB of tags, and this runs under the writer lock. Only the kinds a
+     * decorator reacts to by reading the removed document (a 30382 card, a 10040) are read whole,
+     * as the version reads do ([BulkRecordInsert.WHOLE_DOC_KINDS]). The victims are the same either
+     * way: the deleted addresses' versions up to the deletion, and nothing beside them.
+     */
+    @Test
+    fun `an a-tag deletion removes its victims without reading their documents`() =
+        runBlocking {
+            val inner = InMemoryEventIndex()
+            val read = mutableListOf<EventQuery>()
+            val removed = mutableListOf<EventDoc>()
+            val recording =
+                object : EventIndex by inner {
+                    override suspend fun search(query: EventQuery): List<EventDoc> = inner.search(query).also { read += query }
+
+                    override suspend fun removeDocs(docs: List<EventDoc>) {
+                        removed += docs
+                        inner.removeDocs(docs)
+                    }
+                }
+            val bulky = Array(400) { arrayOf("p", "%064x".format(it)) }
+            val follows = Event(id(), alice, 1_000L, 3, bulky, "", "")
+            val article = Event(id(), alice, 1_000L, 30023, arrayOf(arrayOf("d", "post"), arrayOf("title", "t")), "a long article", "")
+            val other = Event(id(), alice, 1_000L, 30023, arrayOf(arrayOf("d", "other")), "kept", "")
+            val newer = Event(id(), alice, 3_000L, 30023, arrayOf(arrayOf("d", "post2")), "after the deletion", "")
+            val card = Event(id(), alice, 1_000L, 30382, arrayOf(arrayOf("d", "b".repeat(64)), arrayOf("rank", "40")), "", "")
+            inner.putAll(listOf(follows, article, other, newer, card).map { it.toDoc() })
+            val deletion =
+                DeletionRequestEvent(
+                    id(),
+                    alice,
+                    2_000L,
+                    arrayOf(arrayOf("a", "3:$alice:"), arrayOf("a", "30023:$alice:post"), arrayOf("a", "30023:$alice:post2"), arrayOf("a", "30382:$alice:${"b".repeat(64)}")),
+                    "",
+                    "",
+                )
+
+            Deletions(recording, relay = null, sweepPage = 100).applyDeletion(deletion)
+
+            assertEquals(setOf(follows.id, article.id, card.id), removed.mapTo(HashSet()) { it.id }, "the deleted addresses' versions up to the deletion, and no other")
+            assertEquals(setOf(other.id, newer.id), inner.search(EventQuery()).mapTo(HashSet()) { it.id })
+            assertEquals(listOf(listOf(30382)), read.map { it.kinds }, "only the card is read as a document: $read")
+            assertEquals(card.tags.map { it.toList() }, removed.single { it.id == card.id }.tags, "and handed over whole, for the projection to react to")
+            val stub = removed.single { it.id == article.id }
+            assertEquals(listOf(30023, alice, alice, 1_000L, "post"), listOf(stub.kind, stub.pubkey, stub.owner, stub.createdAt, stub.dTagOrEmpty()), "a stub carries what removeDocs reads")
+        }
 }
