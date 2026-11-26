@@ -47,6 +47,15 @@ import javax.xml.transform.stream.StreamResult
  * clients it wants to trace) sets [ACCESS_LOG_ENV] to `default`, Vespa's own
  * log. Hence [ACCESS_LOG_ENV] rather than a fork of services.xml.
  *
+ * SWITCHING IT IS A LIVE RECONFIGURATION, and it is a deploy. Measured on Vespa 8.763,
+ * deploying `disabled` over `default` and back: `configChangeActions` empty both ways (no
+ * restart, refeed or reindex), and not one of 3,050 and 3,578 queries sent across the two
+ * deploys failed. But the package differs, so a store
+ * that deploys if changed redeploys once on its first boot after the default moved, wherever
+ * [ACCESS_LOG_ENV] was unset. And every process deploying to one Vespa must agree on the
+ * setting: two that differ (a relay and its sync process upgraded one at a time, or with the
+ * variable set on one only) each redeploy the other's package on every boot.
+ *
  * And one PROTOTYPE topology choice: the author-shard count ([zipBytes]'s `authorShards`) splits the content cluster into several,
  * by author, each holding its authors' events and reputation documents ([shardContent]).
  */

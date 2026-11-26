@@ -1817,6 +1817,21 @@ change: a non-blocking HTTP/2 client, an event that carries its JSON escaped, a 
 reply. A REQ already costs one Vespa query here (1.01 per REQ measured), so fewer
 queries per REQ only pays for REQs with several filters.
 
+A review of the decoder then widened it and tightened it (2026-11-26). It now reads the
+`idtimetag` summary's `tag_index` and a ranked search's `matchfeatures` (as the JSON slice it
+is, through kotlinx, so the object is kotlinx's), so the id walk's d-tag pages and NIP-50
+searches no longer fall back; a page past `STRING_DECODE_MAX_BYTES` is split into hits at the
+byte level and each decoded on its own (`FastSearchDecoder.decodeStream`), so no String larger
+than one hit is built and the largest pages are covered too. Keys are matched on their length
+first, the escaped-string buffer is sized to the string, and an unranked `0.0` relevance is
+taken without a parse. Measured against the first version, seven alternated rounds: 2,570 vs
+2,545 REQ/s and 411 vs 417 us of relay CPU per REQ in the last four, within the rounds' own
+spread (2,450-2,784): no measurable change on this `nip01` workload, which none of the widened
+shapes is part of. `FastSearchDecoderTest` now runs both entries on every case, against
+kotlinx's string and stream decoders, and includes answers captured from Vespa: it writes an
+emoji as an escaped surrogate pair (`\uD83D\uDE00`) and CJK raw, which the generated cases had
+not.
+
 ### Small batches take the bulk path (2026-11-23)
 
 `NostrSemanticsStore.batchInsert` sent batches under `BULK_MIN` (16) through the
