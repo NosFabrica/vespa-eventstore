@@ -20,7 +20,9 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.client
 
+import com.nosfabrica.vespa.eventstore.engine.WriterLockHeld
 import com.sun.management.HotSpotDiagnosticMXBean
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.DeserializationStrategy
@@ -58,7 +60,8 @@ import kotlin.coroutines.resumeWithException
  * prior knowledge (the only way Vespa serves h2c), no deadline on the wait for
  * an answer (with HTTP/2 PING liveness instead), an idle deadline on a body
  * once it has started ([bodyIdleTimeout]), and brief retries for transient
- * overload (5xx/429/IOException) so one failed page cannot kill a multi-hour walk.
+ * overload (5xx/429/IOException) so one failed page cannot kill a multi-hour walk —
+ * except under a store writer lock ([WriterLockHeld]), where [send] asks once.
  */
 internal class VespaHttp(
     /**
@@ -252,16 +255,25 @@ internal class VespaHttp(
                     .build(),
             ).await()
 
-    /** POST [body] to [url], retrying transient overload like [postJson]: a body written as it is sent. */
+    /**
+     * POST [body] to [url], retrying transient overload like [postJson]: a body written as it is sent.
+     * A non-null [callTimeout] bounds each attempt whole (OkHttp's call timeout: the wait for the
+     * headers and the body alike), for a caller whose handler is itself told how long to take
+     * (the batch feed, [VespaBatchFeed.CALL_BOUND]); past it the attempt fails as an
+     * [IOException], which [send] treats as any other transport failure. Null keeps this client's
+     * rule: no deadline on the wait for an answer.
+     */
     suspend fun post(
         url: String,
         body: RequestBody,
+        callTimeout: Duration? = null,
     ): HttpResp =
         send(
             request()
                 .url(url)
                 .post(body)
                 .build(),
+            callTimeout = callTimeout,
         )
 
     /** [post] to a url parsed once by the caller — the `/search/` path, which would otherwise parse its url per query. */
@@ -282,22 +294,36 @@ internal class VespaHttp(
      * transport [IOException]s (a body stalling past the read timeout is the
      * same overload arriving as an exception). Shared by every read path — one
      * 504/429 page must not abort a full-corpus walk.
+     *
+     * UNDER A WRITER LOCK, ONE ASK ([WriterLockHeld]), as the id walk does: the
+     * back-off (0.5 + 1 + 1.5 s) would be paid with every other writer queued
+     * behind this one, and the caller (a batch re-offered, an insert retried)
+     * already owns the retry. Measured without this rule (WriterLockRetryHoldTest,
+     * mock engine, two runs): a second writer waited 3,060-3,067 ms behind the
+     * first's 503 back-off on the batch-feed POST; with it, 59 ms. The answer is surfaced exactly as the
+     * last retry's is otherwise: a 5xx/429 returned, an [IOException] thrown.
+     * Unlocked callers (walks, reads, the projection drain) keep the retries.
      */
     private suspend fun send(
         req: Request,
         client: OkHttpClient = http,
+        callTimeout: Duration? = null,
     ): HttpResp {
+        val retries = if (currentCoroutineContext()[WriterLockHeld.Key] != null) 0 else QUERY_RETRIES
         var attempt = 0
         while (true) {
             val resp =
                 try {
-                    client.newCall(req).await()
+                    client
+                        .newCall(req)
+                        .apply { callTimeout?.let { timeout().timeout(it.toMillis(), TimeUnit.MILLISECONDS) } }
+                        .await()
                 } catch (e: IOException) {
-                    if (attempt++ >= QUERY_RETRIES) throw e
+                    if (attempt++ >= retries) throw e
                     delay(500L * attempt)
                     continue
                 }
-            if ((resp.statusCode() in 500..599 || resp.statusCode() == 429) && attempt++ < QUERY_RETRIES) {
+            if ((resp.statusCode() in 500..599 || resp.statusCode() == 429) && attempt++ < retries) {
                 delay(500L * attempt)
                 continue
             }
@@ -464,7 +490,7 @@ internal class VespaHttp(
         /** Concurrent engine requests, total and per host: equal, so the total binds however many endpoints there are. */
         const val MAX_CONCURRENT_REQUESTS = 1024
 
-        /** Brief 5xx retries per query (transient engine load-shedding, not correctness). */
+        /** Brief 5xx retries per query (transient engine load-shedding, not correctness); none under a writer lock ([send]). */
         const val QUERY_RETRIES = 3
 
         /** Visit read deadline; see [visitHttp]. */
