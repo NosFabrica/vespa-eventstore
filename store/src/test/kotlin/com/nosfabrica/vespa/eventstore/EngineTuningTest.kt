@@ -158,7 +158,15 @@ class EngineTuningTest {
         assertEquals(500, EngineTuning.DEFAULT_DEDUP_CHUNK)
         assertEquals(200, EngineTuning.DEFAULT_ID_FIRST_MAX_DIRECT_HITS)
         assertEquals(EngineTuning.VARIABLES.size, EngineTuning.VARIABLES.toSet().size, "each variable once")
-        assertEquals(29, EngineTuning.VARIABLES.size)
+        assertEquals(30, EngineTuning.VARIABLES.size)
+    }
+
+    @Test
+    fun `VESPA_LEAN_CHAIN is a switch, on unless turned off`() {
+        assertEquals(null, EngineTuning.fromEnv(emptyMap()).leanChain)
+        assertEquals(false, EngineTuning.fromEnv(mapOf("VESPA_LEAN_CHAIN" to "false")).leanChain)
+        assertEquals(true, EngineTuning.fromEnv(mapOf("VESPA_LEAN_CHAIN" to "1")).leanChain)
+        assertEquals(false, EngineTuning(leanChain = false).client().leanChain)
     }
 
     @Test

@@ -513,6 +513,9 @@ class MockVespaEngine(
     /** Every JSON `select` query this mock refused, as its request body. */
     val selectRequests = java.util.concurrent.CopyOnWriteArrayList<String>()
 
+    /** False answers a request naming a `searchChain` as a package without that chain does: 400, by Vespa's wording. */
+    @Volatile var knowsLeanChain = true
+
     /**
      * Serve recall hits with the id order REVERSED within each equal-created_at
      * group — the engine's single-key sort leaves tie order ARBITRARY, and the
@@ -781,7 +784,12 @@ class MockVespaEngine(
                 // the client tried `select` first.
                 if ("select" in json) {
                     selectRequests += json.toString()
-                    Reply(400, """{"root":{"errors":[{"code":4,"summary":"Invalid query parameter","message":"this mock does not take select queries"}]}}""")
+                    val chain = json["searchChain"]?.jsonPrimitive?.content
+                    if (chain != null && !knowsLeanChain) {
+                        Reply(400, """{"root":{"errors":[{"code":4,"summary":"Invalid query parameter","message":"No search chain named '$chain' was found"}]}}""")
+                    } else {
+                        Reply(400, """{"root":{"errors":[{"code":4,"summary":"Invalid query parameter","message":"this mock does not take select queries"}]}}""")
+                    }
                 } else {
                     search(json.mapValues { (_, v) -> v.jsonPrimitive.content })
                 }

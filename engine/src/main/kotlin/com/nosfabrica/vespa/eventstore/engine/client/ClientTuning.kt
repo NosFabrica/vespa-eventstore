@@ -64,6 +64,8 @@ class ClientTuning(
     val recencyMemory: Boolean? = null,
     /** `VESPA_SELECT_QUERIES`: send a text-free read as Vespa's JSON `select` instead of YQL. */
     val selectQueries: Boolean? = null,
+    /** `VESPA_LEAN_CHAIN`: send a `select` read on one content cluster through the package's lean search chain. */
+    val leanChain: Boolean? = null,
     /** `VESPA_BODY_EDGE`: PROTOTYPE, feed the body's edge n-grams. */
     val bodyEdgeFeed: Boolean? = null,
     /** `VESPA_ADDRESS_KEYED`: store replaceables under their NIP-01 address (engine-atomic supersession). */
@@ -125,6 +127,8 @@ class ClientTuning(
 
     internal fun selectQueriesOrEnv(): Boolean = selectQueries ?: envOn(SELECT_QUERIES) ?: true
 
+    internal fun leanChainOrEnv(): Boolean = leanChain ?: envOn(LEAN_CHAIN) ?: true
+
     /** Opt-IN, so only an explicit yes turns it on — the old parse, kept. */
     internal fun bodyEdgeFeedOrEnv(): Boolean = bodyEdgeFeed ?: env(BODY_EDGE)?.let { it == "1" || it.equals("true", ignoreCase = true) } ?: false
 
@@ -169,6 +173,7 @@ class ClientTuning(
         const val ID_FIRST_MAX_DIRECT_HITS = "VESPA_ID_FIRST_MAX_DIRECT_HITS"
         const val RECENCY_MEMORY = "VESPA_RECENCY_MEMORY"
         const val SELECT_QUERIES = "VESPA_SELECT_QUERIES"
+        const val LEAN_CHAIN = "VESPA_LEAN_CHAIN"
         const val BODY_EDGE = "VESPA_BODY_EDGE"
         const val ADDRESS_KEYED = "VESPA_ADDRESS_KEYED"
         const val UNBOUNDED_HITS = "VESPA_UNBOUNDED_HITS"

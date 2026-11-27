@@ -34,6 +34,7 @@ import com.nosfabrica.vespa.eventstore.engine.ScoredHit
 import com.nosfabrica.vespa.eventstore.engine.ServedDegraded
 import com.nosfabrica.vespa.eventstore.engine.VersionCensus
 import com.nosfabrica.vespa.eventstore.engine.WriterLockHeld
+import com.nosfabrica.vespa.eventstore.engine.app.VespaApp
 import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
@@ -193,6 +194,13 @@ class VespaEventIndex(
      * ([SchemaFallbacks.selectAvailable]).
      */
     private val selectQueries: Boolean = tuning.selectQueriesOrEnv(),
+    /**
+     * Whether a `select` read on a deployment of one content cluster names the package's lean search
+     * chain ([VespaApp.LEAN_CHAIN]), which skips federation and the searchers that only text
+     * queries need. `VESPA_LEAN_CHAIN=0` sends it on the default chain; a package without the chain
+     * parks it for a while ([SchemaFallbacks.leanChainAvailable]).
+     */
+    private val leanChain: Boolean = tuning.leanChainOrEnv(),
     /**
      * Whether [RecencyStrategy.SPECULATIVE] starts a read where the last read
      * of its shape found its page ([RecencyWindowMemory]); `VESPA_RECENCY_MEMORY=0`
@@ -3385,7 +3393,13 @@ class VespaEventIndex(
         val scoped = authorClusters.clustersFor(vq.authorFilter)
         if (scoped != null) authorClusters.verify()
         if (form != null) {
-            val resp = http.post(searchUrl(), requestBody(vq, hits, form, scoped))
+            // Only on one content cluster: the chain inherits `content`'s, so it reads that cluster alone.
+            val lean = leanChain && scoped == null && authorClusters.all.size == 1 && fallbacks.leanChainAvailable
+            var resp = http.post(searchUrl(), requestBody(vq, hits, form, scoped, lean))
+            if (lean && resp.statusCode() == 400 && resp.body().contains(SchemaFallbacks.NO_SEARCH_CHAIN)) {
+                if (fallbacks.markLeanChainRefused()) IngestStats.timed(LEAN_CHAIN_REFUSED_STAGE) { }
+                resp = http.post(searchUrl(), requestBody(vq, hits, form, scoped, false))
+            }
             if (resp.statusCode() != 400) {
                 require(resp.statusCode() < 400) { "vespa search ${resp.statusCode()}: ${resp.body().take(300)}" }
                 return resp
@@ -3400,12 +3414,16 @@ class VespaEventIndex(
         return resp
     }
 
-    /** One `/search/` request body for [vq]: the [form] when given, else its YQL; sent only to [scoped] clusters when named. */
+    /**
+     * One `/search/` request body for [vq]: the [form] when given, else its YQL; sent only to [scoped] clusters when named,
+     * and a [form] through the [lean] chain when asked.
+     */
     private fun requestBody(
         vq: VespaQuery,
         hits: Int,
         form: SelectForm?,
         scoped: List<String>?,
+        lean: Boolean = false,
     ): RequestBody {
         // Written into the socket as it is sent: an id or author recall's yql runs to hundreds of
         // kilobytes, and as a buffer, its string and its bytes it was three copies of that.
@@ -3438,6 +3456,7 @@ class VespaEventIndex(
                     }
                     sink.writeUtf8("},\"model.restrict\":\"event\"")
                     if (scoped != null) sink.writeUtf8(",\"model.sources\":").writeJsonString(scoped.joinToString(","))
+                    if (lean) sink.writeUtf8(",\"searchChain\":").writeJsonString(VespaApp.LEAN_CHAIN)
                     if (form.newestFirst) sink.writeUtf8(",\"sorting\":\"-created_at\"")
                     sink.writeUtf8(",\"hits\":").writeJsonString((form.limit ?: hits).toString())
                 }
@@ -3940,6 +3959,9 @@ class VespaEventIndex(
 
         /** Booked once each time a refused `select` query parks it and reads go as YQL for a while. */
         const val SELECT_REFUSED_STAGE = "query.select.refused"
+
+        /** Booked once each time a package without the lean chain parks it ([SchemaFallbacks.leanChainAvailable]). */
+        const val LEAN_CHAIN_REFUSED_STAGE = "query.leanchain.refused"
 
         /** The [IngestStats] stage under which each read eligible for id-first books the mode it took ([recallSummaries]). */
         const val FETCH_STAGE = "recency.fetch"

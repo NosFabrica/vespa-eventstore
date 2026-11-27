@@ -1003,6 +1003,52 @@ class VespaEventIndexTest {
         }
 
     /**
+     * A `select` READ GOES ON THE LEAN CHAIN, on one content cluster only. The chain inherits the
+     * cluster `content`'s, so a sharded deployment sends nothing on it; `VESPA_LEAN_CHAIN` off
+     * sends nothing on it either; and a YQL read never names it, since the chain has no YQL parser.
+     */
+    @Test
+    fun `a select read names the lean chain, unless sharded or switched off`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            seedStrategyCorpus(now)
+            val q = EventQuery(kinds = listOf(1), authors = listOf(BUSY), limit = 5, nowSecs = now)
+
+            fun lastSelect() = mock.selectRequests.last()
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE).use { it.search(q) }
+            assertTrue(lastSelect().contains("\"searchChain\":\"lean\""), lastSelect())
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE, leanChain = false).use { it.search(q) }
+            assertFalse(lastSelect().contains("searchChain"), "switched off: ${lastSelect()}")
+            // Unscoped (no authors), so nothing narrows it to one cluster: it must read both.
+            VespaEventIndex(mock.url, tuning = ClientTuning(authorShards = 2, recencyStrategy = RecencyStrategy.SPECULATIVE)).use { it.search(EventQuery(kinds = listOf(1), limit = 5, nowSecs = now)) }
+            assertFalse(lastSelect().contains("searchChain"), "two clusters: ${lastSelect()}")
+            assertTrue(mock.searchRequests.none { "searchChain" in it }, "no YQL read names it")
+        }
+
+    /**
+     * A PACKAGE WITHOUT THE LEAN CHAIN COSTS ONE REQUEST, as one without `select` does. Vespa
+     * answers 400 `No search chain named 'lean' was found` (an operator's own package, or one
+     * deployed before the chain); the read is sent again on the default chain and the chain is
+     * parked, so later reads do not name it, booked once.
+     */
+    @Test
+    fun `a package without the lean chain parks it and reads on`() =
+        runBlocking {
+            val now = System.currentTimeMillis() / 1000
+            seedStrategyCorpus(now)
+            mock.knowsLeanChain = false
+            val q = EventQuery(kinds = listOf(1), authors = listOf(BUSY), limit = 5, nowSecs = now)
+            val parkedBefore = IngestStats.snapshot()[VespaEventIndex.LEAN_CHAIN_REFUSED_STAGE]?.calls ?: 0L
+            VespaEventIndex(mock.url, recencyStrategy = RecencyStrategy.SPECULATIVE).use { index ->
+                assertEquals((1..5).map { now - it }, index.search(q).map { it.createdAt }, "the read is answered")
+                assertEquals(2, mock.selectRequests.size, "once on the chain, once without it, then YQL (this mock takes no select)")
+                assertTrue(mock.selectRequests[0].contains("searchChain"))
+                assertFalse(mock.selectRequests[1].contains("searchChain"))
+            }
+            assertEquals(parkedBefore + 1, IngestStats.snapshot()[VespaEventIndex.LEAN_CHAIN_REFUSED_STAGE]?.calls ?: 0L)
+        }
+
+    /**
      * AN ENGINE THAT REFUSES `select` COSTS ONE REQUEST. A text-free read goes as Vespa's JSON
      * `select` first; refused with a 400 (this mock, like an engine predating `select.fields`),
      * the same query is asked as YQL at once, served, and every later read goes as YQL while

@@ -82,6 +82,28 @@ class VespaAppTest {
 
     private fun Element.child(tag: String): Element? = getElementsByTagName(tag).let { if (it.length == 0) null else it.item(0) as Element }
 
+    /**
+     * The chain the client names on a `select` read ([VespaApp.LEAN_CHAIN]) is the one the package
+     * defines, inheriting the content cluster's own chain (so no federation), and it keeps the
+     * searchers a text-free read needs: without GroupingExecutor every page came back in another order.
+     */
+    @Test
+    fun `the shipped package defines the lean chain the client names`() {
+        val chains = parse(entry("services.xml")).getElementsByTagName("chain")
+        val lean = (0 until chains.length).map { chains.item(it) as Element }.single { it.getAttribute("id") == VespaApp.LEAN_CHAIN }
+        assertEquals("content", lean.getAttribute("inherits"))
+        val excluded =
+            lean
+                .getAttribute("excludes")
+                .split(Regex("\\s+"))
+                .filter { it.isNotBlank() }
+                .toSet()
+        assertEquals(15, excluded.size, "the text-only searchers: $excluded")
+        for (kept in listOf("GroupingExecutor", "GroupingValidator", "ClusterSearcher", "SortingDegrader", "ValidateSortingSearcher", "QueryValidator")) {
+            assertTrue(excluded.none { it.endsWith(".$kept") }, "$kept stays in the lean chain")
+        }
+    }
+
     @Test
     fun `the shipped package leaves the access log to Vespa`() {
         // Configuring an access log at all obliges the package to restate
