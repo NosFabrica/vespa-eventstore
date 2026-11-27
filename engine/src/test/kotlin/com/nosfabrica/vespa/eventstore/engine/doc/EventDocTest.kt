@@ -66,6 +66,29 @@ class EventDocTest {
         assertEquals(doc, EventDoc.fromSummary(doc.indexFields()))
     }
 
+    /**
+     * A hit's stored `tags` string reads back through Quartz's Kite reader exactly as kotlinx's JSON
+     * tree read it, for everything the store's writer ([EventDoc.tagsJson]) and kotlinx's own
+     * encoder put in that field: escapes, control characters, line separators, lone surrogates,
+     * emoji, empty values and empty tags.
+     */
+    @Test
+    fun `stored tags read back as kotlinx read them`() {
+        val pieces = listOf("a", "nostr", " ", "\"", "\\", "/", "\n", "\r", "\t", "\b", "\u000C", "\u0000", "\u001F", "\u007F", "é", "世界", "😀", "\uD83D", "\uDE00", " ", "​", "﻿", "[\"p\",\"x\"]", "}", ",")
+        val rnd = kotlin.random.Random(5)
+
+        fun text() = buildString { repeat(rnd.nextInt(6)) { append(pieces[rnd.nextInt(pieces.size)]) } }
+
+        fun kotlinxTags(json: String) = Json.parseToJsonElement(json).jsonArray.map { row -> row.jsonArray.map { it.jsonPrimitive.content } }
+        repeat(2_000) {
+            val tags = List(rnd.nextInt(8)) { List(rnd.nextInt(5)) { text() } }
+            val stored = doc.copy(tags = tags).tagsJson()
+            assertEquals(kotlinxTags(stored), EventDoc.tagsFromJson(stored), stored)
+            val encoded = Json.encodeToString(tags)
+            assertEquals(kotlinxTags(encoded), EventDoc.tagsFromJson(encoded), encoded)
+        }
+    }
+
     @Test
     fun `summary parses an unsigned rumor whose empty sig Vespa omitted`() {
         // A rumor (NIP-59 inner event / draft) is stored with sig == "". Real Vespa

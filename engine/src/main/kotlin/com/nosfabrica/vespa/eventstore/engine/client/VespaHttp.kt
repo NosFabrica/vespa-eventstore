@@ -340,14 +340,15 @@ internal class VespaHttp(
 
         /**
          * The payload as a search answer: [FastSearchDecoder] where it reads the shape, else
-         * kotlinx on the same payload, exactly as [decode] reads it. A payload past
-         * [STRING_DECODE_MAX_BYTES] is never one String: the hand decoder reads it a hit at a time
-         * ([FastSearchDecoder.decodeStream]), and kotlinx's fallback streams it as [decode] does.
+         * kotlinx on the same text. A payload past [STRING_DECODE_MAX_BYTES] is never one String,
+         * and kotlinx's stream decoder reads it ([decode]): splitting it into hits a byte at a time
+         * and hand-decoding each was 14x slower on a page of 500 gift wraps (1 MB: 23.9 ms against
+         * 1.7 ms), and still 1.4x once it copied hits in bulk and skipped string bodies, the strict
+         * UTF-8 decode of each hit being the part kotlinx's stream does not pay. Through the relay
+         * that was every DM and Concord page: 11-23% fewer reads a second.
          */
         fun decodeSearch(): SearchEnvelope {
-            if (payload.size > STRING_DECODE_MAX_BYTES) {
-                return FastSearchDecoder.decodeStream(payload.clone().inputStream()) ?: decode(VESPA_JSON, SearchEnvelope.serializer())
-            }
+            if (payload.size > STRING_DECODE_MAX_BYTES) return decode(VESPA_JSON, SearchEnvelope.serializer())
             val text = payload.clone().readUtf8()
             return FastSearchDecoder.decode(text) ?: VESPA_JSON.decodeFromString(SearchEnvelope.serializer(), text)
         }

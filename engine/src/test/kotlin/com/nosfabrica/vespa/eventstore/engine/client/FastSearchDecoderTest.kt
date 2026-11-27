@@ -20,15 +20,12 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.client
 
-import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.decodeFromStream
-import java.io.ByteArrayInputStream
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -39,11 +36,9 @@ import kotlin.test.fail
 
 /**
  * [FastSearchDecoder] answers what kotlinx answers, or nothing. Every response here is decoded
- * both ways, and through both of the hand decoder's entries: [FastSearchDecoder.decode] on the
- * text, held to kotlinx's `decodeFromString`, and [FastSearchDecoder.decodeStream] on its UTF-8
- * bytes, held to kotlinx's `decodeFromStream` (the two fallbacks `VespaHttp.decodeSearch` uses).
- * Where the hand decoder returns a value it must be kotlinx's, field for field; where kotlinx
- * throws, the hand decoder must not return one.
+ * both ways: [FastSearchDecoder.decode] on the text, held to kotlinx's `decodeFromString` (the
+ * fallback `VespaHttp.decodeSearch` uses). Where the hand decoder returns a value it must be
+ * kotlinx's, field for field; where kotlinx throws, the hand decoder must not return one.
  */
 class FastSearchDecoderTest {
     /** Every field the callers read, rendered so two envelopes compare as text. */
@@ -72,19 +67,10 @@ class FastSearchDecoderTest {
 
     private fun kotlinx(text: String): SearchEnvelope = VESPA_JSON.decodeFromString(SearchEnvelope.serializer(), text)
 
-    @OptIn(ExperimentalSerializationApi::class)
-    private fun kotlinxStream(bytes: ByteArray): SearchEnvelope = VESPA_JSON.decodeFromStream(SearchEnvelope.serializer(), ByteArrayInputStream(bytes))
-
-    private fun split(bytes: ByteArray): SearchEnvelope? = FastSearchDecoder.decodeStream(ByteArrayInputStream(bytes))
-
-    /** Both entries read [text], and each answers what its kotlinx fallback answers. */
+    /** The hand decoder reads [text], and answers what kotlinx answers. */
     private fun assertSame(text: String) {
         val fast = assertNotNull(FastSearchDecoder.decode(text), "the hand decoder reads this shape:\n$text")
         assertEquals(kotlinx(text).canon(), fast.canon(), text)
-        // The bytes a large payload arrives as (a lone surrogate written as `?`, as the wire carries it).
-        val bytes = text.toByteArray(Charsets.UTF_8)
-        val split = assertNotNull(split(bytes), "the hand decoder reads this shape a hit at a time too:\n$text")
-        assertEquals(kotlinxStream(bytes).canon(), split.canon(), text)
     }
 
     // ---- generated responses ---------------------------------------------------
@@ -229,9 +215,6 @@ class FastSearchDecoderTest {
             val fast = FastSearchDecoder.decode(cut)
             val slow = runCatching { kotlinx(cut) }
             if (fast != null) assertEquals(slow.getOrThrow().canon(), fast.canon(), "a value from a cut response must be kotlinx's: $cut")
-            val bytes = cut.toByteArray(Charsets.UTF_8)
-            val split = split(bytes)
-            if (split != null) assertEquals(runCatching { kotlinxStream(bytes) }.getOrThrow().canon(), split.canon(), "a value from a cut payload must be kotlinx's: $cut")
         }
     }
 
@@ -270,17 +253,6 @@ class FastSearchDecoderTest {
         }
     }
 
-    /** A page past `STRING_DECODE_MAX_BYTES` (~1.4 MB here): [FastSearchDecoder.decodeStream] reads it a hit at a time, as kotlinx's stream does. */
-    @Test
-    fun `a page too large for one String decodes a hit at a time`() {
-        val rnd = Random(11)
-        val hits = JsonArray(List(3_000) { rnd.hit() })
-        val big = JsonObject(mapOf("root" to JsonObject(mapOf("fields" to JsonObject(mapOf("totalCount" to JsonPrimitive(3_000))), "children" to hits)))).toString()
-        assertTrue(big.length > 1_000_000, "a large page: ${big.length}")
-        assertSame(big)
-        assertEquals(3_000, split(big.toByteArray(Charsets.UTF_8))!!.root.children.size)
-    }
-
     /** Each of these is a shape kotlinx reads differently, or decides alone: the hand decoder hands it over. */
     @Test
     fun `what the hand decoder does not read it leaves to kotlinx`() {
@@ -309,9 +281,7 @@ class FastSearchDecoderTest {
             )
         for ((what, text) in handedOver) {
             assertNull(FastSearchDecoder.decode(text), "$what goes to kotlinx: $text")
-            assertNull(split(text.toByteArray(Charsets.UTF_8)), "$what goes to kotlinx a hit at a time too: $text")
         }
-        assertNull(split(byteArrayOf('{'.code.toByte(), '"'.code.toByte(), 0xC3.toByte(), '"'.code.toByte(), ':'.code.toByte(), '1'.code.toByte(), '}'.code.toByte())), "malformed UTF-8 is kotlinx's to replace")
     }
 
     /** kotlinx keeps a raw control character inside a string (it is not JSON, but it reads it); so does the hand decoder. */

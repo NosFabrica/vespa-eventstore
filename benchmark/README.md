@@ -1908,6 +1908,46 @@ kotlinx's string and stream decoders, and includes answers captured from Vespa: 
 emoji as an escaped surrogate pair (`\uD83D\uDE00`) and CJK raw, which the generated cases had
 not.
 
+**Large pages go back to kotlinx (2026-11-26).** The byte-level split of a page past
+`STRING_DECODE_MAX_BYTES` was never measured: the `nip01` workload's pages are small. Through the
+relay it was every DM and Concord page, whose events carry kilobytes of ciphertext: two bench runs
+each of vespa-relay 74b0082e against a13c2483 read DM inboxes 11% slower, DM catch-up 16%,
+Concord pages 13% and Concord paging 23%, beyond each run pair's own spread (2-8%), and 74b0082e
+built against the previous store pin read them at a13c2483's rates. Timed on its own
+(one hit per gift wrap, 1,600 chars of base64 content):
+
+| page | split a hit at a time | kotlinx stream |
+|---|---:|---:|
+| 100 gift wraps, 208 KB | 5.2 ms | 0.35 ms |
+| 500 gift wraps, 1 MB | 23.9 ms | 1.7 ms |
+| 2,000 small events, 1.4 MB | 34.6 ms | 3.2 ms |
+
+Each byte went through a synchronized `ByteArrayOutputStream.write`. Copying hits in bulk and
+skipping string bodies brought the 1 MB page to 1.9 ms, still 1.4x kotlinx's stream, since each
+hit's strict UTF-8 decode is a cost the stream does not pay. So a large page is kotlinx's again
+and the split is gone; a page under the threshold keeps the hand decoder, where it wins.
+
+A hit's `tags` string, the one field its summary still parses, is read by Quartz's Kite reader
+(`EventDoc.tagsFromJson`) instead of a kotlinx JSON tree: a note's four tags 2.12 -> 0.34 us, a
+gift wrap's one 0.23 -> 0.07 us, a kind 3's 300 46 -> 15 us, escaped text 1.35 -> 0.63 us
+(`EventDocTest` holds it to kotlinx's answer on 4,000 generated tag lists). The relay's REQs read
+`tags` raw and never parse it; this is the typed path (search, sync, hydrate, version reads).
+
+Through the relay, the same bench (vespa-relay 74b0082e built against this store, one run, against
+the two runs each above), requests per second:
+
+| workload | a13c2483 | 74b0082e | 74b0082e, this store |
+|---|---:|---:|---:|
+| DM inbox | 142.8 | 127.1 | 151.0 |
+| DM catch-up | 231.2 | 194.3 | 236.2 |
+| DM ids | 175.5 | 162.2 | 206.9 |
+| Concord page | 169.0 | 146.3 | 173.4 |
+| Concord paging | 74.0 | 56.8 | 77.2 |
+
+Over all 24 workloads, +12.7% against 74b0082e on its pinned store and +6.8% against a13c2483
+(geometric mean; one run, so a single workload's move under ~10% is within the bench's spread).
+The integration gate passed on the commit (66 tests, 0 failed, 2 skipped).
+
 ### Small batches take the bulk path (2026-11-23)
 
 `NostrSemanticsStore.batchInsert` sent batches under `BULK_MIN` (16) through the

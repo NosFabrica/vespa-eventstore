@@ -29,8 +29,6 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * The wire shapes Vespa's document/search/visit APIs answer with, decoded as
@@ -544,7 +542,7 @@ internal class VespaSummary(
             pubkey = pubkey,
             createdAt = createdAt,
             kind = kind,
-            tags = Json.parseToJsonElement(tags).jsonArray.map { row -> row.jsonArray.map { it.jsonPrimitive.content } },
+            tags = EventDoc.tagsFromJson(tags),
             content = content,
             sig = sig,
             owner = owner ?: pubkey,
