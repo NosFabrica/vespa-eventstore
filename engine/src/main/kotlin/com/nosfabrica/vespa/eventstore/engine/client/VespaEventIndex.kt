@@ -507,12 +507,30 @@ class VespaEventIndex(
             ?.toDoc()
     }
 
-    private fun putOp(doc: EventDoc) =
-        feed.client.put(
-            DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, docIdOf(doc)),
-            doc.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge(), includeStem = fallbacks.stemFieldsAvailable),
-            feedParams(),
-        )
+    private fun putOp(
+        doc: EventDoc,
+        params: OperationParameters = feedParams(),
+    ) = feed.client.put(
+        DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, docIdOf(doc)),
+        doc.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge(), includeStem = fallbacks.stemFieldsAvailable),
+        params,
+    )
+
+    /**
+     * The feed parameters for the documents a batch path that was TRIED handed back ([putAll],
+     * [putAllIfStored]; not while it is parked, when the feed client is the write path itself).
+     * Unlocked, [feedParams]. Under a writer lock ([WriterLockHeld]),
+     * [LOCKED_FALLBACK_TIMEOUT] instead of [FEED_TIMEOUT]: the feed client retries an operation
+     * until its deadline, so 30 s there was a retry loop of 30 s with every other writer queued
+     * behind it, after a batch that had already failed. Still a fallback and not a refusal: the
+     * handler hands back what a healthy feed client stores in milliseconds (a body the schema
+     * refuses, a 503 from one container, a handler 404'd by this very call), and the feed client is where
+     * the schema-fallback net lives. Past the deadline the put throws like any refused feed
+     * operation, the commit fails whole (every event in it answered as the store's failure, which
+     * the relay answers `error:` and the client re-offers), and a put the engine did apply after
+     * all is a duplicate on that re-offer.
+     */
+    private suspend fun fallbackParams(): OperationParameters = if (currentCoroutineContext()[WriterLockHeld.Key] != null) OperationParameters.empty().timeout(LOCKED_FALLBACK_TIMEOUT) else feedParams()
 
     /** Whether a put feeds `search_text_edge` now: asked for, and not refused by the serving schema. */
     private fun feedsEdge(): Boolean = bodyEdgeFeed && fallbacks.bodyEdgeAvailable
@@ -540,6 +558,7 @@ class VespaEventIndex(
     private suspend fun awaitPuts(
         docs: List<EventDoc>,
         ops: List<CompletableFuture<Result>>,
+        params: OperationParameters = feedParams(),
     ) {
         var refused: Throwable? = null
         for (op in ops) {
@@ -559,7 +578,7 @@ class VespaEventIndex(
         // one flag for good.
         var attempt = 0
         while (true) {
-            val retry = feed.enqueueAll(docs, ::putOp)
+            val retry = feed.enqueueAll(docs) { putOp(it, params) }
             try {
                 retry.forEach { it.await() }
                 return
@@ -679,6 +698,11 @@ class VespaEventIndex(
         // A lone document too: the batch handler answers a feed block at once (EngineRefusesWrites),
         // where the feed client retries each 507 before failing, which held a single publish for
         // seconds and then answered it as an event the store could not take.
+        // What the batch path handed back goes under [fallbackParams]: under a writer lock its
+        // deadline is short, so a failed batch fails the commit fast instead of waiting out the
+        // feed client's retries. With batching off, or parked (no handler to try), the feed
+        // client is the write path itself, and keeps [FEED_TIMEOUT].
+        val params = if (batchFeed?.available == true) fallbackParams() else feedParams()
         val rest =
             batchFeed?.let { batches ->
                 batchWrite {
@@ -689,7 +713,7 @@ class VespaEventIndex(
                     )
                 }
             } ?: docs
-        rest.chunked(FEED_CHUNK).forEach { chunk -> awaitPuts(chunk, feed.enqueueAll(chunk, ::putOp)) }
+        rest.chunked(FEED_CHUNK).forEach { chunk -> awaitPuts(chunk, feed.enqueueAll(chunk) { putOp(it, params) }, params) }
     }
 
     /**
@@ -771,6 +795,8 @@ class VespaEventIndex(
         // so anything else is simply not stored.
         val eligible = docs.filter { Hex.isHexKey(it.id) }
         val written = HashSet<String>()
+        // Handed back by the batch path: [fallbackParams], as in [putAll]. Otherwise unchanged.
+        val params = if (batchFeed?.available == true && eligible.size > 1) fallbackParams() else feedParams()
         val rest =
             batchFeed?.takeIf { eligible.size > 1 }?.let { batches ->
                 val (refused, unconfirmed) =
@@ -792,7 +818,7 @@ class VespaEventIndex(
             while (pending.isNotEmpty()) {
                 // Handed over through enqueueAll like every feed operation: past the client's
                 // throttle window a hand-over sleeps on its thread, which was the caller's here.
-                val ops = feed.enqueueAll(pending, ::ifStoredOp)
+                val ops = feed.enqueueAll(pending) { ifStoredOp(it, params) }
                 val refused = ArrayList<EventDoc>()
                 var failure: Throwable? = null
                 // Every op is awaited before anything is thrown: they are in
@@ -819,12 +845,14 @@ class VespaEventIndex(
         return written
     }
 
-    private fun ifStoredOp(doc: EventDoc) =
-        feed.client.put(
-            DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, docIdOf(doc)),
-            doc.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge(), includeStem = fallbacks.stemFieldsAvailable),
-            feedParams().testAndSetCondition(storedCondition(doc)),
-        )
+    private fun ifStoredOp(
+        doc: EventDoc,
+        params: OperationParameters = feedParams(),
+    ) = feed.client.put(
+        DocumentId.of(EVENT_NAMESPACE, EVENT_DOCTYPE, docIdOf(doc)),
+        doc.feedJson(includeNear = fallbacks.nearFieldsAvailable, includeEdge = feedsEdge(), includeStem = fallbacks.stemFieldsAvailable),
+        params.testAndSetCondition(storedCondition(doc)),
+    )
 
     /** [putAllIfStored]'s condition: the document at [doc]'s docid holds THIS event. [doc]'s id is 64 hex by then. */
     private fun storedCondition(doc: EventDoc): String = "event.id == \"${doc.id}\""
@@ -4058,6 +4086,21 @@ class VespaEventIndex(
 
         /** Every document write's deadline at the engine, the feed client's and [putDirect]'s alike. */
         val FEED_TIMEOUT: Duration = Duration.ofSeconds(30)
+
+        /**
+         * [FEED_TIMEOUT] for the feed client's re-put of what the batch path handed back, under a
+         * writer lock ([fallbackParams]). The batch's own deadline ([VespaBatchFeed.TIMEOUT]), on
+         * the same reasoning: a healthy feed-client put takes milliseconds (~56 ms on average
+         * inside a 1,000-event burst, benchmark/README.md's ingest stage profile), so five
+         * seconds without an answer is an engine the caller's re-offer should wait out, not the
+         * lock. A [putAll] under the lock now waits about [VespaBatchFeed.CALL_BOUND] at most per
+         * wave of concurrent batches, then this per [FEED_CHUNK] of the re-put (measured on the
+         * mock with every put held: 5,050 ms, VespaBatchFeedTest), where each batch could take four
+         * tries of up to the handler's 35 s with three back-offs, and the re-put 30 s more. A
+         * re-put that takes longer than this — a large chunk queued behind the feed client's
+         * throttle on a slow engine — fails the commit too, for the caller to re-offer.
+         */
+        val LOCKED_FALLBACK_TIMEOUT: Duration = Duration.ofSeconds(5)
 
         /**
          * How long past [FEED_TIMEOUT] a [putDirect] waits for the engine's answer before it

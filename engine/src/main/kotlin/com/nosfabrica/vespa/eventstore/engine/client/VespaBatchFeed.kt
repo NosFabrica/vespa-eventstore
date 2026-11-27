@@ -30,6 +30,8 @@ import kotlinx.serialization.Serializable
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody
 import okio.BufferedSink
+import java.math.BigDecimal
+import java.time.Duration
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -68,7 +70,14 @@ internal class VespaBatchFeed(
      * times are only ever subtracted, never compared to a sentinel.
      */
     private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
+    /** The `timeout` each batch names to the handler; see [TIMEOUT]. A test passes milliseconds. */
+    private val timeout: Duration = TIMEOUT,
+    /** How long this client waits for one batch's answer, headers and body; see [CALL_BOUND]. */
+    private val callBound: Duration = CALL_BOUND,
 ) {
+    /** The handler's url with [timeout] named, in the seconds form `BatchFeedHandler.timeout` parses (`5s`, `0.2s`). */
+    private fun url(): String = endpoint() + PATH + "?timeout=" + BigDecimal.valueOf(timeout.toMillis(), 3).stripTrailingZeros().toPlainString() + "s"
+
     /** When the batch path may be tried again, on [clock]; null until a 404 parks it. */
     @Volatile private var parkedUntil: Long? = null
 
@@ -180,7 +189,9 @@ internal class VespaBatchFeed(
     ): List<Pair<T, String?>> {
         val unanswered = { batch.map { it to null } }
         if (!available) return unanswered()
-        val resp = runCatching { http.post(endpoint() + PATH, request(batch)) }.getOrNull() ?: return unanswered()
+        // Unanswered past [callBound] is an IOException, so the batch is handed back like any
+        // other that failed whole; under a writer lock that is one try ([VespaHttp.send]).
+        val resp = runCatching { http.post(url(), request(batch), callTimeout = callBound) }.getOrNull() ?: return unanswered()
         when (resp.statusCode()) {
             200 -> {}
 
@@ -304,5 +315,34 @@ internal class VespaBatchFeed(
 
         /** The handler's outcome for an operation refused because a content node is out of disk or memory. */
         const val INSUFFICIENT_STORAGE = "INSUFFICIENT_STORAGE"
+
+        /**
+         * The `timeout` a batch names, which `BatchFeedHandler` passes to every operation in it as
+         * their deadline. Without one it waits its `DEFAULT_TIMEOUT`, 30 s (plus 5 s of slack
+         * before its 504), while the caller holds the store's writer lock and every other writer
+         * waits ([WriterLockHeld][com.nosfabrica.vespa.eventstore.engine.WriterLockHeld]).
+         *
+         * Five seconds: an order of magnitude over the slowest healthy batch writes measured
+         * (benchmark/README.md: the `write` stage of a 1,000-event `batchInsert` ~0.5 s on the
+         * 400k ingest profile, 255 ms for a 1,000-card batch, a 1,000-document reindex page's
+         * batched puts p95 153-180 ms; a small relay batch ~7 ms), and a sixth of the handler's
+         * default. What it costs: an engine slower than that for a whole batch (an overloaded
+         * single node measured p50 15 s per batch at 32 writers, before the batch handler) has the
+         * operations it did not answer re-put through the feed client instead, which under a
+         * writer lock is bounded too ([VespaEventIndex.putAll]). Not an operator setting, like
+         * [VespaEventIndex.FEED_TIMEOUT] beside it: it is a bound on a failure, not a tuning.
+         */
+        val TIMEOUT: Duration = Duration.ofSeconds(5)
+
+        /** `BatchFeedHandler`'s wait past the deadline for a reply already on its way, before it answers 504. */
+        val HANDLER_SLACK: Duration = Duration.ofSeconds(5)
+
+        /**
+         * How long the client waits for a batch's answer: the handler's whole wait ([TIMEOUT] plus
+         * [HANDLER_SLACK]) and a second for the answer's way back. This client has no read
+         * deadline ([VespaHttp]), so without it a handler that never answers (a container wedged,
+         * a connection whose PINGs still pass) held the writer lock for as long as it stayed silent.
+         */
+        val CALL_BOUND: Duration = TIMEOUT + HANDLER_SLACK + Duration.ofSeconds(1)
     }
 }

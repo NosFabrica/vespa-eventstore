@@ -34,24 +34,19 @@ import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.AfterTest
-import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * SUSPECTED DEFECT (reproduction, not a fix): a bulk `batchInsert` holds the store's writer lock
- * (`WriteLocks.writes`, stage `lock.ingest.hold`) across `VespaHttp.send()`'s retry back-off
- * (0.5 + 1 + 1.5 s for `QUERY_RETRIES = 3`) and across an unbounded wait on the batch-feed POST,
- * so one slow or failing engine answer stalls every other writer. `WriterLockHeld` is set around
- * the locked body, but only the id walk consults it; `send()` does not.
- *
- * Both tests assert the CORRECT behaviour and are expected to FAIL on the current code.
+ * A bulk `batchInsert` must not hold the store's writer lock (`WriteLocks.writes`, stage
+ * `lock.ingest.hold`) across `VespaHttp.send()`'s retry back-off (0.5 + 1 + 1.5 s for
+ * `QUERY_RETRIES = 3`) or across an unbounded wait on the batch-feed POST, or one slow or failing
+ * engine answer stalls every other writer. The fix: `send()` asks once under `WriterLockHeld`, and
+ * the batch-feed POST names a `timeout` (`VespaBatchFeed.TIMEOUT`) and bounds its own wait for the
+ * answer (`VespaBatchFeed.CALL_BOUND`). Both tests failed before it (a second writer waited ~3 s
+ * behind the first's 503 back-off; the batch-feed POST named no timeout).
  */
-// Reproduces a defect not fixed yet: both tests FAIL against db3b32a9 (a second writer waited ~3,060 ms
-// behind the first's 503 back-off; the batch-feed POST names no timeout). Ignored until the fix lands;
-// the fix's commit removes this annotation and must see both pass.
-@Ignore
 class WriterLockRetryHoldTest {
     private val mock = MockVespaEngine()
     private val index = VespaEventIndex(mock.url)
@@ -165,6 +160,21 @@ class WriterLockRetryHoldTest {
                 feedQueries.isNotEmpty() && feedQueries.all { it.orEmpty().split('&').any { p -> p.startsWith("timeout=") } },
                 "the batch-feed POST must name a timeout, so an unanswered batch cannot hold the writer lock for the handler's 30 s default per try: $measured",
             )
+            // Read as BatchFeedHandler.timeout reads it (seconds, an optional `s`): a value it could
+            // not parse would leave it on its 30 s default, the very wait the parameter exists to cut.
+            val named =
+                feedQueries.map { q ->
+                    q
+                        .orEmpty()
+                        .split('&')
+                        .first { it.startsWith("timeout=") }
+                        .removePrefix("timeout=")
+                }
+            val seconds = named.map { it.replace("s", "").toDoubleOrNull() }
+            assertTrue(
+                seconds.all { it != null && it > 0 && it < HANDLER_DEFAULT_TIMEOUT_S },
+                "the named timeout must parse as the handler reads it and be under its ${HANDLER_DEFAULT_TIMEOUT_S}s default: $named",
+            )
         }
 
     private companion object {
@@ -176,5 +186,8 @@ class WriterLockRetryHoldTest {
         const val UNBLOCKED_BOUND_MS = 1_000L
 
         const val HOLD_MS = 3_000L
+
+        /** `BatchFeedHandler.DEFAULT_TIMEOUT`, what a batch that names no timeout waits. */
+        const val HANDLER_DEFAULT_TIMEOUT_S = 30.0
     }
 }
