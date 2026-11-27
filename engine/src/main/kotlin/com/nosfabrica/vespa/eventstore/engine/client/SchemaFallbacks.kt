@@ -65,6 +65,12 @@ internal class SchemaFallbacks(
         const val SELECT_RETRY_AFTER_MS = 300_000L
 
         /**
+         * The query container's wording for a `searchChain` the package does not define —
+         * verbatim from Vespa 8.763: `No search chain named 'lean' was found`.
+         */
+        const val NO_SEARCH_CHAIN = "No search chain named"
+
+        /**
          * The YQL parser's wording for a column the serving schema lacks —
          * verbatim from Vespa 8: `Field 'name_near' does not exist.` The READ
          * side's anchor, and deliberately not [NOT_IN_DOCUMENT_TYPE]: the
@@ -134,6 +140,24 @@ internal class SchemaFallbacks(
         val current = selectParkedUntil.get()
         if (current != null && clock() - current < 0) return false
         return selectParkedUntil.compareAndSet(current, clock() + SELECT_RETRY_AFTER_MS)
+    }
+
+    /**
+     * Whether the package defines the `lean` search chain a `select` read is sent through
+     * (VespaEventIndex.queryBodyAsIs). One deployed by an operator (`AUTO_DEPLOY=false`) or before
+     * the chain existed answers 400 [NO_SEARCH_CHAIN]: the read is sent again on the default chain,
+     * and the chain is parked for [SELECT_RETRY_AFTER_MS], as `select` is, so a redeploy that adds
+     * it is picked up without a restart.
+     */
+    val leanChainAvailable: Boolean get() = leanChainParkedUntil.get()?.let { clock() - it >= 0 } ?: true
+
+    private val leanChainParkedUntil = AtomicReference<Long?>(null)
+
+    /** Parks the lean chain ([leanChainAvailable]); true for the one call that parked it. */
+    fun markLeanChainRefused(): Boolean {
+        val current = leanChainParkedUntil.get()
+        if (current != null && clock() - current < 0) return false
+        return leanChainParkedUntil.compareAndSet(current, clock() + SELECT_RETRY_AFTER_MS)
     }
 
     fun isMissingEventSummary(e: IllegalArgumentException): Boolean = e.message?.contains("400") == true && e.message?.contains(EventYql.SUMMARY_EVENT) == true
