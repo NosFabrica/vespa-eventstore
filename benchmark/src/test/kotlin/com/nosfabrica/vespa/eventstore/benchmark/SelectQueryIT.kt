@@ -54,6 +54,11 @@ import kotlin.test.assertTrue
  * is read by two clients identical but for `selectQueries`, under the default strategy and the
  * shipped match-phase one, and must return the same ids in the same order. The engine must
  * never refuse `select` (no `query.select.refused`), or the select client was reading YQL.
+ *
+ * And THE LEAN SEARCH CHAIN serves the page the default chain serves: the select client sends its
+ * reads on the package's `lean` chain (VespaApp.LEAN_CHAIN), which skips federation and the
+ * searchers only text needs, and a third client sends the same `select` on the default chain.
+ * The engine must never refuse the chain (no `query.leanchain.refused`).
  */
 @Tag("integration")
 class SelectQueryIT {
@@ -75,6 +80,7 @@ class SelectQueryIT {
                         VespaEventIndex(queryUrl, recencyStrategy = strategy, selectQueries = true) to
                             VespaEventIndex(queryUrl, recencyStrategy = strategy, selectQueries = false)
                     }
+                val defaultChain = strategies.associateWith { VespaEventIndex(queryUrl, recencyStrategy = it, selectQueries = true, leanChain = false) }
                 try {
                     runBlocking {
                         val now = System.currentTimeMillis() / 1000
@@ -126,6 +132,7 @@ class SelectQueryIT {
                             )
                         val gated = shapes.filter { it.limit != null }.map { it.copy(ranking = EventYql.RANK_RECENCY_GATED, observer = OBSERVER, rankKey = OBSERVER, followersKey = OBSERVER, minRank = 2.0) }
                         val refusedBefore = IngestStats.snapshot()[SELECT_REFUSED]?.calls ?: 0L
+                        val chainRefusedBefore = IngestStats.snapshot()[LEAN_CHAIN_REFUSED]?.calls ?: 0L
                         var gatedNonEmpty = 0
                         for ((strategy, pair) in clients) {
                             val (select, yql) = pair
@@ -135,6 +142,7 @@ class SelectQueryIT {
                                 val viaYql = yql.search(q).map { it.id }
                                 val viaSelect = select.search(q).map { it.id }
                                 assertEquals(viaYql, viaSelect, "$strategy: $q")
+                                assertEquals(viaSelect, defaultChain.getValue(strategy).search(q).map { it.id }, "$strategy, lean chain against the default one: $q")
                                 // Every ungated shape matches documents; a gated one may be empty
                                 // (only A and B are trusted above the floor), but not all of them.
                                 if (shape in shapes) assertTrue(viaYql.isNotEmpty(), "$strategy, an ungated shape matches documents: $q")
@@ -143,12 +151,14 @@ class SelectQueryIT {
                         }
                         assertTrue(gatedNonEmpty >= gated.size, "the gated shapes match documents too ($gatedNonEmpty non-empty)")
                         assertEquals(refusedBefore, IngestStats.snapshot()[SELECT_REFUSED]?.calls ?: 0L, "the engine took every select query")
+                        assertEquals(chainRefusedBefore, IngestStats.snapshot()[LEAN_CHAIN_REFUSED]?.calls ?: 0L, "the package defines the lean chain")
                     }
                 } finally {
                     clients.values.forEach { (a, b) ->
                         a.close()
                         b.close()
                     }
+                    defaultChain.values.forEach { it.close() }
                 }
             }
     }
@@ -188,6 +198,7 @@ class SelectQueryIT {
 
         /** VespaEventIndex.SELECT_REFUSED_STAGE, booked when the engine refuses a `select`. */
         const val SELECT_REFUSED = "query.select.refused"
+        const val LEAN_CHAIN_REFUSED = "query.leanchain.refused"
         val A = "a1".repeat(32)
         val B = "b2".repeat(32)
         val C = "c3".repeat(32)

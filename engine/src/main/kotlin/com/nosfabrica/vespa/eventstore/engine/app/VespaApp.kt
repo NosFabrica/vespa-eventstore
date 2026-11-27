@@ -79,6 +79,9 @@ object VespaApp {
      */
     val ACCESS_LOG_VALUES = setOf("default", "disabled")
 
+    /** The search chain services.xml defines for text-free `select` reads; see the comment there. */
+    const val LEAN_CHAIN = "lean"
+
     private const val SERVICES = "services.xml"
     private const val CONTAINER = "container"
     private const val ACCESSLOG = "accesslog"

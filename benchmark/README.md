@@ -1854,6 +1854,59 @@ renders every shape's where-node back to the YQL clause `build` writes;
 and requires the same ids in the same order. The unit tests' mock engine answers
 `select` as a refusing engine would, so they run on YQL as before.
 
+### The lean search chain (2026-11-27)
+
+With the YQL parse and the field filter gone (above), the query container was profiled again
+(JFR on `default/container.0`, 25 s under nostr-bench `req` at 200 clients through
+vespa-relay, 2,628 samples), each sample charged to the innermost searcher running:
+
+| where the container's CPU went | share |
+|---|---|
+| rendering the JSON | 22% |
+| `ClusterSearcher`: the query to proton, and the summary fill | 21% |
+| `FederationSearcher`, which copies every query (`cloneFederationQuery`) to fan it out to its one source | 13% |
+| the default chain's other searchers, each under 3% | ~15% |
+| jetty | 11% |
+| building the `Query` | 11% |
+
+Federation and most of those searchers do nothing for a text-free read: n-grams, CJK,
+stemming, normalizing, significance, literal boost, WAND, recall, booleans, predicates and
+the fuzzy, nearest-neighbour and same-element checks act on query text the read does not
+have. So services.xml defines a `lean` chain that inherits the content cluster's own chain
+(no federation) and excludes those searchers, and a `select` read on a deployment of one
+content cluster names it (`searchChain`, `VespaApp.LEAN_CHAIN`). YQL cannot use it: the
+YQL parser is in the default chain, and the lean one refuses YQL with a 400. A sharded
+deployment sends nothing on it, since it reads `content` alone. A package without it answers
+400 `No search chain named 'lean' was found`; the read is sent again on the default chain and
+the chain is parked for five minutes, as `select` is (`query.leanchain.refused`).
+`VESPA_LEAN_CHAIN=0` turns it off.
+
+Straight at Vespa, the 3,523 captured relay reads (as `select` with the language set)
+replayed with 32 clients, rounds rotated, CPU from `/proc`:
+
+| chain | container per query | queries/s |
+|---|---|---|
+| default | 782 / 745 / 738 µs | 2,291 / 2,434 / 2,443 |
+| `content`'s own (no federation) | 710 / 701 µs (−7%) | 2,398 / 2,430 |
+| `lean` | **649 / 657 / 646 µs (−14%)** | **2,582 / 2,576 / 2,622** |
+
+Through vespa-relay (`AUTO_DEPLOY=false`, the same package with a query profile sending
+every read on `lean` and without it, alternated, two rounds, nostr-bench `req --limit 10`):
+
+| | default chain | `lean` |
+|---|---|---|
+| REQ/s, 200 clients | 2,202 / 2,164 / 1,904 / 2,082 | **2,316 / 2,388 / 2,300 / 2,262 (+11%)** |
+| REQ/s, 1,000 clients | 2,115 / 2,042 / 2,017 / 2,177 | **2,305 / 2,238 / 2,251 / 2,257 (+8%)** |
+| query container CPU per REQ | 638–738 µs | **541–570 µs (−18%)** |
+
+The same ids in the same order on 300 captured reads through all three chains, and in
+`SelectQueryIT`, which now reads every shape on `lean` and on the default chain under both
+strategies. What it costs: Vespa's own query metrics (`StatisticsSearcher`, in the default
+chain) stop counting these reads; the store's cost ledger and the relay's pulse count them
+themselves. Tried and not kept: excluding the grouping searchers too. Every page came back
+in another order within its seconds, the content node's CPU per query rose by a quarter, and
+the container's did not fall.
+
 ### The relay's own CPU per REQ (2026-11-26)
 
 The query container is the largest consumer; the relay is next. Profiled the same

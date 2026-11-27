@@ -2,7 +2,44 @@
 <services version="1.0">
 
   <container id="default" version="1.0">
-    <search />
+    <search>
+      <!-- THE LEAN CHAIN, for the store's text-free `select` reads (engine client
+           VespaEventIndex.queryBodyAsIs, VESPA_LEAN_CHAIN), which are nearly every relay REQ.
+           It inherits the content cluster's own chain, so a read sent on it skips federation,
+           which copies every query to fan it out to its one source, and the searchers above it;
+           and it drops the searchers only text needs: n-grams, CJK, stemming, normalizing,
+           significance, literal boost, WAND, recall, booleans and predicates, the fuzzy,
+           nearest-neighbour and same-element checks, and the input check. Measured through the
+           relay on one 4-core box: the query container's CPU per REQ 677 -> 556 us (-18%), REQ/s
+           +8-11% (benchmark/README.md, "The lean search chain").
+
+           What it does NOT carry, and why nothing else may be sent on it:
+           - The YQL parser (MinimalQueryInserter): a YQL read is refused here, so only `select`
+             reads, parsed while the request is built, use it.
+           - Federation: it reads the cluster `content` alone, so the client sends nothing on it
+             once author shards split that cluster.
+           - The default chain's StatisticsSearcher: Vespa's own query metrics (queries,
+             query_latency, hits_per_query) stop counting these reads. The store's cost ledger and
+             the relay's pulse count queries themselves. VESPA_LEAN_CHAIN=0 counts them again.
+           The grouping searchers stay: without GroupingExecutor every page differed, even ones
+           that group nothing. -->
+      <chain id="lean" inherits="content"
+             excludes="com.yahoo.search.querytransform.NGramSearcher
+                com.yahoo.prelude.querytransform.CJKSearcher
+                com.yahoo.prelude.querytransform.LiteralBoostSearcher
+                com.yahoo.search.querytransform.WandSearcher
+                com.yahoo.prelude.querytransform.RecallSearcher
+                com.yahoo.search.searchers.ValidateNearestNeighborSearcher
+                com.yahoo.search.searchers.ValidateFuzzySearcher
+                com.yahoo.search.searchers.ValidateSameElementSearcher
+                com.yahoo.search.searchers.InputCheckingSearcher
+                com.yahoo.search.significance.SignificanceSearcher
+                com.yahoo.prelude.querytransform.StemmingSearcher
+                com.yahoo.prelude.querytransform.NormalizingSearcher
+                com.yahoo.search.querytransform.BooleanSearcher
+                com.yahoo.prelude.searcher.ValidatePredicateSearcher
+                com.yahoo.search.querytransform.DefaultPositionSearcher"/>
+    </search>
     <document-api />
     <!-- MANY puts per HTTP request, for the store's own writes (engine client VespaBatchFeed,
          VESPA_FEED_BATCH). /document/v1 takes one document per request, and on a warm engine
