@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.eventstore
 import com.nosfabrica.vespa.eventstore.engine.MockVespaEngine
 import com.nosfabrica.vespa.eventstore.engine.client.VespaEventIndex
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -177,8 +178,45 @@ class WriterLockRetryHoldTest {
             )
         }
 
+    /**
+     * A 429 is the document API's queue being full, an engine that is working: under the writer
+     * lock `send()` asks a FAILURE once, but a 429 is asked again after a short pause (50 + 100 +
+     * 150 ms) before it is surfaced. The per-event insert's duplicate probe is a locked
+     * `/document/v1` GET, so with every 429 surfaced on its first ask, one 429 on that probe
+     * failed the publish outright.
+     */
+    @Test
+    fun `a 429 on an insert's duplicate probe under the writer lock is asked again, not failed`() =
+        runBlocking<Unit> {
+            store.batchInsert(listOf(note(alice), note(alice))).forEach { assertEquals(IEventStore.InsertOutcome.Accepted, it) }
+
+            val probes = AtomicInteger()
+            val refused = AtomicInteger()
+            mock.answerWhere = { method, path, _ ->
+                if (method == "GET" && path.startsWith("/document/v1/")) {
+                    probes.incrementAndGet()
+                    if (refused.get() < PUSHBACKS) 429.also { refused.incrementAndGet() } else null
+                } else {
+                    null
+                }
+            }
+            val event = note(bob)
+            val started = System.nanoTime()
+            val failure = withTimeout(10_000) { runCatching { store.insert(event) }.exceptionOrNull() }
+            val ms = (System.nanoTime() - started) / 1_000_000
+            val measured = "insert took $ms ms; document GETs ${probes.get()}, of them answered 429 ${refused.get()}; failure $failure"
+            println("[WriterLockRetryHoldTest] $measured")
+            assertEquals(null, failure, "a 429 under the writer lock is pushback, not a failure of the commit: $measured")
+            assertEquals(PUSHBACKS, refused.get(), "fixture: the duplicate probe is a locked document GET, and met the 429s: $measured")
+            assertEquals(listOf(event.id), store.query<Event>(Filter(ids = listOf(event.id))).map { it.id }, "stored")
+            assertTrue(ms < UNBLOCKED_BOUND_MS, "the pauses stay short under the lock: $measured")
+        }
+
     private companion object {
         const val FEED_PATH = "/eventstore/v1/feed"
+
+        /** 429s answered before the probe is served: two, inside the three re-asks the lock allows. */
+        const val PUSHBACKS = 2
 
         /** `VespaHttp.QUERY_RETRIES` (internal to the engine module). */
         const val RETRIES = 3

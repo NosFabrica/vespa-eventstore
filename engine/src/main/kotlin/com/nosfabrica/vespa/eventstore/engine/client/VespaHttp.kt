@@ -61,7 +61,8 @@ import kotlin.coroutines.resumeWithException
  * an answer (with HTTP/2 PING liveness instead), an idle deadline on a body
  * once it has started ([bodyIdleTimeout]), and brief retries for transient
  * overload (5xx/429/IOException) so one failed page cannot kill a multi-hour walk —
- * except under a store writer lock ([WriterLockHeld]), where [send] asks once.
+ * except under a store writer lock ([WriterLockHeld]), where [send] asks a failure once and
+ * re-asks only a 429, briefly.
  */
 internal class VespaHttp(
     /**
@@ -295,21 +296,27 @@ internal class VespaHttp(
      * same overload arriving as an exception). Shared by every read path — one
      * 504/429 page must not abort a full-corpus walk.
      *
-     * UNDER A WRITER LOCK, ONE ASK ([WriterLockHeld]), as the id walk does: the
-     * back-off (0.5 + 1 + 1.5 s) would be paid with every other writer queued
-     * behind this one, and the caller (a batch re-offered, an insert retried)
-     * already owns the retry. Measured without this rule (WriterLockRetryHoldTest,
-     * mock engine, two runs): a second writer waited 3,060-3,067 ms behind the
-     * first's 503 back-off on the batch-feed POST; with it, 59 ms. The answer is surfaced exactly as the
-     * last retry's is otherwise: a 5xx/429 returned, an [IOException] thrown.
-     * Unlocked callers (walks, reads, the projection drain) keep the retries.
+     * UNDER A WRITER LOCK ([WriterLockHeld]), NO BACK-OFF FOR A FAILURE, as the id
+     * walk does: a 5xx or an [IOException] is asked once, since the back-off
+     * (0.5 + 1 + 1.5 s) would be paid with every other writer queued behind this
+     * one, and the caller (a batch re-offered, an insert retried) already owns the
+     * retry. Measured without this rule (WriterLockRetryHoldTest, mock engine, two
+     * runs): a second writer waited 3,060-3,067 ms behind the first's 503 back-off
+     * on the batch-feed POST; with it, 59 ms. A 429 is NOT that: it is the document
+     * API's queue being full, an engine that is working, and failing the whole
+     * commit on it (every locked read asks here: the insert's dup probe, `get`,
+     * `stubs`, the version reads) answered a healthy burst `error:`. So a 429 under
+     * the lock is asked again after [LOCKED_PUSHBACK_DELAYS_MS] (50 + 100 + 150 ms,
+     * 300 ms in all), then surfaced. The answer is surfaced exactly as the last
+     * retry's is otherwise: a 5xx/429 returned, an [IOException] thrown. Unlocked
+     * callers (walks, reads, the projection drain) keep [QUERY_RETRIES].
      */
     private suspend fun send(
         req: Request,
         client: OkHttpClient = http,
         callTimeout: Duration? = null,
     ): HttpResp {
-        val retries = if (currentCoroutineContext()[WriterLockHeld.Key] != null) 0 else QUERY_RETRIES
+        val locked = currentCoroutineContext()[WriterLockHeld.Key] != null
         var attempt = 0
         while (true) {
             val resp =
@@ -319,11 +326,19 @@ internal class VespaHttp(
                         .apply { callTimeout?.let { timeout().timeout(it.toMillis(), TimeUnit.MILLISECONDS) } }
                         .await()
                 } catch (e: IOException) {
-                    if (attempt++ >= retries) throw e
+                    if (locked || attempt++ >= QUERY_RETRIES) throw e
                     delay(500L * attempt)
                     continue
                 }
-            if ((resp.statusCode() in 500..599 || resp.statusCode() == 429) && attempt++ < retries) {
+            val code = resp.statusCode()
+            if (locked) {
+                if (code == 429 && attempt < LOCKED_PUSHBACK_DELAYS_MS.size) {
+                    delay(LOCKED_PUSHBACK_DELAYS_MS[attempt++])
+                    continue
+                }
+                return resp
+            }
+            if ((code in 500..599 || code == 429) && attempt++ < QUERY_RETRIES) {
                 delay(500L * attempt)
                 continue
             }
@@ -492,6 +507,20 @@ internal class VespaHttp(
 
         /** Brief 5xx retries per query (transient engine load-shedding, not correctness); none under a writer lock ([send]). */
         const val QUERY_RETRIES = 3
+
+        /**
+         * The pauses before each re-ask of a 429 under a writer lock ([send]): three, 300 ms in all.
+         *
+         * A 429 is the document API refusing past its queue of 256 enqueued operations. The queue
+         * drains at the engine's write rate, and the slowest healthy rate measured for this store
+         * is ~860 events/s (benchmark/README.md, concurrent-writer ingest, one writer, one shared
+         * 4-core node; the write stage alone ran ~2,000 puts/s), so a full queue drains in about
+         * 300 ms: the schedule covers one drain at that rate, three at the write stage's. Short
+         * pauses first, since pushback is usually a burst's peak. It is a tenth of the unlocked
+         * schedule (0.5 + 1 + 1.5 s) because every other writer waits out these pauses too; an
+         * engine still pushing back after 300 ms fails the commit for the caller to re-offer.
+         */
+        val LOCKED_PUSHBACK_DELAYS_MS = longArrayOf(50L, 100L, 150L)
 
         /** Visit read deadline; see [visitHttp]. */
         const val VISIT_READ_TIMEOUT_SECONDS = 120L

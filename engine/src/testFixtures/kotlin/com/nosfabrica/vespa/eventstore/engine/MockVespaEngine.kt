@@ -141,6 +141,23 @@ class MockVespaEngine(
     private val heldWritesCount = AtomicInteger()
 
     /**
+     * While above 0, every document-API put (`/document/v1` POST) takes this many microseconds
+     * of ONE lane, one put after another: an engine with a fixed write rate (a million over this
+     * a second) however many puts are in flight, which queues what it has not reached yet, where
+     * [delayAnswersMs] delays every answer in parallel. 0 (the default) writes at once.
+     */
+    @Volatile var documentPutMicros: Long = 0
+
+    private val documentPutLane = Any()
+
+    /**
+     * While above 0, the batch handler spends this many milliseconds per MB (10^6 bytes) of a
+     * batch's body before it answers: the upload and parse the real `BatchFeedHandler` finishes
+     * before its deadline starts. 0 (the default) answers at once.
+     */
+    @Volatile var batchBodyMsPerMb: Long = 0
+
+    /**
      * How `/metrics/v2/values` (the headroom probe, [EngineResources][com.nosfabrica.vespa.eventstore.engine.client.EngineResources])
      * is answered: by default one content node at half its memory limit and a quarter of its disk.
      */
@@ -669,6 +686,7 @@ class MockVespaEngine(
         return when {
             method == "POST" && path.startsWith(docPrefix) -> {
                 documentPutAttempts.incrementAndGet()
+                documentPutMicros.takeIf { it > 0 }?.let { micros -> synchronized(documentPutLane) { TimeUnit.MICROSECONDS.sleep(micros) } }
                 if (feedBlocked) return Reply(507, """{"pathId":"$path","message":"[UNKNOWN(251009) @ tcp/vespa:19115/default]: ReturnCode(NO_SPACE, External feed is blocked due to resource exhaustion)"}""")
                 val fields =
                     Json
@@ -691,6 +709,7 @@ class MockVespaEngine(
             // real handler's document API answers it.
             method == "POST" && path == "/eventstore/v1/feed" -> {
                 if (batchHandlerAbsent) return Reply(404, """{"message":"no handler"}""")
+                batchBodyMsPerMb.takeIf { it > 0 }?.let { Thread.sleep(body.encodeToByteArray().size * it / 1_000_000) }
                 val all = Json.parseToJsonElement(body).jsonArray.map { it.jsonObject }
                 if (all.any { "update" in it }) {
                     batchRequestsCount.incrementAndGet()
