@@ -127,6 +127,15 @@ class MockVespaEngine(
      */
     @Volatile var holdWrites: CountDownLatch? = null
 
+    /**
+     * Answer a request with the status this returns instead of serving it (a 503 from a container
+     * shedding load, say), or serve it as usual on null. Asked with the method, the path and the
+     * raw query string of every request but the feed client's `dryRun` handshake, before
+     * [holdWrites]: a test can refuse exactly the requests it means to, count them, or read what
+     * a request asked for. Null (the default) refuses nothing.
+     */
+    @Volatile var answerWhere: ((method: String, path: String, query: String?) -> Int?)? = null
+
     /** Document writes that have reached [holdWrites] (whether or not it is still closed). */
     val heldWrites: Int get() = heldWritesCount.get()
     private val heldWritesCount = AtomicInteger()
@@ -643,6 +652,7 @@ class MockVespaEngine(
         }
         // The feed client opens with a no-op handshake request (?dryRun=true).
         if (rawQuery.orEmpty().contains("dryRun=true")) return Reply(200, "{}")
+        answerWhere?.invoke(method, path, rawQuery)?.let { return Reply(it, """{"message":"refused by the mock (answerWhere)"}""") }
         holdWrites?.takeIf { documentPath && method in WRITE_METHODS }?.let {
             heldWritesCount.incrementAndGet()
             it.await()
