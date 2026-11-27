@@ -1933,6 +1933,21 @@ gift wrap's one 0.23 -> 0.07 us, a kind 3's 300 46 -> 15 us, escaped text 1.35 -
 (`EventDocTest` holds it to kotlinx's answer on 4,000 generated tag lists). The relay's REQs read
 `tags` raw and never parse it; this is the typed path (search, sync, hydrate, version reads).
 
+Through the relay, the same bench (vespa-relay 74b0082e built against this store, one run, against
+the two runs each above), requests per second:
+
+| workload | a13c2483 | 74b0082e | 74b0082e, this store |
+|---|---:|---:|---:|
+| DM inbox | 142.8 | 127.1 | 151.0 |
+| DM catch-up | 231.2 | 194.3 | 236.2 |
+| DM ids | 175.5 | 162.2 | 206.9 |
+| Concord page | 169.0 | 146.3 | 173.4 |
+| Concord paging | 74.0 | 56.8 | 77.2 |
+
+Over all 24 workloads, +12.7% against 74b0082e on its pinned store and +6.8% against a13c2483
+(geometric mean; one run, so a single workload's move under ~10% is within the bench's spread).
+The integration gate passed on the commit (66 tests, 0 failed, 2 skipped).
+
 ### Small batches take the bulk path (2026-11-23)
 
 `NostrSemanticsStore.batchInsert` sent batches under `BULK_MIN` (16) through the
