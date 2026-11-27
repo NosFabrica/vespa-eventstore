@@ -525,20 +525,21 @@ class VespaEventIndex(
     )
 
     /**
-     * The feed parameters for the documents a batch path that was TRIED handed back ([putAll],
-     * [putAllIfStored]; not while it is parked, when the feed client is the write path itself).
-     * Unlocked, [feedParams]. Under a writer lock ([WriterLockHeld]),
-     * [LOCKED_FALLBACK_TIMEOUT] instead of [FEED_TIMEOUT]: the feed client retries an operation
-     * until its deadline, so 30 s there was a retry loop of 30 s with every other writer queued
-     * behind it, after a batch that had already failed. Still a fallback and not a refusal: the
-     * handler hands back what a healthy feed client stores in milliseconds (a body the schema
-     * refuses, a 503 from one container, a handler 404'd by this very call), and the feed client is where
-     * the schema-fallback net lives. Past the deadline the put throws like any refused feed
+     * The feed parameters for [inFlight] documents a LIVE batch path handed back ([putAll],
+     * [putAllIfStored]), sent together as one chunk. Decided AFTER the batch call: a batch path
+     * that was parked, or that this very call 404'd and parked, leaves the feed client as the
+     * write path itself, which keeps [feedParams] under the lock too. Unlocked, [feedParams].
+     * Under a writer lock ([WriterLockHeld]), [lockedFallbackTimeout] instead of [FEED_TIMEOUT]:
+     * the feed client retries an operation until its deadline, so 30 s there was a retry loop of
+     * 30 s with every other writer queued behind it, after a batch that had already failed. Still
+     * a fallback and not a refusal: the handler hands back what a healthy feed client stores in
+     * milliseconds (a body the schema refuses, a 503 from one container), and the feed client is
+     * where the schema-fallback net lives. Past the deadline the put throws like any refused feed
      * operation, the commit fails whole (every event in it answered as the store's failure, which
      * the relay answers `error:` and the client re-offers), and a put the engine did apply after
      * all is a duplicate on that re-offer.
      */
-    private suspend fun fallbackParams(): OperationParameters = if (currentCoroutineContext()[WriterLockHeld.Key] != null) OperationParameters.empty().timeout(LOCKED_FALLBACK_TIMEOUT) else feedParams()
+    private suspend fun fallbackParams(inFlight: Int): OperationParameters = if (currentCoroutineContext()[WriterLockHeld.Key] != null) OperationParameters.empty().timeout(lockedFallbackTimeout(inFlight)) else feedParams()
 
     /** Whether a put feeds `search_text_edge` now: asked for, and not refused by the serving schema. */
     private fun feedsEdge(): Boolean = bodyEdgeFeed && fallbacks.bodyEdgeAvailable
@@ -706,11 +707,6 @@ class VespaEventIndex(
         // A lone document too: the batch handler answers a feed block at once (EngineRefusesWrites),
         // where the feed client retries each 507 before failing, which held a single publish for
         // seconds and then answered it as an event the store could not take.
-        // What the batch path handed back goes under [fallbackParams]: under a writer lock its
-        // deadline is short, so a failed batch fails the commit fast instead of waiting out the
-        // feed client's retries. With batching off, or parked (no handler to try), the feed
-        // client is the write path itself, and keeps [FEED_TIMEOUT].
-        val params = if (batchFeed?.available == true) fallbackParams() else feedParams()
         val rest =
             batchFeed?.let { batches ->
                 batchWrite {
@@ -721,7 +717,16 @@ class VespaEventIndex(
                     )
                 }
             } ?: docs
-        rest.chunked(FEED_CHUNK).forEach { chunk -> awaitPuts(chunk, feed.enqueueAll(chunk) { putOp(it, params) }, params) }
+        // What a LIVE batch path handed back goes under [fallbackParams]: under a writer lock its
+        // deadline is short, so a failed batch fails the commit fast instead of waiting out the
+        // feed client's retries. Asked after the call, not before: with batching off, parked, or
+        // parked by this call's own 404 (no handler deployed), the feed client is the write path
+        // itself, and keeps [FEED_TIMEOUT].
+        val handedBack = batchFeed?.available == true
+        rest.chunked(FEED_CHUNK).forEach { chunk ->
+            val params = if (handedBack) fallbackParams(chunk.size) else feedParams()
+            awaitPuts(chunk, feed.enqueueAll(chunk) { putOp(it, params) }, params)
+        }
     }
 
     /**
@@ -803,10 +808,9 @@ class VespaEventIndex(
         // so anything else is simply not stored.
         val eligible = docs.filter { Hex.isHexKey(it.id) }
         val written = HashSet<String>()
-        // Handed back by the batch path: [fallbackParams], as in [putAll]. Otherwise unchanged.
-        val params = if (batchFeed?.available == true && eligible.size > 1) fallbackParams() else feedParams()
+        val tried = batchFeed?.takeIf { eligible.size > 1 }
         val rest =
-            batchFeed?.takeIf { eligible.size > 1 }?.let { batches ->
+            tried?.let { batches ->
                 val (refused, unconfirmed) =
                     batchWrite {
                         batches.putAllIfStored(
@@ -820,10 +824,13 @@ class VespaEventIndex(
                 eligible.forEach { if (it.id !in settled) written += it.id }
                 unconfirmed
             } ?: eligible
+        // Handed back by a batch path still live after the call: [fallbackParams], as in [putAll].
+        val handedBack = tried?.available == true
         for (chunk in rest.chunked(FEED_CHUNK)) {
             var pending = chunk
             var refusals = 0
             while (pending.isNotEmpty()) {
+                val params = if (handedBack) fallbackParams(pending.size) else feedParams()
                 // Handed over through enqueueAll like every feed operation: past the client's
                 // throttle window a hand-over sleeps on its thread, which was the caller's here.
                 val ops = feed.enqueueAll(pending) { ifStoredOp(it, params) }
@@ -4110,19 +4117,52 @@ class VespaEventIndex(
         val FEED_TIMEOUT: Duration = Duration.ofSeconds(30)
 
         /**
-         * [FEED_TIMEOUT] for the feed client's re-put of what the batch path handed back, under a
-         * writer lock ([fallbackParams]). The batch's own deadline ([VespaBatchFeed.TIMEOUT]), on
-         * the same reasoning: a healthy feed-client put takes milliseconds (~56 ms on average
-         * inside a 1,000-event burst, benchmark/README.md's ingest stage profile), so five
-         * seconds without an answer is an engine the caller's re-offer should wait out, not the
-         * lock. A [putAll] under the lock now waits about [VespaBatchFeed.CALL_BOUND] at most per
-         * wave of concurrent batches, then this per [FEED_CHUNK] of the re-put (measured on the
-         * mock with every put held: 5,050 ms, VespaBatchFeedTest), where each batch could take four
-         * tries of up to the handler's 35 s with three back-offs, and the re-put 30 s more. A
-         * re-put that takes longer than this — a large chunk queued behind the feed client's
-         * throttle on a slow engine — fails the commit too, for the caller to re-offer.
+         * The base of [lockedFallbackTimeout], the deadline of the feed client's re-put of what the
+         * batch path handed back, under a writer lock ([fallbackParams]). The batch's own deadline
+         * ([VespaBatchFeed.TIMEOUT]), on the same reasoning: a healthy feed-client put takes
+         * milliseconds (~56 ms on average inside a 1,000-event burst, benchmark/README.md's ingest
+         * stage profile), so five seconds without an answer is an engine the caller's re-offer
+         * should wait out, not the lock. A [putAll] under the lock now waits about
+         * [VespaBatchFeed.CALL_BOUND] at most per wave of concurrent batches, then
+         * [lockedFallbackTimeout] per [FEED_CHUNK] of the re-put (measured on the mock with every
+         * put held: 5,050 ms for two documents, VespaBatchFeedTest), where each batch could take
+         * four tries of up to the handler's 35 s with three back-offs, and the re-put 30 s more.
          */
         val LOCKED_FALLBACK_TIMEOUT: Duration = Duration.ofSeconds(5)
+
+        /**
+         * The write rate [lockedFallbackTimeout] grants the documents of one re-put chunk on top
+         * of [LOCKED_FALLBACK_TIMEOUT]: 500 puts a second.
+         *
+         * Why it needs one: the feed client starts an operation's deadline when it is HANDED the
+         * operation, which [VespaFeed.enqueueAll] does just before the operation waits for a slot
+         * in the throttle window (vespa-feed-client 8.781.11: the `HttpRequest`, and its
+         * deadline, are built before `HttpRequestStrategy.acquireSlot`). So a put waits out every
+         * put of its chunk the window let ahead of it, up to the whole chunk once the window
+         * reaches [FEED_CHUNK] (it climbs to 256 x its 64 floor, and `VESPA_FEED_INFLIGHT_FACTOR`
+         * starts it higher). A flat 5 s then failed a full chunk on an engine merely writing
+         * under ~820 puts/s (4,096 / 5 s), and the slowest healthy rate measured here is ~860
+         * events/s (benchmark/README.md, concurrent-writer ingest at one writer; the write stage
+         * alone ran ~2,000 puts/s, 20k events in 10.2 s on the 400k ingest profile): measured on
+         * the mock (VespaBatchFeedTest, one run each), a 4,096-document hand-back on an engine writing
+         * ~650 puts/s with the window started at the chunk failed at 5,127 ms under the flat
+         * deadline, and was stored in 7,517 ms under this one. At the default window's floor (64)
+         * a put waits ~64 puts' time, tens of milliseconds, so the flat deadline bound only a
+         * window that had grown.
+         *
+         * 500 is under 60% of the slowest healthy rate, so a healthy chunk drains inside its
+         * deadline with room, and a full chunk's deadline is 5 + 8.2 = 13.2 s, under the
+         * [FEED_TIMEOUT] it replaces. The lock stays bounded: a re-put that fails throws at its
+         * first failing chunk, so a commit waits at most one chunk's deadline past the work an
+         * engine writing faster than this did.
+         */
+        const val LOCKED_FALLBACK_PUTS_PER_SECOND = 500L
+
+        /**
+         * The deadline of a locked re-put chunk of [inFlight] documents: [LOCKED_FALLBACK_TIMEOUT]
+         * plus [inFlight] at [LOCKED_FALLBACK_PUTS_PER_SECOND], never past [FEED_TIMEOUT].
+         */
+        internal fun lockedFallbackTimeout(inFlight: Int): Duration = minOf(FEED_TIMEOUT, LOCKED_FALLBACK_TIMEOUT + Duration.ofMillis(inFlight.toLong() * 1_000 / LOCKED_FALLBACK_PUTS_PER_SECOND))
 
         /**
          * How long past [FEED_TIMEOUT] a [putDirect] waits for the engine's answer before it

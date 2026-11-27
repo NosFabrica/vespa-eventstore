@@ -10,22 +10,32 @@ Three waits a commit used to pay while holding the store's writer lock, with eve
 writer queued behind it:
 
 - **Retry back-off.** `VespaHttp.send` retried a 5xx/429/transport failure three times
-  (0.5 + 1 + 1.5 s). Under the lock (`WriterLockHeld`) it now asks once and the commit fails;
-  reads outside the lock (walks, queries, the projection drain) keep their retries. A second
-  writer behind a 503'd batch POST waited 3,060-3,067 ms before, 59 ms after (mock engine,
-  `WriterLockRetryHoldTest`).
+  (0.5 + 1 + 1.5 s). Under the lock (`WriterLockHeld`) a 5xx or a transport failure is now
+  asked once and the commit fails; a 429 (the document API's queue full: pushback, not
+  failure) is asked again after 50, 100 and 150 ms (`VespaHttp.LOCKED_PUSHBACK_DELAYS_MS`,
+  300 ms in all), then surfaced. Reads outside the lock (walks, queries) keep their retries. A
+  second writer behind a 503'd batch POST waited 3,060-3,067 ms before, 59 ms after (mock
+  engine, `WriterLockRetryHoldTest`).
 - **The batch handler's default deadline.** The batch-feed POST named no `timeout`, so
   `BatchFeedHandler` waited its 30 s default (+5 s) before a 504, and the client had no read
-  deadline. It now sends `?timeout=5s` and gives up on an answer after 11 s.
-- **The feed-client fallback.** What the batch path hands back is re-put through the feed
-  client with a 5 s deadline under the lock (30 s elsewhere, and 30 s when batching is off or
-  parked because the package has no handler, where the feed client is the write path itself).
+  deadline. A batch sent under the lock now names `?timeout=5s` and is given up on after 11 s
+  plus one second per 10 MB of body (`VespaBatchFeed.BODY_BYTES_PER_SECOND`: the handler starts
+  its deadline only once it has read and parsed the body). A batch sent outside the lock is
+  unchanged: no `timeout`, no client bound.
+- **The feed-client fallback.** What a live batch path hands back is re-put through the feed
+  client, under the lock, with a deadline of 5 s plus 2 ms per document of the chunk
+  (`VespaEventIndex.lockedFallbackTimeout`: 500 puts/s, so 13.2 s for a full 4,096-document
+  chunk, never past 30 s), since the feed client starts each put's deadline before the put
+  waits for its slot in the throttle window. 30 s elsewhere, and 30 s when batching is off or
+  parked because the package has no handler, the call's own 404 included: then the feed client
+  is the write path itself.
 
 What an operator sees: under a degraded engine, more batches fail whole and sooner (counted as
 `failed` outcomes, answered `error:` by a relay, re-offered by the client), where they used to
-hold the lock for up to minutes and then succeed or fail; and a batch the handler cannot finish
-in 5 s has its unanswered documents re-put through the feed client. A healthy engine's batch writes are measured well under that
-(hundreds of milliseconds for 1,000 events, `benchmark/README.md`).
+hold the lock for up to minutes and then succeed or fail; and a locked batch the handler cannot
+finish in 5 s has its unanswered documents re-put through the feed client. A healthy engine's
+batch writes are measured well under that (hundreds of milliseconds for 1,000 events,
+`benchmark/README.md`).
 
 ## The per-event insert's dup probe is metered as `exists`, not `get` (2026-11)
 

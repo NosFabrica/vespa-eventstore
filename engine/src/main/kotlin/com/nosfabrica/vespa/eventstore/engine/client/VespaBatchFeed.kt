@@ -20,16 +20,19 @@
  */
 package com.nosfabrica.vespa.eventstore.engine.client
 
+import com.nosfabrica.vespa.eventstore.engine.WriterLockHeld
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.Serializable
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody
 import okio.BufferedSink
+import okio.utf8Size
 import java.math.BigDecimal
 import java.time.Duration
 import java.util.concurrent.atomic.AtomicLong
@@ -70,13 +73,18 @@ internal class VespaBatchFeed(
      * times are only ever subtracted, never compared to a sentinel.
      */
     private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
-    /** The `timeout` each batch names to the handler; see [TIMEOUT]. A test passes milliseconds. */
+    /** The `timeout` each batch sent under a writer lock names to the handler; see [TIMEOUT]. A test passes milliseconds. */
     private val timeout: Duration = TIMEOUT,
-    /** How long this client waits for one batch's answer, headers and body; see [CALL_BOUND]. */
+    /** How long this client waits for a locked batch's answer, headers and body, before its body's share; see [CALL_BOUND]. */
     private val callBound: Duration = CALL_BOUND,
+    /** The rate a locked batch's body is granted on top of [callBound]; see [BODY_BYTES_PER_SECOND]. */
+    private val bodyBytesPerSecond: Long = BODY_BYTES_PER_SECOND,
 ) {
     /** The handler's url with [timeout] named, in the seconds form `BatchFeedHandler.timeout` parses (`5s`, `0.2s`). */
-    private fun url(): String = endpoint() + PATH + "?timeout=" + BigDecimal.valueOf(timeout.toMillis(), 3).stripTrailingZeros().toPlainString() + "s"
+    private fun lockedUrl(): String = endpoint() + PATH + "?timeout=" + BigDecimal.valueOf(timeout.toMillis(), 3).stripTrailingZeros().toPlainString() + "s"
+
+    /** How long this client waits for a locked batch of [body]: [callBound], and the body's upload and parse at [bodyBytesPerSecond]. */
+    private fun callBoundFor(body: BatchBody): Duration = callBound + Duration.ofMillis(body.bytes * 1_000 / bodyBytesPerSecond)
 
     /** When the batch path may be tried again, on [clock]; null until a 404 parks it. */
     @Volatile private var parkedUntil: Long? = null
@@ -154,7 +162,7 @@ internal class VespaBatchFeed(
     /** [items] in batches of [batchSize], [concurrency] in flight, each batch as [request] writes it; returns those not confirmed. */
     private suspend fun <T> sendAll(
         items: List<T>,
-        request: (List<T>) -> RequestBody,
+        request: (List<T>) -> BatchBody,
     ): List<T> = sendAllAnswered(items, request).map { it.first }
 
     /**
@@ -163,7 +171,7 @@ internal class VespaBatchFeed(
      */
     private suspend fun <T> sendAllAnswered(
         items: List<T>,
-        request: (List<T>) -> RequestBody,
+        request: (List<T>) -> BatchBody,
     ): List<Pair<T, String?>> {
         if (!available || items.isEmpty()) return items.map { it to null }
         val gate = Semaphore(concurrency)
@@ -185,13 +193,23 @@ internal class VespaBatchFeed(
 
     private suspend fun <T> send(
         batch: List<T>,
-        request: (List<T>) -> RequestBody,
+        request: (List<T>) -> BatchBody,
     ): List<Pair<T, String?>> {
         val unanswered = { batch.map { it to null } }
         if (!available) return unanswered()
-        // Unanswered past [callBound] is an IOException, so the batch is handed back like any
-        // other that failed whole; under a writer lock that is one try ([VespaHttp.send]).
-        val resp = runCatching { http.post(url(), request(batch), callTimeout = callBound) }.getOrNull() ?: return unanswered()
+        val body = request(batch)
+        // Under a writer lock, the batch names [timeout] and is given up on past [callBoundFor]:
+        // unanswered by then is an IOException, so the batch is handed back like any other that
+        // failed whole, and under the lock that is one try ([VespaHttp.send]). Unlocked (a write
+        // outside a store commit), neither: the handler's own default and no client bound, as
+        // before the mark was read here. Holding nobody, a slow batch costs no other writer
+        // anything, and a bound would only re-POST a batch the handler may still be applying,
+        // through send()'s unlocked retries, then re-put it through the feed client.
+        val locked = currentCoroutineContext()[WriterLockHeld.Key] != null
+        val resp =
+            runCatching {
+                if (locked) http.post(lockedUrl(), body, callTimeout = callBoundFor(body)) else http.post(endpoint() + PATH, body)
+            }.getOrNull() ?: return unanswered()
         when (resp.statusCode()) {
             200 -> {}
 
@@ -241,6 +259,18 @@ internal class VespaBatchFeed(
         return if (wait > 0) "batch PARKED (404 x$notFound), retry in ${(wait + 999) / 1000}s" else "batch $batchesSent sent"
     }
 
+    /**
+     * A batch's request body, which knows about how many bytes it writes ([bytes]: the UTF-8 of
+     * its ids, documents and conditions, without the few bytes of framing per operation), so a
+     * locked call's bound can grant its upload and parse ([callBoundFor]). Read only by a locked
+     * call, and then once: lazy, so an unlocked batch pays no pass over its documents.
+     */
+    internal abstract class BatchBody(
+        private val parts: () -> Long,
+    ) : RequestBody() {
+        val bytes: Long by lazy(LazyThreadSafetyMode.NONE) { parts() }
+    }
+
     companion object {
         /** The handler's outcome for a put whose test-and-set condition failed, the document missing included. */
         const val CONDITION_FAILED = "CONDITION_FAILED"
@@ -260,8 +290,8 @@ internal class VespaBatchFeed(
             ids: List<String>,
             bodies: List<String>,
             conditions: List<String>? = null,
-        ): RequestBody =
-            object : RequestBody() {
+        ): BatchBody =
+            object : BatchBody({ ids.sumOf { it.utf8Size() } + bodies.sumOf { it.utf8Size() } + (conditions?.sumOf { it.utf8Size() } ?: 0L) }) {
                 override fun contentType() = JSON_MEDIA
 
                 override fun writeTo(sink: BufferedSink) {
@@ -289,8 +319,8 @@ internal class VespaBatchFeed(
             ids: List<String>,
             bodies: List<String>,
             creates: List<Boolean>,
-        ): RequestBody =
-            object : RequestBody() {
+        ): BatchBody =
+            object : BatchBody({ ids.sumOf { it.utf8Size() } + bodies.sumOf { it.utf8Size() } }) {
                 override fun contentType() = JSON_MEDIA
 
                 override fun writeTo(sink: BufferedSink) {
@@ -317,10 +347,11 @@ internal class VespaBatchFeed(
         const val INSUFFICIENT_STORAGE = "INSUFFICIENT_STORAGE"
 
         /**
-         * The `timeout` a batch names, which `BatchFeedHandler` passes to every operation in it as
-         * their deadline. Without one it waits its `DEFAULT_TIMEOUT`, 30 s (plus 5 s of slack
-         * before its 504), while the caller holds the store's writer lock and every other writer
-         * waits ([WriterLockHeld][com.nosfabrica.vespa.eventstore.engine.WriterLockHeld]).
+         * The `timeout` a batch sent under a store writer lock ([WriterLockHeld]) names, which
+         * `BatchFeedHandler` passes to every operation in it as their deadline. Without one it
+         * waits its `DEFAULT_TIMEOUT`, 30 s (plus 5 s of slack before its 504), while the caller
+         * holds the lock and every other writer waits. A batch sent without the mark names none,
+         * and keeps that default: nobody is queued behind it.
          *
          * Five seconds: an order of magnitude over the slowest healthy batch writes measured
          * (benchmark/README.md: the `write` stage of a 1,000-event `batchInsert` ~0.5 s on the
@@ -338,11 +369,32 @@ internal class VespaBatchFeed(
         val HANDLER_SLACK: Duration = Duration.ofSeconds(5)
 
         /**
-         * How long the client waits for a batch's answer: the handler's whole wait ([TIMEOUT] plus
-         * [HANDLER_SLACK]) and a second for the answer's way back. This client has no read
-         * deadline ([VespaHttp]), so without it a handler that never answers (a container wedged,
-         * a connection whose PINGs still pass) held the writer lock for as long as it stayed silent.
+         * How long the client waits for a locked batch's answer, before its body's share
+         * ([BODY_BYTES_PER_SECOND]): the handler's whole wait ([TIMEOUT] plus [HANDLER_SLACK]) and
+         * a second for the answer's way back. This client has no read deadline ([VespaHttp]), so
+         * without it a handler that never answers (a container wedged, a connection whose PINGs
+         * still pass) held the writer lock for as long as it stayed silent. Unlocked batches have
+         * no bound, as they had none before it.
          */
         val CALL_BOUND: Duration = TIMEOUT + HANDLER_SLACK + Duration.ofSeconds(1)
+
+        /**
+         * The rate a locked batch's body is granted on top of [CALL_BOUND]: one second per 10 MB.
+         *
+         * The client's bound starts when OkHttp is handed the call, but `BatchFeedHandler` starts
+         * its deadline only once it has read and parsed the whole body, so the upload and the
+         * parse come out of the bound's one second of slack. A small batch's do not notice; a
+         * hundred kind 3s are megabytes, and `VESPA_FEED_BATCH` allows 4,096 documents a batch.
+         * Without a share, a batch whose upload and parse took over a second was given up on
+         * while the handler was still going to apply it, then re-put whole.
+         *
+         * Ten MB/s is a fifth of the rate this client itself writes a feed body (a 9.6 KB kind 3
+         * in 183-206 µs, ~50 MB/s, benchmark/README.md "The feed body, written in one pass") and
+         * an order of magnitude under the transfer measured through Docker Desktop's port (120-155
+         * MB/s). The handler's own parse rate is NOT measured here; this is a margin, not a
+         * prediction. What it costs is bounded: a 1 MB batch waits 0.1 s more before it is given
+         * up on, a 4,096-document batch of 9.6 KB kind 3s (39 MB) ~3.9 s more.
+         */
+        const val BODY_BYTES_PER_SECOND = 10_000_000L
     }
 }
